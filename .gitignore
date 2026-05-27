@@ -1,0 +1,7 @@
+dependency_graph.html
+index_graph.json
+dependency_graph_index.html
+migration_plan.md
+__pycache__
+.build
+.env
