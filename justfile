@@ -152,8 +152,20 @@ _index: _build_reader
             proj_flag=(-project "$xc")
         fi
         if [[ -z "$sc" ]]; then
-            sc="${ws%.*}"
-            [[ -n "$sc" ]] || { echo "✗ could not infer scheme — set SCHEME" >&2; exit 1; }
+            schemes=$(cd "$proj" && xcodebuild -list "${proj_flag[@]}" 2>/dev/null \
+                | grep -A 100 'Schemes:' | tail -n +2 | grep '^ ' | sed 's/^ *//')
+            count=$(echo "$schemes" | grep -c .)
+            if [[ $count -eq 1 ]]; then
+                sc="$schemes"
+                echo "→ auto-detected scheme: $sc"
+            elif [[ $count -gt 1 ]]; then
+                echo "✗ multiple schemes found — set SCHEME to one of:" >&2
+                echo "$schemes" | sed 's/^/    /' >&2
+                exit 1
+            else
+                echo "✗ could not detect scheme — set SCHEME" >&2
+                exit 1
+            fi
         fi
         echo "→ xcodebuild ${proj_flag[*]} -scheme $sc"
 
