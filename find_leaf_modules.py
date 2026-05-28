@@ -598,10 +598,61 @@ def build_tree(all_folders: set[str], decls: dict[str, set[str]], root_label: st
     return nodes
 
 
+def _package_label(prefix: str) -> str:
+    """Human-friendly label for an SPM-prefix path.
+
+    `Modules/Foo/Sources` → `Foo`, `Modules/Foo/Sources/Bar` keeps `Foo`,
+    bare `Sources` → `Sources`, `.` → `.`.
+    """
+    parts = [p for p in prefix.split("/") if p and p != "."]
+    if not parts:
+        return prefix or "."
+    # Drop trailing "Sources" segment for prettier labels.
+    if parts[-1] == "Sources" and len(parts) >= 2:
+        return parts[-2]
+    return parts[-1]
+
+
+def _build_package_map(all_source_folders, migrated_prefixes):
+    """Return (folder→package_id, packages list).
+
+    package_id is `app` for folders not under any SPM prefix, else the prefix
+    string itself (stable id). `packages` is a sorted list of
+    {id, label, prefix, kind, folders} dicts so the UI can render groups.
+    """
+    folder_pkg = {}
+    pkg_folders = defaultdict(list)
+    for f in all_source_folders:
+        match = None
+        for p in migrated_prefixes:
+            pn = p.rstrip("/")
+            if f == pn or f.startswith(pn + "/"):
+                if match is None or len(pn) > len(match.rstrip("/")):
+                    match = p
+        pid = match if match else "app"
+        folder_pkg[f] = pid
+        pkg_folders[pid].append(f)
+    packages = []
+    for pid, fs in pkg_folders.items():
+        if pid == "app":
+            packages.append({
+                "id": "app", "label": "App (xcodeproj)", "prefix": "",
+                "kind": "app", "folders": sorted(fs),
+            })
+        else:
+            packages.append({
+                "id": pid, "label": _package_label(pid), "prefix": pid,
+                "kind": "spm", "folders": sorted(fs),
+            })
+    packages.sort(key=lambda p: (p["kind"] != "app", p["label"].lower()))
+    return folder_pkg, packages
+
+
 def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 plan, stuck, root_label, root_path, initial_migrated,
                 migrated_prefixes, out_path, type_kinds=None,
-                initial_excluded=None, excluded_file=None):
+                initial_excluded=None, excluded_file=None,
+                folder_package=None, packages=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -621,6 +672,8 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         "initial_excluded": initial_excluded or [],
         "excluded_file_name": Path(excluded_file).name if excluded_file else ".modularization_excluded.json",
         "excluded_file_path": str(excluded_file) if excluded_file else "",
+        "folder_package": folder_package or {},
+        "packages": packages or [],
     }
     html = HTML_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload)).replace(
         "__ROOT_LABEL__", root_label
@@ -674,10 +727,61 @@ HTML_TEMPLATE = r"""<!doctype html>
     #side { width: 412px; flex-shrink: 0; overflow: hidden; background: var(--surface);
       border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow);
       display: flex; flex-direction: column; }
+    #netWrap { flex: 1; position: relative; display: flex; }
     #net { flex: 1; background: var(--surface);
       background-image: radial-gradient(circle at 1px 1px, #e3e6ef 1px, transparent 0);
       background-size: 22px 22px;
       border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); overflow: hidden; }
+    /* Floating doc-explorer-style nav over the graph: back/forward + crumbs. */
+    #graphNav { position: absolute; top: 14px; left: 14px; right: 14px; z-index: 5;
+      display: flex; align-items: center; gap: 8px; pointer-events: none; }
+    #graphNav > * { pointer-events: auto; }
+    #graphNav .navBtns { display: flex; gap: 4px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--r); padding: 4px;
+      box-shadow: var(--shadow-sm); backdrop-filter: blur(6px); }
+    #graphNav .navBtns button { padding: 5px 11px; }
+    #graphNav .navBtns button.active { background: var(--accent); color: #fff; border-color: var(--accent-strong); }
+    #graphNav .settingsBtn { padding: 7px 14px; font-size: 13px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 6px; }
+    #graphNav .settingsBtn span { font-size: 15px; }
+    /* Default vis-network tooltip — replaced by our custom popover. */
+    .vis-tooltip { display: none !important; }
+    /* Mode-scoped visibility: hide migration-only UI in Explore mode and
+       explore-only UI in Migration mode without clobbering inline display. */
+    html[data-app-mode="explore"] .migrationOnly { display: none !important; }
+    html[data-app-mode="migration"] .exploreOnly { display: none !important; }
+    /* Custom node popover: stats + action buttons, follows hovered/selected node. */
+    .node-popover { position: absolute; z-index: 7; min-width: 230px; max-width: 280px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
+      box-shadow: var(--shadow-lg); padding: 10px 12px; font-size: 12px;
+      color: var(--text); pointer-events: auto; transform: translate(-50%, calc(-100% - 14px)); }
+    .node-popover::after { content: ''; position: absolute; left: 50%; bottom: -7px;
+      transform: translateX(-50%); width: 12px; height: 12px; background: var(--surface);
+      border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
+      transform-origin: center; rotate: 45deg; }
+    .np-header { display: flex; align-items: center; gap: 8px; font-weight: 700; margin-bottom: 6px; }
+    .np-swatch { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.06); }
+    .np-name { font-size: 12.5px; word-break: break-all; }
+    .np-stats { font-size: 11.5px; color: var(--text-dim); line-height: 1.55; margin-bottom: 8px; }
+    .np-stats b { color: var(--text); font-weight: 600; }
+    .np-state { font-size: 11px; padding: 4px 7px; border-radius: var(--r-sm); margin-bottom: 8px;
+      display: inline-block; font-weight: 600; }
+    .np-state.excluded { background: #fbe9e9; color: #b91c1c; }
+    .np-state.migrated { background: #e2e8f0; color: #475569; }
+    [data-theme="dark"] .np-state.excluded { background: #3a2a2e; color: #fca5a5; }
+    [data-theme="dark"] .np-state.migrated { background: #3a4152; color: #cbd5e1; }
+    .np-actions { display: flex; flex-direction: column; gap: 4px; }
+    .np-actions button { width: 100%; padding: 6px 10px; font-size: 11.5px; }
+    .np-hint { font-size: 10.5px; color: var(--text-faint); margin-top: 6px; }
+    /* Settings popover — anchored to gear button, appears below the floating nav. */
+    .settings-popover { position: absolute; top: 60px; right: 14px; z-index: 6;
+      width: 340px; max-height: calc(100% - 80px); overflow-y: auto;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r-lg); box-shadow: var(--shadow);
+      padding: 14px 16px; }
+    #graphNav .crumbs { flex: 1; margin: 0; background: var(--surface);
+      border: 1px solid var(--border); box-shadow: var(--shadow-sm); backdrop-filter: blur(6px); }
 
     /* ── header ────────────────────────────────────────────────────────────── */
     .appbar { padding: 16px 18px 14px; background: linear-gradient(135deg, #1e2334 0%, #2b2f6b 100%); color: #fff; position: relative; }
@@ -685,8 +789,18 @@ HTML_TEMPLATE = r"""<!doctype html>
     .appbar .title { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; margin-top: 2px; }
     .appbar .path { font-size: 11px; color: rgba(255,255,255,.55); word-break: break-all; margin-top: 3px; }
 
+    /* ── top-level mode toggle ────────────────────────────────────────────── */
+    .modes { display: flex; gap: 6px; padding: 10px 12px 0; }
+    .mode { flex: 1; text-align: center; padding: 9px 10px; font-size: 13px; font-weight: 700; cursor: pointer;
+      border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2); color: var(--text-dim);
+      transition: all .15s ease; user-select: none; }
+    .mode:hover { color: var(--text); border-color: var(--border-strong); }
+    .mode.active { background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: #fff;
+      border-color: var(--accent-strong); box-shadow: var(--shadow-sm); }
+
     /* ── segmented tabs ────────────────────────────────────────────────────── */
     .tabs { display: flex; gap: 3px; padding: 8px; background: var(--surface-2); margin: 12px; border-radius: var(--r); }
+    .tab[data-hidden="1"] { display: none; }
     .tab { flex: 1; text-align: center; padding: 8px 10px; font-size: 12.5px; font-weight: 600; cursor: pointer;
       border-radius: var(--r-sm); color: var(--text-dim); transition: all .15s ease; user-select: none; }
     .tab:hover { color: var(--text); }
@@ -736,22 +850,60 @@ HTML_TEMPLATE = r"""<!doctype html>
     button.danger:hover { background: #dc2626; }
 
     /* ── cards / steps ─────────────────────────────────────────────────────── */
-    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; margin-bottom: 10px; box-shadow: var(--shadow-sm); }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; margin-bottom: 10px; box-shadow: var(--shadow-sm); overflow-wrap: anywhere; word-break: break-word; }
     .card.start { background: linear-gradient(135deg, #eafaf1, #f0fdf6); border-color: #b6ebcb; }
+    /* Sticky header for the Plan tab: stats + next-step card + global
+       actions + list heading + filter all pin together while the step list
+       scrolls underneath. Solid surface so list rows don't bleed through. */
+    #recSticky { position: sticky; top: -4px; z-index: 4;
+      background: var(--surface); padding: 10px 12px 10px;
+      margin: -4px -14px 8px; border-bottom: 1px solid var(--border);
+      box-shadow: 0 4px 6px -4px rgba(0,0,0,0.18); }
+    #recSticky .rec-stats { margin-bottom: 8px; }
+    #recSticky #recCard { margin-bottom: 8px; }
+    #recSticky .rec-list-heading { margin: 8px 0 6px; }
+    #recSticky #planFilter { margin: 0 0 4px; }
+    .rec-global-actions { display: flex; justify-content: center; gap: 8px; padding: 2px 0 8px; }
+    .rec-global-actions button { min-width: 120px; }
+    .rec-global-actions button.success { background: var(--green); border-color: var(--green); color: #fff; }
+    .rec-global-actions button.success:hover { filter: brightness(1.08); }
+    .rec-global-actions button.danger { background: var(--red); border-color: var(--red); color: #fff; }
+    .rec-global-actions button.danger:hover { filter: brightness(1.08); }
     .card.start h3 { color: var(--green); margin-top: 0; }
-    .step { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 9px 11px; margin: 6px 0; background: var(--surface); font-size: 12px; box-shadow: var(--shadow-sm); transition: border-color .12s, box-shadow .12s; }
+    .card .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .card .card-actions button { font-size: 12px; padding: 7px 11px; max-width: 100%; white-space: normal; text-align: left; }
+    .card .card-headline { font-size: 13px; font-weight: 600; margin: 4px 0; line-height: 1.35; word-break: break-all; }
+    .step { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 9px 11px; margin: 6px 0; background: var(--surface); font-size: 12px; box-shadow: var(--shadow-sm); transition: border-color .12s, box-shadow .12s; overflow-wrap: anywhere; word-break: break-word; cursor: pointer; }
     .step:hover { border-color: var(--border-strong); }
     .step.done { background: var(--green-soft); border-color: #b6ebcb; }
     .step.next { background: var(--orange-soft); border-color: #fcd9a0; box-shadow: var(--ring); }
     .step .stepNum { font-weight: 700; color: var(--text-faint); margin-right: 6px; }
     .step .unlocks { color: var(--text-dim); font-size: 11px; margin-top: 3px; }
     .step .unlocks .u { color: var(--green); font-weight: 600; }
+    .step-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .step-actions button { font-size: 11px; padding: 4px 9px; }
 
     /* ── legend ────────────────────────────────────────────────────────────── */
-    .legend { font-size: 12px; color: var(--text); padding: 10px 12px; background: var(--surface-2); border-radius: var(--r); display: flex; flex-direction: column; gap: 6px; line-height: 1.4; }
-    .legend > div { display: flex; align-items: flex-start; }
+    .legend { font-size: 12px; color: var(--text); padding: 0; background: transparent;
+      display: flex; flex-direction: column; gap: 8px; line-height: 1.35; }
+    .legend > div { display: flex; align-items: center; gap: 8px; }
     .legend b { color: var(--text); font-weight: 700; }
-    .legend .swatch { display: inline-block; width: 13px; height: 13px; border-radius: 50%; margin-right: 9px; margin-top: 2px; flex-shrink: 0; box-shadow: var(--shadow-sm); }
+    .legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+      flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.08); }
+    .legend .swatch.sq { border-radius: 3px; }
+    .legend .swatch.star { border-radius: 50%; }
+    .legend .swatch.dashed { border: 1.5px dashed #ef4444; background: transparent !important; box-shadow: none; }
+    .legend-row-label { color: var(--text); }
+    .legend-row-label .dim { color: var(--text-dim); font-weight: 400; }
+    /* Kind chips: compact pill with swatch + name, wrap into a tidy grid. */
+    .legend-kinds { display: flex; flex-wrap: wrap; gap: 6px; }
+    .legend-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 6px;
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
+      font-size: 11.5px; color: var(--text); }
+    .legend-chip .swatch { width: 9px; height: 9px; box-shadow: none; }
+    .legend-divider { height: 1px; background: var(--border); margin: 4px 0; opacity: .8; }
+    .legend-edge-line { display: inline-block; width: 22px; height: 2px; border-radius: 2px;
+      vertical-align: middle; margin-right: 2px; }
     .stuck { color: var(--red); }
     details > summary { cursor: pointer; font-size: 12px; color: var(--text-dim); margin: 6px 0; font-weight: 600; }
     #newlyBanner { background: var(--orange-soft); border: 1px solid #fcd9a0; padding: 11px 13px; border-radius: var(--r); font-size: 12px; margin: 10px 0; }
@@ -763,18 +915,37 @@ HTML_TEMPLATE = r"""<!doctype html>
     .seg button.active { background: var(--surface); color: var(--accent-strong); box-shadow: var(--shadow-sm); }
 
     /* ── always-visible legend dock ────────────────────────────────────────── */
-    .legend-dock { position: fixed; right: 24px; bottom: 24px; width: 312px; z-index: 50;
-      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
-      box-shadow: var(--shadow-lg); font-size: 12px; overflow: hidden; }
+    .legend-dock { position: fixed; right: 24px; bottom: 24px; width: 280px; z-index: 50;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg);
+      box-shadow: var(--shadow-lg); font-size: 12px; overflow: hidden;
+      backdrop-filter: blur(8px); }
     .legend-dock-head { display: flex; justify-content: space-between; align-items: center;
-      padding: 9px 13px; font-weight: 700; font-size: 12px; cursor: pointer; user-select: none;
-      color: var(--text); background: var(--surface-2); }
-    .legend-dock-body { padding: 11px 13px; max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 9px; }
+      padding: 10px 14px; font-weight: 700; font-size: 11px; letter-spacing: .6px;
+      text-transform: uppercase; cursor: pointer; user-select: none;
+      color: var(--text-dim); background: transparent; border-bottom: 1px solid var(--border); }
+    .legend-dock-head:hover { color: var(--text); }
+    .legend-dock-body { padding: 12px 14px 14px; max-height: 56vh; overflow: auto;
+      display: flex; flex-direction: column; gap: 12px; }
     .legend-dock.collapsed .legend-dock-body { display: none; }
+    .legend-dock.collapsed .legend-dock-head { border-bottom: none; }
     .legend-dock.collapsed #legendCaret { transform: rotate(-90deg); }
-    #legendCaret { transition: transform .15s; color: var(--text-faint); }
-    .legend-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-dim); font-weight: 700; }
-    .legend-dock .legend { background: transparent; padding: 0; gap: 7px; }
+    #legendCaret { transition: transform .15s; color: var(--text-faint); font-size: 10px; }
+    .legend-section { display: flex; flex-direction: column; gap: 8px; }
+    .legend-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
+      color: var(--text-faint); font-weight: 700; margin-bottom: 1px; }
+
+    /* ── wizard ────────────────────────────────────────────────────────────── */
+    .wiz-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer; }
+    .wiz-row:hover { background: var(--accent-soft); }
+    .wiz-row input { width: auto; margin: 0; }
+    .wiz-asgn { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .wiz-asgn:last-child { border-bottom: none; }
+    .wiz-folder { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11px;
+      color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .wiz-chip { background: var(--accent-soft); color: var(--accent-strong); padding: 3px 9px;
+      border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--accent); box-shadow: none; }
+    .wiz-chip:hover { background: var(--accent); color: #fff; }
 
     /* ── plan target banner ────────────────────────────────────────────────── */
     .target-banner { background: linear-gradient(135deg, var(--accent-soft), var(--surface)); border: 1px solid var(--accent); }
@@ -811,7 +982,14 @@ HTML_TEMPLATE = r"""<!doctype html>
     }
     :root[data-theme="dark"] #net,
     :root[data-theme="dark"] .card.start { background-image: none; }
+    :root[data-theme="dark"] .card.start { background-color: var(--surface); }
     :root[data-theme="dark"] #net { background-image: radial-gradient(circle at 1px 1px, #232838 1px, transparent 0); }
+    @media (prefers-color-scheme: dark) {
+      :root[data-theme="auto"] #net,
+      :root[data-theme="auto"] .card.start { background-image: none; }
+      :root[data-theme="auto"] .card.start { background-color: var(--surface); }
+      :root[data-theme="auto"] #net { background-image: radial-gradient(circle at 1px 1px, #232838 1px, transparent 0); }
+    }
   </style>
 </head>
 <body>
@@ -822,47 +1000,84 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="title" id="projectLabel">__ROOT_LABEL__</div>
       <div class="path" id="projectPath"></div>
     </div>
+    <div class="modes">
+      <div class="mode active" data-mode="explore">🔍 Explore mode</div>
+      <div class="mode" data-mode="migration">🧭 Migration mode</div>
+    </div>
     <div class="tabs">
-      <div class="tab active" data-tab="explore">🔍 Explore</div>
-      <div class="tab" data-tab="plan">🎯 Plan</div>
-      <div class="tab" data-tab="settings">⚙ Settings</div>
+      <div class="tab" data-tab="wizard" data-mode="migration">🧭 Setup</div>
+      <div class="tab" data-tab="plan" data-mode="migration">🎯 Plan</div>
+      <div class="tab active" data-tab="explore" data-mode="both">🌳 Hierarchy</div>
     </div>
 
     <div class="tab-body">
       <!-- EXPLORE TAB -->
       <div class="panel active" id="panel-explore">
-        <div style="display:flex;gap:4px;margin-bottom:8px;">
-          <button id="navBack" class="ghost" title="Back (previous view)" style="padding:5px 11px;" disabled>←</button>
-          <button id="navFwd" class="ghost" title="Forward" style="padding:5px 11px;" disabled>→</button>
-        </div>
-        <div class="crumbs" id="crumbs"></div>
-        <div class="small">Click a circle to drill in. Use <b>✓ migrate</b> to mark a folder migrated, or <b>🎯 plan</b> to generate the path to extract it. Clicking never migrates.</div>
+        <div class="small migrationOnly">Click a circle to drill in. Use <b>✓ migrate</b> to mark a folder migrated, or <b>🎯 plan</b> to generate the path to extract it. Clicking never migrates.</div>
+        <div class="small exploreOnly">Click a circle to drill in. Clicking never mutates state.</div>
         <input id="filter" placeholder="filter children..." />
-        <h2>At this zoom <span class="pill" id="leafCount"></span></h2>
+        <h2>Hierarchy</h2>
+        <span id="leafCount" style="display:none;"></span>
         <ul id="kids"></ul>
-        <div id="newlyBanner" style="display:none;"></div>
-        <h2 style="margin-top: 16px;">Migrated <span class="pill gray" id="migCount2">0</span></h2>
-        <ul id="migList" style="font-size:12px;"></ul>
-        <h2 style="margin-top: 16px;">🚫 Won't modularize <span class="pill gray" id="exclCount">0</span></h2>
-        <ul id="exclList" style="font-size:12px;"></ul>
-        <div id="exclSync" style="display:none;margin:6px 0;"></div>
+        <div id="newlyBanner" class="migrationOnly" style="display:none;"></div>
+        <div class="migrationOnly">
+          <h2 style="margin-top: 16px;">Migrated <span class="pill gray" id="migCount2">0</span></h2>
+          <ul id="migList" style="font-size:12px;"></ul>
+          <h2 style="margin-top: 16px;">🚫 Won't modularize <span class="pill gray" id="exclCount">0</span></h2>
+          <ul id="exclList" style="font-size:12px;"></ul>
+          <div id="exclSync" style="display:none;margin:6px 0;"></div>
+        </div>
+      </div>
+
+      <!-- MIGRATION WIZARD TAB -->
+      <div class="panel" id="panel-wizard">
+        <h3 style="margin-top: 4px;">What are you migrating?</h3>
+        <div class="small" style="margin-bottom: 10px;">
+          Pick where code is moving <b>from</b>, where it should land,
+          and we'll spit out an ordered step-by-step plan respecting your real dependency graph.
+        </div>
+
+        <h2>1 · Source <span class="small" style="font-weight:500;">(extract folders out of)</span></h2>
+        <div id="wizSource"></div>
+
+        <h2 style="margin-top:14px;">2 · Targets <span class="small" style="font-weight:500;">(destinations)</span></h2>
+        <div class="small" style="margin-bottom:6px;">Tick one or more existing SPM packages, and/or add new ones.</div>
+        <div id="wizTargets"></div>
+        <div style="display:flex;gap:6px;margin:6px 0 10px;">
+          <input id="wizNewTarget" placeholder="New package name…" style="margin:0;flex:1;" />
+          <button id="wizAddTarget" class="ghost">+ Add</button>
+        </div>
+
+        <h2 style="margin-top:14px;">3 · Assignment <span class="small" style="font-weight:500;">(which folder → which target)</span></h2>
+        <div class="small" style="margin-bottom:6px;">
+          Defaults to the first target. Click a chip to cycle through chosen targets, or
+          tag a folder as <b>stay</b> to keep it in the source.
+        </div>
+        <div id="wizAssign" style="max-height: 280px; overflow:auto; padding: 4px;"></div>
+
+        <div style="display:flex;gap:6px;margin-top:14px;">
+          <button id="wizCompute">⚙ Compute plan →</button>
+          <button id="wizReset" class="ghost">Reset</button>
+        </div>
       </div>
 
       <!-- PLAN TAB -->
       <div class="panel" id="panel-plan">
         <div id="targetBanner" style="display:none;"></div>
-        <div id="recCard" class="card start"></div>
-        <div style="margin: 10px 0; display: flex; gap: 6px;">
-          <button id="applyAll">Apply full plan</button>
-          <button class="ghost" id="resetMig">Reset</button>
+        <div id="recSticky">
+          <div class="info rec-stats">
+            <div>Already in SPM (baseline): <b id="baselineCount">0</b> folder(s) <span id="baselinePrefixes" style="font-size: 11px; color: var(--text-faint);"></span></div>
+            <div>Migrated by you so far: <b id="userMigCount">0</b> of <b id="totalToMigrate">0</b> folders to extract.</div>
+            <span id="stuckInfo"></span>
+          </div>
+          <div id="recCard" class="card start"></div>
+          <div class="rec-global-actions">
+            <button id="applyAll" class="success">Apply full plan</button>
+            <button id="resetMig" class="danger">Reset</button>
+          </div>
+          <h3 id="planListHeading" class="rec-list-heading">Recommended order</h3>
+          <input id="planFilter" placeholder="filter steps..." />
         </div>
-        <div class="info">
-          <div>Already in SPM (baseline): <b id="baselineCount">0</b> folder(s) <span id="baselinePrefixes" style="font-size: 11px; color: var(--text-faint);"></span></div>
-          <div>Migrated by you so far: <b id="userMigCount">0</b> of <b id="totalToMigrate">0</b> folders to extract.</div>
-          <span id="stuckInfo"></span>
-        </div>
-        <h3 id="planListHeading">Recommended order</h3>
-        <input id="planFilter" placeholder="filter steps..." />
         <div id="planList"></div>
         <details id="stuckDetails" style="margin-top: 10px;">
           <summary>Stuck in cycles (<span id="stuckCount">0</span>)</summary>
@@ -870,36 +1085,48 @@ HTML_TEMPLATE = r"""<!doctype html>
         </details>
       </div>
 
-      <!-- SETTINGS TAB -->
-      <div class="panel" id="panel-settings">
-        <h3>Appearance</h3>
-        <div class="small" style="margin-bottom:8px;">Theme</div>
-        <div class="seg" id="themeSeg">
-          <button data-theme="light">☀ Light</button>
-          <button data-theme="dark">🌙 Dark</button>
-          <button data-theme="auto">🖥 Auto</button>
-        </div>
-
-        <h3>How to use</h3>
-        <ol style="font-size: 12px; line-height: 1.7; padding-left:18px; color:var(--text-dim);">
-          <li><b>Explore</b> the graph — click a circle to drill in.</li>
-          <li>Found something you want to extract? Hit <b>🎯 plan</b> on it — the Plan tab shows the exact ordered path of folders to migrate first.</li>
-          <li>Or open <b>Plan</b> for the global recommended order; click <b>Migrate</b> on a step to simulate extraction and watch what unlocks (orange).</li>
-          <li>The <b>Legend</b> (bottom-right of the graph) is always visible.</li>
-        </ol>
-
-        <h3>About</h3>
-        <div class="info">
-          Each folder with <code>.swift</code> files is a node. An edge <b>A → B</b> means a file in A references a type declared in B. References are resolved by USR from the compiler index store, so name collisions don't create phantom edges.
-        </div>
-        <div class="info" style="margin-top: 10px;">
-          Types declared in 2+ folders: <span id="amb"></span> (all declarers kept).
-        </div>
-      </div>
     </div>
   </div>
 
-  <div id="net"></div>
+  <div id="netWrap">
+    <div id="graphNav">
+      <div class="navBtns">
+        <button id="navBack" class="ghost" title="Back (previous view)" disabled>←</button>
+        <button id="navFwd" class="ghost" title="Forward" disabled>→</button>
+      </div>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="navBtns">
+        <button id="navSettings" class="ghost settingsBtn" title="Settings"><span>⚙</span> Settings</button>
+      </div>
+    </div>
+    <div class="panel settings-popover" id="panel-settings">
+      <h3 style="margin-top:0;">Appearance</h3>
+      <div class="small" style="margin-bottom:8px;">Theme</div>
+      <div class="seg" id="themeSeg">
+        <button data-theme="light">☀ Light</button>
+        <button data-theme="dark">🌙 Dark</button>
+        <button data-theme="auto">🖥 Auto</button>
+      </div>
+
+      <h3>How to use</h3>
+      <ol style="font-size: 12px; line-height: 1.7; padding-left:18px; color:var(--text-dim);">
+        <li><b>Explore</b> the graph — click a circle to drill in.</li>
+        <li>Found something you want to extract? Hit <b>🎯 plan</b> on it — the Plan tab shows the exact ordered path of folders to migrate first.</li>
+        <li>Or open <b>Plan</b> for the global recommended order; click <b>Migrate</b> on a step to simulate extraction and watch what unlocks (orange).</li>
+        <li>The <b>Legend</b> (bottom-right of the graph) is always visible.</li>
+      </ol>
+
+      <h3>About</h3>
+      <div class="info">
+        Each folder with <code>.swift</code> files is a node. An edge <b>A → B</b> means a file in A references a type declared in B. References are resolved by USR from the compiler index store, so name collisions don't create phantom edges.
+      </div>
+      <div class="info" style="margin-top: 10px;">
+        Types declared in 2+ folders: <span id="amb"></span> (all declarers kept).
+      </div>
+    </div>
+    <div id="net"></div>
+    <div id="nodePopover" class="node-popover" style="display:none;"></div>
+  </div>
 
   <!-- Always-visible legend dock (floats over the graph) -->
   <div id="legendDock" class="legend-dock">
@@ -908,23 +1135,48 @@ HTML_TEMPLATE = r"""<!doctype html>
       <span id="legendCaret">▾</span>
     </div>
     <div class="legend-dock-body" id="legendBody">
-      <div class="legend-group-title">Folders</div>
-      <div class="legend">
-        <div><span class="swatch" style="background:#22c55e"></span><b>Green</b> — migratable leaf (no first-party deps, no sub-folders)</div>
-        <div><span class="swatch" style="background:#f59e0b"></span><b>Orange</b> — newly unlocked by the last migration</div>
-        <div><span class="swatch" style="background:#60a5fa"></span><b>Blue</b> — still has dependencies (drill in)</div>
-        <div><span class="swatch" style="background:#cbd5e1"></span><b>Gray</b> — already migrated / external</div>
-        <div><span class="swatch" style="background:#e5e7eb;border:1.5px dashed #ef4444"></span><b>🚫 Dashed red</b> — won't be modularized (excluded)</div>
+      <div class="legend-section exploreOnly">
+        <div class="legend-group-title">Nodes</div>
+        <div class="legend">
+          <div><span class="swatch" style="background:#6366f1"></span><span class="legend-row-label">Folder</span></div>
+          <div><span class="swatch" style="background:#eab308"></span><span class="legend-row-label">Loose files anchor <span class="dim">(★ in this folder)</span></span></div>
+          <div><span class="swatch sq" style="background:#fde68a"></span><span class="legend-row-label">Swift file</span></div>
+        </div>
       </div>
-      <div class="legend-group-title">Type-view (terminal folder)</div>
-      <div class="legend">
-        <div><span class="swatch" style="background:#8b5cf6"></span><b>★</b> inspected folder &nbsp; <span class="swatch" style="background:#eef1f6;border:1px solid #cbd5e1;border-radius:3px"></span>📄 file</div>
-        <div><span class="swatch" style="background:#3b82f6;border-radius:3px"></span>class &nbsp;<span class="swatch" style="background:#22c55e;border-radius:3px"></span>struct &nbsp;<span class="swatch" style="background:#f59e0b;border-radius:3px"></span>enum</div>
-        <div><span class="swatch" style="background:#a855f7;border-radius:3px"></span>protocol &nbsp;<span class="swatch" style="background:#14b8a6;border-radius:3px"></span>typealias &nbsp;<span class="swatch" style="background:#e2e8f0"></span>other folder</div>
+      <div class="legend-section migrationOnly">
+        <div class="legend-group-title">Folders</div>
+        <div class="legend">
+          <div><span class="swatch" style="background:#22c55e"></span><span class="legend-row-label">Migratable leaf <span class="dim">(no deps)</span></span></div>
+          <div><span class="swatch" style="background:#f59e0b"></span><span class="legend-row-label">Newly unlocked</span></div>
+          <div><span class="swatch" style="background:#3b82f6"></span><span class="legend-row-label">Has dependencies</span></div>
+          <div><span class="swatch" style="background:#cbd5e1"></span><span class="legend-row-label">Already migrated</span></div>
+          <div><span class="swatch dashed"></span><span class="legend-row-label">Won't modularize</span></div>
+        </div>
       </div>
-      <div class="legend-group-title">Edges</div>
-      <div class="legend">
-        <div>Thickness = reference count · <b style="color:#ef4444">red</b> outbound · <b style="color:#3b82f6">blue</b> inbound</div>
+      <div class="legend-divider"></div>
+      <div class="legend-section">
+        <div class="legend-group-title">Type view</div>
+        <div class="legend">
+          <div><span class="swatch" style="background:#8b5cf6"></span><span class="legend-row-label">Inspected folder <span class="dim">(★)</span></span></div>
+          <div><span class="swatch sq" style="background:#eef1f6;border:1px solid #cbd5e1;box-shadow:none;"></span><span class="legend-row-label">File</span></div>
+          <div><span class="swatch" style="background:#e2e8f0"></span><span class="legend-row-label">External folder</span></div>
+          <div class="legend-kinds">
+            <span class="legend-chip"><span class="swatch sq" style="background:#3b82f6"></span>class</span>
+            <span class="legend-chip"><span class="swatch sq" style="background:#22c55e"></span>struct</span>
+            <span class="legend-chip"><span class="swatch sq" style="background:#f59e0b"></span>enum</span>
+            <span class="legend-chip"><span class="swatch sq" style="background:#a855f7"></span>protocol</span>
+            <span class="legend-chip"><span class="swatch sq" style="background:#14b8a6"></span>typealias</span>
+          </div>
+        </div>
+      </div>
+      <div class="legend-divider"></div>
+      <div class="legend-section">
+        <div class="legend-group-title">Edges</div>
+        <div class="legend">
+          <div><span class="legend-edge-line" style="background:#ef4444"></span><span class="legend-row-label">Outbound <span class="dim">— this → other</span></span></div>
+          <div><span class="legend-edge-line" style="background:#3b82f6"></span><span class="legend-row-label">Inbound <span class="dim">— other → this</span></span></div>
+          <div><span class="legend-edge-line" style="background:#9ca3af"></span><span class="legend-row-label">Thickness = reference count</span></div>
+        </div>
       </div>
     </div>
   </div>
@@ -973,6 +1225,10 @@ function folderGroups() {
     excluded: d ? { color: { background: '#3a2a2e', border: '#f87171' }, borderWidth: 2, shapeProperties: { borderDashes: [4, 3] } }
                 : { color: { background: '#fbe9e9', border: '#ef4444' }, borderWidth: 2, shapeProperties: { borderDashes: [4, 3] } },
     mid:      { color: { background: '#3b82f6', border: '#2563eb' } },
+    spm:      { color: { background: '#8b5cf6', border: '#7c3aed' }, borderWidth: 2 },
+    // Explore-mode: every folder uses the same neutral indigo regardless of
+    // leaf/migration state — kind colors (class/struct/enum/...) carry meaning.
+    folder:   { color: { background: '#6366f1', border: '#4f46e5' } },
     external: d ? { color: { background: '#475569', border: '#64748b' } }
                 : { color: { background: '#334155', border: '#1e293b' } },
   };
@@ -998,7 +1254,11 @@ function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   try { localStorage.setItem(THEME_KEY, t); } catch (e) {}
   document.querySelectorAll('#themeSeg button').forEach(b => b.classList.toggle('active', b.dataset.theme === t));
-  if (network) render();   // re-render so graph labels pick up the new text color
+  if (network) {
+    // Theme swap changes group colors + font color — bypass the update path.
+    lastRenderedFocusId = undefined; folderNodesDS = null; folderEdgesDS = null;
+    render();
+  }
 }
 (function initTheme() {
   let t = 'auto';
@@ -1033,11 +1293,52 @@ function clearTarget() { migrationTarget = null; renderPlan(); }
 // Tab switching
 document.querySelectorAll('.tab').forEach(t => {
   t.onclick = () => {
+    if (t.dataset.hidden === '1') return;
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
     t.classList.add('active');
     document.getElementById('panel-' + t.dataset.tab).classList.add('active');
   };
+});
+
+// ── top-level mode switching (Explore | Migration) ───────────────────────────
+// Each tab declares which mode(s) it belongs to via data-mode. Mode change
+// hides tabs from the other mode and falls back to the mode's first tab.
+let currentMode = 'explore';
+function applyMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode').forEach(m =>
+    m.classList.toggle('active', m.dataset.mode === mode));
+  let firstVisible = null;
+  document.querySelectorAll('.tab').forEach(t => {
+    const dm = t.dataset.mode || 'both';
+    const visible = dm === mode || dm === 'both';
+    t.dataset.hidden = visible ? '0' : '1';
+    if (visible && firstVisible === null && t.dataset.tab !== 'settings') firstVisible = t;
+  });
+  // If active tab now hidden, switch to mode's first non-settings tab.
+  const active = document.querySelector('.tab.active');
+  if (!active || active.dataset.hidden === '1') {
+    if (firstVisible) {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+      firstVisible.classList.add('active');
+      document.getElementById('panel-' + firstVisible.dataset.tab).classList.add('active');
+      if (firstVisible.dataset.tab === 'wizard') renderWizard();
+      if (firstVisible.dataset.tab === 'plan') renderPlan();
+    }
+  }
+  // Use a root-level mode flag + CSS so we don't clobber inline display values
+  // (e.g. newlyBanner is normally `display:none` and only shown after applyStep).
+  document.documentElement.setAttribute('data-app-mode', mode);
+  // Explore mode only has one tab (Graph) — hide the whole tab bar.
+  const tabsBar = document.querySelector('.tabs');
+  if (tabsBar) tabsBar.style.display = (mode === 'explore') ? 'none' : '';
+  // Re-render the graph so node grouping (spm vs migrated) refreshes.
+  if (typeof network !== 'undefined' && network) { try { render(); } catch (e) {} }
+}
+document.querySelectorAll('.mode').forEach(m => {
+  m.onclick = () => applyMode(m.dataset.mode);
 });
 
 // Index every leaf-edge endpoint to its ancestor chain for fast aggregation.
@@ -1100,6 +1401,13 @@ function pickInitialFocus() {
 // app target, local packages, …) instead of diving straight into a huge subtree.
 let focusId = '';
 let network = null;
+// Track the focusId of the currently mounted network so state toggles
+// (migrate/unmigrate/exclude) can do in-place node/edge updates instead of
+// tearing the whole vis-network down — which would re-stabilize the layout
+// and feel like a full re-render every time the user clicks a button.
+let lastRenderedFocusId = undefined;
+let folderNodesDS = null;
+let folderEdgesDS = null;
 
 // ── view history (back / forward) ─────────────────────────────────────────────
 // Every navigation goes through go(); pure repaints (filter, migrate) call
@@ -1107,7 +1415,7 @@ let network = null;
 let viewHistory = [focusId];
 let viewPos = 0;
 function go(id) {
-  if (id === focusId) { render(); return; }      // same view → just repaint
+  if (id === focusId) return;                    // already here — no-op, keep graph layout
   viewHistory = viewHistory.slice(0, viewPos + 1); // drop any forward entries
   viewHistory.push(id);
   viewPos = viewHistory.length - 1;
@@ -1164,7 +1472,12 @@ function isAllExcluded(id) {
   return anySource;
 }
 // Migrated OR excluded — both are out of the migration plan and hide their edges.
-function outOfScope(id) { return migrated.has(id) || excluded.has(id); }
+function outOfScope(id) {
+  // Explore mode keeps SPM folders in scope so SPM-to-SPM coupling is visible.
+  // Migration mode drops migrated/excluded so they don't pollute the plan view.
+  if (currentMode === 'explore') return excluded.has(id);
+  return migrated.has(id) || excluded.has(id);
+}
 
 function toggleExclude(displayNodeId) {
   const sub = [...descendantsOf(displayNodeId)].filter(d => (filesByFolder[d] || []).length > 0);
@@ -1375,7 +1688,7 @@ function renderPlan() {
       : nextStep.folders[0];
     rec.innerHTML =
       '<h3>' + (isStart ? '🚀 Start here' : '➡️ Next step') + ' — step ' + nextStep.step + ' of ' + plan.length + '</h3>' +
-      '<div style="font-size: 15px; font-weight: 600; margin: 4px 0;">' + escapeHtml(headline) + '</div>' +
+      '<div class="card-headline">' + escapeHtml(headline) + '</div>' +
       (isCycle
         ? (
             '<div class="info" style="background:#fdf2e9;padding:8px;border-radius:4px;border-left:3px solid #e67e22;margin: 6px 0;">' +
@@ -1406,14 +1719,15 @@ function renderPlan() {
             (nextStep.unlocks.length > 8 ? '<li>…and ' + (nextStep.unlocks.length - 8) + ' more</li>' : '') +
             '</ul>') +
       '</div>' +
-      '<div style="margin-top: 8px;">' +
-        '<button id="recMigrate">' + (isCycle ? 'Migrate bundle (' + nextStep.size + ')' : 'Migrate ' + escapeHtml(nextStep.folders[0])) + '</button> ' +
+      '<div class="card-actions">' +
+        '<button id="recMigrate">✓ ' + (isCycle ? 'Mark bundle complete (' + nextStep.size + ')' : 'Mark migrated') + '</button>' +
         '<button class="ghost" id="recReveal">Show in graph</button>' +
       '</div>';
     document.getElementById('recMigrate').onclick = () => applyStep(nextStep);
     document.getElementById('recReveal').onclick = () => {
+      // Focus the node in the graph; leave the current tab alone so the
+      // user keeps their Plan-mode context.
       focusToFolder(nextStep.folders[0]);
-      switchTab('explore');
     };
   }
 
@@ -1479,6 +1793,13 @@ function renderPlan() {
           + '</div></details>';
       }
     }
+    // Action bar: explicit "complete" button so tapping the row never mutates
+    // state — the row itself just previews the step in the graph.
+    const actionHtml = isDone
+      ? '<button class="ghost" data-act="uncomplete">↩ Unmark</button>'
+      : '<button data-act="complete">✓ Mark complete</button>'
+        + (s.step > 1 ? ' <button class="ghost" data-act="completeUpTo">⏩ Mark all up to here</button>' : '');
+    inner += '<div class="step-actions">' + actionHtml + '</div>';
     div.innerHTML = inner;
     // Member / breaker-endpoint clicks → inspect.
     div.querySelectorAll('[data-folder]').forEach(el => {
@@ -1486,14 +1807,30 @@ function renderPlan() {
         ev.stopPropagation();
         ev.preventDefault();
         focusToFolder(el.dataset.folder);
-        switchTab('explore');
       };
       el.style.cursor = 'pointer';
     });
-    // Background click applies up to this step (but skip if user clicked inside details/summary).
+    // Explicit action buttons handle state mutation; row click only previews.
+    div.querySelectorAll('.step-actions button').forEach(b => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        const act = b.dataset.act;
+        if (act === 'complete') applyStep(s);
+        else if (act === 'completeUpTo') applyUpTo(s);
+        else if (act === 'uncomplete') {
+          s.folders.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
+          renderPlan();
+          render();
+        }
+      };
+    });
+    // Row click → preview step in the graph. Keep the current tab so the user
+    // stays in Plan view; tab switching is opt-in via the Hierarchy tab itself.
     div.addEventListener('click', (ev) => {
       if (ev.target.closest('details') && !ev.target.closest('summary')) return;
-      applyUpTo(s);
+      if (ev.target.closest('.step-actions')) return;
+      if (ev.target.closest('[data-folder]')) return;
+      focusToFolder(s.folders[0]);
     });
     wrap.appendChild(div);
   });
@@ -1509,7 +1846,7 @@ function renderPlan() {
     const li = document.createElement('li');
     li.className = 'stuck';
     li.textContent = s;
-    li.onclick = () => { focusToFolder(s); switchTab('explore'); };
+    li.onclick = () => { focusToFolder(s); };
     sl.appendChild(li);
   });
 
@@ -1582,7 +1919,7 @@ function renderTargetPlan() {
       div.innerHTML = '<span class="ord">' + (done ? '✓' : ord) + '</span>' +
         '<span>' + (isTargetStep ? '🎯 ' : '') + escapeHtml(label) +
         (isTargetStep ? ' <span style="color:var(--text-faint);font-size:11px;">(your target)</span>' : '') + '</span>';
-      div.onclick = () => { focusToFolder(s.folders[0]); switchTab('explore'); };
+      div.onclick = () => { focusToFolder(s.folders[0]); };
       wrap.appendChild(div);
       if (!done) ord++;
     });
@@ -1628,6 +1965,8 @@ function escapeHtml(s) {
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(x => x.classList.toggle('active', x.id === 'panel-' + name));
+  const sb = document.getElementById('navSettings');
+  if (sb) sb.classList.toggle('active', name === 'settings');
 }
 
 function focusToFolder(folder) {
@@ -1669,7 +2008,11 @@ function render() {
   const focus = tree[focusId];
   const kids = focus.children;
   // Terminal folder (no child folders) -> show type-level view.
-  if (kids.length === 0 && focusId !== '') { renderTypeView(focus); return; }
+  if (kids.length === 0 && focusId !== '') {
+    lastRenderedFocusId = undefined; folderNodesDS = null; folderEdgesDS = null;
+    renderTypeView(focus);
+    return;
+  }
   // displaySet = children of focus (each represents its whole subtree).
   const displaySet = new Set(kids);
 
@@ -1711,22 +2054,35 @@ function render() {
   const sortedDeg = kids.map(degOf).sort((a, b) => b - a);
   const HUB_COUNT = 12;
   const labelCut = kids.length > HUB_COUNT + 4 ? (sortedDeg[HUB_COUNT - 1] || 0) : -1;
+  const exploreMode = currentMode === 'explore';
   const nodes = kids.map(id => {
     const n = tree[id];
     const isLeaf = !(outDeg.get(id) > 0);
     const hasKids = n.children.length > 0;
     const isMigrated = isAllMigrated(id);
     const isExcluded = isAllExcluded(id);
-    let group = 'mid';
-    if (isExcluded) group = 'excluded';
-    else if (isMigrated) group = 'migrated';
-    else if (newlySet.has(id)) group = 'newly';
-    else if (isLeaf && !hasKids) group = 'leaf';
+    let group;
+    if (exploreMode) {
+      // Explore: every folder gets the same color — node TYPE drives color,
+      // not migration/leaf state. Kind colors live on the file/type nodes.
+      group = 'folder';
+    } else {
+      group = 'mid';
+      if (isExcluded) group = 'excluded';
+      else if (isMigrated) group = 'migrated';
+      else if (newlySet.has(id)) group = 'newly';
+      else if (isLeaf && !hasKids) group = 'leaf';
+    }
     const oe = outExternal.get(id) || 0;
     const ie = inExternal.get(id) || 0;
-    const fullLabel = n.name + (hasKids ? '  ▸' : '') + (isExcluded ? ' 🚫' : (isMigrated ? ' ✓' : ''));
-    const actionable = (group === 'leaf' || group === 'newly');
+    const fullLabel = n.name + (hasKids ? '  ▸' : '')
+      + (exploreMode ? '' : (isExcluded ? ' 🚫' : (isMigrated ? ' ✓' : '')));
+    const actionable = !exploreMode && (group === 'leaf' || group === 'newly');
     const keepLabel = labelCut < 0 || actionable || degOf(id) >= labelCut;
+    const migrationTitle = (isExcluded ? '\n🚫 WON\'T BE MODULARIZED (excluded from the plan)'
+      : (isMigrated ? '\nMIGRATED (treated as external)'
+      : (isLeaf ? (hasKids ? '\nLEAF AT THIS ZOOM — no first-party outgoing deps left, but has sub-folders to migrate first.'
+                          : '\nLEAF — no first-party outgoing deps. Click to open it; migrate from the type-view button.') : '')));
     return {
       id,
       label: keepLabel ? fullLabel : '',
@@ -1734,9 +2090,9 @@ function render() {
       _keep: keepLabel,
       title: id + '\n'
         + 'types: ' + n.types + '\n'
-        + 'outgoing deps: ' + (outDeg.get(id) || 0) + '  (' + (oe > 0 ? oe + ' to outside view, ' : '') + ((outDeg.get(id) || 0) - (oe>0?1:0)) + ' to siblings)\n'
+        + 'outgoing deps: ' + (outDeg.get(id) || 0) + '  (' + (oe > 0 ? oe + ' to elsewhere in project, ' : '') + ((outDeg.get(id) || 0) - (oe>0?1:0)) + ' to siblings)\n'
         + 'incoming refs: ' + (inDeg.get(id) || 0)
-        + (isExcluded ? '\n🚫 WON\'T BE MODULARIZED (excluded from the plan)' : (isMigrated ? '\nMIGRATED (treated as external)' : (isLeaf ? (hasKids ? '\nLEAF AT THIS ZOOM — no first-party outgoing deps left, but has sub-folders to migrate first.' : '\nLEAF — no first-party outgoing deps. Click to open it; migrate from the type-view button.') : '')))
+        + (exploreMode ? '' : migrationTitle)
         + '\n(click to drill in)',
       group,
       value: Math.max(1, n.types),
@@ -1750,13 +2106,55 @@ function render() {
     edgeData.push({ from: a, to: b, value: w, title: a + ' → ' + b + ' (' + w + ' refs)' });
   }
 
+  // Mixed folder: this folder holds its own .swift files alongside subfolders.
+  // Surface those files as nodes too, otherwise the graph hides them entirely
+  // and the user thinks the folder is just a container. Click any of them to
+  // drop into the type-view for this folder.
+  const ownFilesHere = filesByFolder[focusId] || [];
+  if (ownFilesHere.length > 0) {
+    const selfAnchorId = 'self::' + focusId;
+    // Park the file cluster off to the left at fixed coordinates with physics
+    // disabled — otherwise N file nodes inject N more bodies into barnesHut
+    // and push the folder graph around the canvas every time the user drills
+    // into a mixed folder.
+    const clusterX = -520;
+    const clusterY0 = -((ownFilesHere.length - 1) * 28);
+    nodes.push({
+      id: selfAnchorId,
+      label: '📂 ' + (focus.name || focus.id) + ' (files)',
+      title: focus.id + '\n' + ownFilesHere.length + ' file(s) directly in this folder\n(click to open type-view)',
+      shape: 'star',
+      color: { background: '#eab308', border: '#ca8a04' },
+      font: { size: 13, color: '#1a1300' },
+      value: 4,
+      x: clusterX, y: clusterY0 - 70, fixed: true, physics: false,
+    });
+    ownFilesHere.forEach((f, i) => {
+      const fid = 'file::' + focusId + '::' + f.name;
+      const declCount = (f.decls || []).length;
+      nodes.push({
+        id: fid,
+        label: '📄 ' + f.name,
+        title: f.name + '\nfolder: ' + focus.id
+          + (declCount ? '\ndeclares: ' + f.decls.join(', ') : '\n(no declared types)')
+          + '\n(click to open type-view)',
+        shape: 'box',
+        color: { background: '#fde68a', border: '#ca8a04' },
+        font: { size: 12, color: '#1a1300' },
+        value: 2,
+        x: clusterX, y: clusterY0 + i * 56, fixed: true, physics: false,
+      });
+      edgeData.push({ from: selfAnchorId, to: fid, arrows: '', dashes: true, color: { color: '#bdc3c7', opacity: 0.5 }, physics: false });
+    });
+  }
+
   // Synthetic "outside view" node aggregating edges that leave the focused
   // subtree, so users see deep dependencies even when zoomed-in.
   const hasExternal = [...outExternal.values()].some(v => v > 0) || [...inExternal.values()].some(v => v > 0);
   if (hasExternal) {
     nodes.push({
       id: '__ext__',
-      label: '🌐 outside this view',
+      label: '🌐 elsewhere in project',
       title: 'Edges to/from folders not under "' + (focus.name || 'root') + '".\nClick to go up a level.',
       group: 'external',
       shape: 'diamond',
@@ -1783,12 +2181,30 @@ function render() {
       '</div>';
     return;
   }
+  // In-place update path: same focus, network already mounted — just refresh
+  // node groups/labels/titles and swap edges. Positions are preserved.
+  if (network && lastRenderedFocusId === focusId && folderNodesDS && folderEdgesDS) {
+    const existingIds = new Set(folderNodesDS.getIds());
+    const newIds = new Set(nodes.map(n => n.id));
+    folderNodesDS.update(nodes);
+    [...existingIds].filter(id => !newIds.has(id)).forEach(id => folderNodesDS.remove(id));
+    folderEdgesDS.clear();
+    folderEdgesDS.add(edgeData);
+    currentOutDeg = outDeg;
+    renderCrumbs();
+    renderKids(kids, outDeg);
+    return;
+  }
   if (network) network.destroy();
   const nodesDS = new vis.DataSet(nodes);
+  const edgesDS = new vis.DataSet(edgeData);
+  folderNodesDS = nodesDS;
+  folderEdgesDS = edgesDS;
+  lastRenderedFocusId = focusId;
   // Spread scales with node count so 40 siblings don't pack into a hairball.
   const spread = 1 + Math.min(1.5, Math.max(0, (kids.length - 12) / 24));
   network = new vis.Network(document.getElementById('net'),
-    { nodes: nodesDS, edges: new vis.DataSet(edgeData) }, {
+    { nodes: nodesDS, edges: edgesDS }, {
     nodes: { shape: 'dot', scaling: { min: 10, max: 52 }, borderWidth: 2,
       shadow: { enabled: true, color: 'rgba(20,28,55,0.12)', size: 10, x: 0, y: 3 },
       font: { color: themeText(), face: 'Inter, sans-serif', size: 14 } },
@@ -1817,17 +2233,111 @@ function render() {
     if (!hoverShown.length) return;
     nodesDS.update(hoverShown.map(id => ({ id, label: '' })));
     hoverShown = [];
+    schedulePopoverHide();
   });
+  // Custom popover: stats + action buttons (mark/unmark migrated/excluded).
+  // Appears on hover, sticks while pointer is over it so buttons are clickable.
+  const pop = document.getElementById('nodePopover');
+  let popHideTimer = null;
+  let popNodeId = null;
+  function schedulePopoverHide() {
+    clearTimeout(popHideTimer);
+    popHideTimer = setTimeout(() => { pop.style.display = 'none'; popNodeId = null; }, 220);
+  }
+  function cancelPopoverHide() { clearTimeout(popHideTimer); }
+  pop.onmouseenter = cancelPopoverHide;
+  pop.onmouseleave = schedulePopoverHide;
+  function positionPopover(nodeId) {
+    const canvasPos = network.getPositions([nodeId])[nodeId];
+    if (!canvasPos) return;
+    const dom = network.canvasToDOM(canvasPos);
+    const wrap = document.getElementById('netWrap').getBoundingClientRect();
+    const net = document.getElementById('net').getBoundingClientRect();
+    pop.style.left = (net.left - wrap.left + dom.x) + 'px';
+    pop.style.top = (net.top - wrap.top + dom.y) + 'px';
+  }
+  function renderPopover(nodeId) {
+    if (!tree[nodeId]) { pop.style.display = 'none'; return; }
+    const n = tree[nodeId];
+    const isLeaf = !(outDeg.get(nodeId) > 0);
+    const hasKids = n.children.length > 0;
+    const isMigrated = isAllMigrated(nodeId);
+    const isExcluded = isAllExcluded(nodeId);
+    const baseline = isMigrated && isInitialMigrated(nodeId);
+    const exploreMode = currentMode === 'explore';
+    let swatch = '#3b82f6';
+    if (exploreMode) swatch = '#6366f1';
+    else if (isExcluded) swatch = '#ef4444';
+    else if (isMigrated) swatch = '#cbd5e1';
+    else if (newlySet.has(nodeId)) swatch = '#f59e0b';
+    else if (isLeaf && !hasKids) swatch = '#22c55e';
+    const stateBadge = (!exploreMode && isExcluded) ? '<div class="np-state excluded">🚫 Won\'t modularize</div>'
+      : (!exploreMode && baseline) ? '<div class="np-state migrated">⚪️ SPM baseline</div>'
+      : (!exploreMode && isMigrated) ? '<div class="np-state migrated">✓ Migrated</div>'
+      : '';
+    let actions = '';
+    if (!exploreMode && !baseline) {
+      const migLabel = isMigrated ? '↩ Unmark migrated' : '✓ Mark migrated';
+      const exclLabel = isExcluded ? '↩ Will modularize' : '🚫 Won\'t modularize';
+      const migCls = isExcluded ? 'ghost' : (isMigrated ? 'ghost' : '');
+      const exclCls = isExcluded ? 'ghost' : 'danger';
+      const canPlan = !isExcluded && !isMigrated;
+      actions = '<div class="np-actions">'
+        + (canPlan ? '<button class="ghost" data-act="plan">🎯 Plan to move</button>' : '')
+        + (isExcluded ? '' : '<button class="' + migCls + '" data-act="mig">' + migLabel + '</button>')
+        + '<button class="' + exclCls + '" data-act="excl">' + exclLabel + '</button>'
+        + '</div>';
+    }
+    pop.innerHTML =
+      '<div class="np-header"><span class="np-swatch" style="background:' + swatch + ';"></span>'
+        + '<span class="np-name">' + escapeHtml(n.name || nodeId) + '</span></div>'
+      + stateBadge
+      + '<div class="np-stats">'
+      +   '<div><b>' + n.types + '</b> declared type(s)</div>'
+      +   '<div><b>' + (outDeg.get(nodeId) || 0) + '</b> outgoing dep(s)</div>'
+      +   '<div><b>' + (inDeg.get(nodeId) || 0) + '</b> incoming ref(s)</div>'
+      + '</div>'
+      + actions
+      + '<div class="np-hint">Click node to drill in</div>';
+    pop.querySelectorAll('.np-actions button').forEach(b => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        const act = b.dataset.act;
+        if (act === 'mig') (isMigrated ? unmigrate(nodeId) : migrate(nodeId));
+        else if (act === 'excl') toggleExclude(nodeId);
+        else if (act === 'plan') setTarget(nodeId);
+        pop.style.display = 'none'; popNodeId = null;
+      };
+    });
+  }
+  network.on('hoverNode', p => {
+    const id = p.node;
+    if (id === '__ext__' || id.startsWith('self::') || id.startsWith('file::')) {
+      pop.style.display = 'none'; popNodeId = null; return;
+    }
+    cancelPopoverHide();
+    popNodeId = id;
+    renderPopover(id);
+    positionPopover(id);
+    pop.style.display = 'block';
+  });
+  // Reposition popover while network animates (drag, zoom, stabilization).
+  network.on('afterDrawing', () => { if (popNodeId && pop.style.display === 'block') positionPopover(popNodeId); });
   network.on('doubleClick', params => {
     if (!params.nodes.length) return;
     const id = params.nodes[0];
     if (id === '__ext__') { goUp(); return; }
+    if (id.startsWith('self::') || id.startsWith('file::')) { renderTypeView(tree[focusId]); return; }
     if (tree[id] && tree[id].children.length > 0) { go(id); }
   });
   network.on('click', params => {
+    pop.style.display = 'none'; popNodeId = null;
     if (!params.nodes.length) return;
     const id = params.nodes[0];
     if (id === '__ext__') { goUp(); return; }
+    // self/file nodes belong to the focused folder's own files — open the
+    // type-view instead of treating them as navigation targets.
+    if (id.startsWith('self::') || id.startsWith('file::')) { renderTypeView(tree[focusId]); return; }
     // Clicking NEVER migrates — it only navigates. Drilling into a terminal
     // leaf opens its type-view, which carries an explicit "Mark migrated"
     // button. Lets you explore the graph without mutating migration state.
@@ -1839,6 +2349,9 @@ function render() {
 }
 
 function renderTypeView(focus) {
+  // Type-view owns its own network — invalidate the folder-graph cache so a
+  // later state toggle re-creates instead of trying to update the wrong DS.
+  lastRenderedFocusId = undefined; folderNodesDS = null; folderEdgesDS = null;
   // Build nodes:
   //  - a central 'self' node (📂 folder name) — always present.
   //  - yellow box per declared type in this folder.
@@ -2006,55 +2519,12 @@ function renderTypeView(focus) {
   const filter = document.getElementById('filter').value.toLowerCase();
   ul.innerHTML = '';
   document.getElementById('leafCount').textContent =
-    outboundByExt.size === 0 ? 'LEAF (0 external deps)' : (outboundByExt.size + ' blocker folder(s)');
+    outboundByExt.size === 0
+      ? 'LEAF (0 external deps)'
+      : (outboundByExt.size + (currentMode === 'explore' ? ' dependency folder(s)' : ' blocker folder(s)'));
 
-  // Migrate / undo action for THIS folder (explicit — clicking circles never
-  // migrates anymore). Sits at the very top so it's always reachable.
-  const focusMig = isAllMigrated(focus.id);
-  const focusBaseline = focusMig && isInitialMigrated(focus.id);
-  const actionLi = document.createElement('li');
-  actionLi.style.listStyle = 'none';
-  actionLi.style.margin = '2px 0 8px 0';
-  if (focusBaseline) {
-    actionLi.innerHTML = '<span style="color:#7f8c8d;">⚪️ migrated (SPM baseline)</span>';
-  } else if (focusMig) {
-    const b = document.createElement('button');
-    b.className = 'ghost';
-    b.textContent = '↩ undo migration of this folder';
-    b.onclick = () => unmigrate(focus.id);
-    actionLi.appendChild(b);
-  } else {
-    const plan = document.createElement('button');
-    plan.textContent = '🎯 plan to move this folder';
-    plan.title = 'Generate the ordered path of folders to migrate first';
-    plan.onclick = () => setTarget(focus.id);
-    actionLi.appendChild(plan);
-    const b = document.createElement('button');
-    b.className = 'ghost';
-    b.style.marginLeft = '6px';
-    b.textContent = (outboundByExt.size === 0)
-      ? '✓ mark migrated'
-      : '✓ migrate anyway (' + outboundByExt.size + ' blocker(s))';
-    b.title = (outboundByExt.size === 0)
-      ? 'No first-party deps left — safe to extract.'
-      : 'This folder still depends on other folders; usually resolve those first.';
-    b.onclick = () => migrate(focus.id);
-    actionLi.appendChild(b);
-  }
-  // "Won't be modularized" toggle — independent of migration state, persisted.
-  if (!focusBaseline) {
-    const exNow = isAllExcluded(focus.id);
-    const ex = document.createElement('button');
-    ex.className = exNow ? 'ghost' : 'danger';
-    ex.style.marginLeft = (actionLi.childNodes.length ? '6px' : '0');
-    ex.textContent = exNow ? '↩ will modularize' : '🚫 won\'t modularize';
-    ex.title = exNow
-      ? 'Put this folder back into the migration plan.'
-      : 'Mark this folder as never-to-be-modularized. Drops it from the plan/list and persists across regenerations.';
-    ex.onclick = () => toggleExclude(focus.id);
-    actionLi.appendChild(ex);
-  }
-  ul.appendChild(actionLi);
+  // Hierarchy tab is read-only across both modes — migration/plan/exclude
+  // actions live in Plan mode and on the node popover instead.
 
   // Files & the types they declare (grouped by file) — shown FIRST: it's what
   // this folder IS, before what it depends on.
@@ -2096,7 +2566,9 @@ function renderTypeView(focus) {
     h.style.listStyle = 'none';
     h.style.fontWeight = 'bold';
     h.style.marginTop = '8px';
-    h.textContent = 'To migrate, first resolve deps to:';
+    h.textContent = currentMode === 'explore'
+      ? 'Depends on:'
+      : 'To migrate, first resolve deps to:';
     h.style.cursor = 'default';
     ul.appendChild(h);
     [...outboundByExt.entries()]
@@ -2156,6 +2628,51 @@ function renderKids(kids, outDeg) {
   const ul = document.getElementById('kids');
   const filter = document.getElementById('filter').value.toLowerCase();
   ul.innerHTML = '';
+  // When this folder ALSO holds its own .swift files (alongside subfolders),
+  // list them inline so the user can spot loose files they'd otherwise miss
+  // behind a single drill-in entry. Header row still drills into the full
+  // type-view (which has consumer/blocker breakdowns); rows beneath are just
+  // a visible index.
+  const ownFiles = filesByFolder[focusId] || [];
+  if (ownFiles.length > 0 && focusId && tree[focusId]) {
+    const KIND_ICON = { class: '🔵', struct: '🟢', enum: '🟠', protocol: '🟣', typealias: '🩵', type: '🟡' };
+    const declCount = ownFiles.reduce((n, f) => n + (f.decls ? f.decls.length : 0), 0);
+    const header = document.createElement('li');
+    header.style.listStyle = 'none';
+    header.style.fontWeight = '600';
+    header.style.background = 'var(--accent-soft)';
+    header.style.color = 'var(--accent-strong)';
+    header.style.cursor = 'pointer';
+    header.innerHTML = '📄 Files in this folder <span class="small">(' +
+      ownFiles.length + ' file' + (ownFiles.length === 1 ? '' : 's') +
+      ', ' + declCount + ' type' + (declCount === 1 ? '' : 's') + ') →</span>';
+    header.onclick = () => renderTypeView(tree[focusId]);
+    ul.appendChild(header);
+    ownFiles
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach(f => {
+        const decls = (f.decls || []).slice()
+          .filter(t => !filter || t.toLowerCase().includes(filter) || f.name.toLowerCase().includes(filter));
+        if (filter && decls.length === 0 && !f.name.toLowerCase().includes(filter)) return;
+        const fileLi = document.createElement('li');
+        fileLi.style.listStyle = 'none';
+        fileLi.style.marginTop = '2px';
+        fileLi.style.cursor = 'pointer';
+        fileLi.innerHTML = '📄 <b>' + f.name + '</b>';
+        fileLi.onclick = () => renderTypeView(tree[focusId]);
+        ul.appendChild(fileLi);
+        decls.sort().forEach(t => {
+          const k = kindOf(t);
+          const tli = document.createElement('li');
+          tli.style.paddingLeft = '14px';
+          tli.style.cursor = 'pointer';
+          tli.textContent = (KIND_ICON[k] || '🟡') + ' ' + k + ' ' + t;
+          tli.onclick = () => renderTypeView(tree[focusId]);
+          ul.appendChild(tli);
+        });
+      });
+  }
   const newlySet = new Set(lastNewlyRevealed);
   const leaves = kids.filter(id => !(outDeg.get(id) > 0) && !isAllMigrated(id) && !isAllExcluded(id) && tree[id].children.length === 0);
   document.getElementById('leafCount').textContent = leaves.length + ' leaf';
@@ -2176,61 +2693,37 @@ function renderKids(kids, outDeg) {
       const isExcl = isAllExcluded(id);
       const hasKids = tree[id].children.length > 0;
       const userMig = isMig && !isInitialMigrated(id);
-      let icon = '🔵 ';
-      if (isExcl) icon = '🚫 ';
-      else if (isMig) icon = '⚪️ ';
-      else if (newlySet.has(id)) icon = '🟠 ';
-      else if (isLeaf && !hasKids) icon = '🟢 ';
-
+      const exploreMode = currentMode === 'explore';
+      // Sidebar swatch must match the exact hex used in the vis-network graph
+      // so a folder's color in the list = its color in the canvas.
+      let swatchColor = '#3b82f6';   // graph 'mid' / Explore 'folder' both indigo-blue
+      let iconPrefix = '';
+      if (exploreMode) {
+        swatchColor = '#6366f1';     // matches folderGroups.folder background
+      } else {
+        if (isExcl) { swatchColor = '#ef4444'; iconPrefix = '🚫 '; }
+        else if (isMig) swatchColor = '#cbd5e1';
+        else if (newlySet.has(id)) swatchColor = '#f59e0b';
+        else if (isLeaf && !hasKids) swatchColor = '#22c55e';
+      }
       const label = document.createElement('span');
-      label.textContent = icon + tree[id].name + (hasKids ? '  ▸' : '')
-        + (isExcl ? '  (won\'t modularize)' : (isMig ? '  (migrated)' : ''));
+      const suffix = hasKids ? '  ▸' : '';
+      const stateSuffix = exploreMode ? '' : (isExcl ? '  (won\'t modularize)' : (isMig ? '  (migrated)' : ''));
+      label.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'
+        + swatchColor + ';margin-right:8px;vertical-align:middle;flex-shrink:0;"></span>'
+        + iconPrefix + escapeHtml(tree[id].name) + escapeHtml(suffix + stateSuffix);
       label.style.cursor = 'pointer';
       // Click only navigates — never mutates migration/exclude state.
       label.onclick = () => { go(id); };
-      if (isExcl) label.style.color = '#b91c1c';
-      else if (isMig) label.style.color = '#7f8c8d';
-      else if (newlySet.has(id)) label.style.color = '#a26209';
+      if (!exploreMode) {
+        if (isExcl) label.style.color = '#b91c1c';
+        else if (isMig) label.style.color = '#7f8c8d';
+        else if (newlySet.has(id)) label.style.color = '#a26209';
+      }
       li.appendChild(label);
 
-      // Exclude toggle — available on every non-baseline row, persisted.
-      if (!(isMig && isInitialMigrated(id))) {
-        const ex = document.createElement('button');
-        ex.className = 'ghost';
-        ex.textContent = isExcl ? '↩' : '🚫';
-        ex.style.cssText = 'margin-left:6px;font-size:10px;padding:1px 6px;';
-        ex.title = isExcl ? 'Put back into the plan' : 'Won\'t be modularized';
-        ex.onclick = (ev) => { ev.stopPropagation(); toggleExclude(id); };
-        li.appendChild(ex);
-      }
-
-      // Explicit migrate / undo button (the only way to change state).
-      if (isExcl) {
-        // Excluded folders show no migrate buttons — toggle exclude to restore.
-      } else if (userMig) {
-        const btn = document.createElement('button');
-        btn.className = 'ghost';
-        btn.textContent = '↩ undo';
-        btn.style.cssText = 'margin-left:6px;font-size:10px;padding:1px 6px;';
-        btn.onclick = (ev) => { ev.stopPropagation(); unmigrate(id); };
-        li.appendChild(btn);
-      } else if (!isMig) {
-        const plan = document.createElement('button');
-        plan.className = 'ghost';
-        plan.textContent = '🎯 plan';
-        plan.style.cssText = 'margin-left:6px;font-size:10px;padding:1px 6px;';
-        plan.title = 'Generate the ordered path to extract this folder';
-        plan.onclick = (ev) => { ev.stopPropagation(); setTarget(id); };
-        li.appendChild(plan);
-        const btn = document.createElement('button');
-        btn.textContent = '✓ migrate';
-        btn.style.cssText = 'margin-left:4px;font-size:10px;padding:1px 6px;';
-        btn.title = (isLeaf && !hasKids)
-          ? 'Mark this folder migrated'
-          : 'Mark this whole subtree migrated (it still has dependencies — usually drill in instead)';
-        btn.onclick = (ev) => { ev.stopPropagation(); migrate(id); };
-        li.appendChild(btn);
-      }
+      // Hierarchy tab is read-only — state mutations happen in Plan mode and
+      // via the floating node popover on the graph.
       ul.appendChild(li);
     });
 }
@@ -2238,6 +2731,18 @@ function renderKids(kids, outDeg) {
 document.getElementById('filter').oninput = () => render();
 document.getElementById('navBack').onclick = () => goHistory(-1);
 document.getElementById('navFwd').onclick = () => goHistory(1);
+document.getElementById('navSettings').onclick = () => {
+  const settingsOpen = document.getElementById('panel-settings').classList.contains('active');
+  if (settingsOpen) {
+    // Toggle back to the first visible non-settings tab for the current mode.
+    const fallback = document.querySelector('.tab:not([data-hidden="1"])');
+    if (fallback) switchTab(fallback.dataset.tab);
+  } else {
+    switchTab('settings');
+  }
+  document.getElementById('navSettings').classList.toggle('active',
+    document.getElementById('panel-settings').classList.contains('active'));
+};
 // Theme segmented control (reflect stored choice, then handle clicks).
 document.querySelectorAll('#themeSeg button').forEach(b => {
   b.classList.toggle('active', b.dataset.theme === document.documentElement.getAttribute('data-theme'));
@@ -2255,7 +2760,249 @@ window.addEventListener('mouseup', e => {
   if (e.button === 3) { e.preventDefault(); goHistory(-1); }
   else if (e.button === 4) { e.preventDefault(); goHistory(1); }
 });
+// ── Migration wizard ─────────────────────────────────────────────────────────
+const PACKAGES = DATA.packages || [];
+const FOLDER_PKG = DATA.folder_package || {};
+const wiz = { sourceId: null, targetIds: [], assign: {}, newPkgs: [] };
+let wizPlan = null;
+
+function wizSourceFolders() {
+  if (!wiz.sourceId) return [];
+  return Object.keys(FOLDER_PKG).filter(f => FOLDER_PKG[f] === wiz.sourceId);
+}
+function labelForTarget(id) {
+  if (id === 'stay') return 'stay';
+  if (id.startsWith('new:')) return id.slice(4) + ' (new SPM)';
+  const p = PACKAGES.find(pp => pp.id === id);
+  return p ? p.label : id;
+}
+
+function renderWizard() {
+  // 1. Source
+  const srcEl = document.getElementById('wizSource');
+  if (!srcEl) return;
+  srcEl.innerHTML = '';
+  if (!PACKAGES.length) {
+    srcEl.innerHTML = '<div class="small">No packages detected.</div>';
+  }
+  PACKAGES.forEach(p => {
+    const row = document.createElement('label');
+    row.className = 'wiz-row';
+    const sub = p.kind === 'app' ? 'xcodeproj remainder' : 'SPM package';
+    row.innerHTML = '<input type="radio" name="wizSrc">' +
+      '<span><b>' + escapeHtml(p.label) + '</b> ' +
+      '<span class="small">· ' + sub + ' · ' + p.folders.length + ' folder' +
+      (p.folders.length === 1 ? '' : 's') + '</span></span>';
+    const radio = row.querySelector('input');
+    radio.checked = wiz.sourceId === p.id;
+    radio.onchange = () => {
+      wiz.sourceId = p.id;
+      wiz.assign = {};
+      // Drop the source from chosen targets if previously selected.
+      wiz.targetIds = wiz.targetIds.filter(t => t !== p.id);
+      renderWizard();
+    };
+    srcEl.appendChild(row);
+  });
+
+  // 2. Targets — existing SPMs (excluding the chosen source) + user-added new.
+  const tgtEl = document.getElementById('wizTargets');
+  tgtEl.innerHTML = '';
+  const candidates = [
+    ...PACKAGES.filter(p => p.kind === 'spm' && p.id !== wiz.sourceId),
+    ...wiz.newPkgs.map(n => ({ id: 'new:' + n, label: n + ' (new SPM)', kind: 'new', folders: [] })),
+  ];
+  if (!candidates.length) {
+    tgtEl.innerHTML = '<div class="small">No candidate targets yet — add one below.</div>';
+  }
+  candidates.forEach(p => {
+    const row = document.createElement('label');
+    row.className = 'wiz-row';
+    const checked = wiz.targetIds.includes(p.id);
+    row.innerHTML = '<input type="checkbox"> <span>' + escapeHtml(p.label) + '</span>';
+    const cb = row.querySelector('input');
+    cb.checked = checked;
+    cb.onchange = () => {
+      if (cb.checked) { if (!wiz.targetIds.includes(p.id)) wiz.targetIds.push(p.id); }
+      else { wiz.targetIds = wiz.targetIds.filter(x => x !== p.id);
+        // Reassign folders pointed at this target back to first remaining or stay.
+        Object.keys(wiz.assign).forEach(f => {
+          if (wiz.assign[f] === p.id) wiz.assign[f] = wiz.targetIds[0] || 'stay';
+        });
+      }
+      renderWizard();
+    };
+    tgtEl.appendChild(row);
+  });
+
+  // 3. Assignment
+  const asEl = document.getElementById('wizAssign');
+  asEl.innerHTML = '';
+  if (!wiz.sourceId) { asEl.innerHTML = '<div class="small">Pick a source first.</div>'; return; }
+  if (!wiz.targetIds.length) { asEl.innerHTML = '<div class="small">Pick at least one target.</div>'; return; }
+  const choices = [...wiz.targetIds, 'stay'];
+  const srcFolders = wizSourceFolders().sort();
+  srcFolders.forEach(f => {
+    if (wiz.assign[f] === undefined || !choices.includes(wiz.assign[f])) wiz.assign[f] = wiz.targetIds[0];
+    const row = document.createElement('div');
+    row.className = 'wiz-asgn';
+    row.innerHTML = '<span class="wiz-folder" title="' + escapeHtml(f) + '">' + escapeHtml(f) + '</span>' +
+      '<button class="wiz-chip">' + escapeHtml(labelForTarget(wiz.assign[f])) + '</button>';
+    row.querySelector('button').onclick = () => {
+      const i = choices.indexOf(wiz.assign[f]);
+      wiz.assign[f] = choices[(i + 1) % choices.length];
+      renderWizard();
+    };
+    asEl.appendChild(row);
+  });
+}
+
+// Tarjan SCC over a chosen folder subset, iterative to dodge deep stacks.
+function wizComputeSccs(set) {
+  const S = new Set(set);
+  const deps = {};
+  edges.forEach(e => {
+    if (S.has(e.src) && S.has(e.dst) && e.src !== e.dst) {
+      (deps[e.src] = deps[e.src] || []).push(e.dst);
+    }
+  });
+  const idx = {}, low = {}, onS = {}, st = [], sccs = [];
+  let counter = 0;
+  for (const start of S) {
+    if (idx[start] !== undefined) continue;
+    const work = [[start, 0]];
+    idx[start] = counter; low[start] = counter; counter++;
+    st.push(start); onS[start] = true;
+    while (work.length) {
+      const top = work[work.length - 1];
+      const v = top[0];
+      const out = deps[v] || [];
+      if (top[1] < out.length) {
+        const w = out[top[1]++];
+        if (idx[w] === undefined) {
+          idx[w] = counter; low[w] = counter; counter++;
+          st.push(w); onS[w] = true;
+          work.push([w, 0]);
+        } else if (onS[w]) {
+          low[v] = Math.min(low[v], idx[w]);
+        }
+      } else {
+        if (low[v] === idx[v]) {
+          const comp = [];
+          while (true) {
+            const w = st.pop(); onS[w] = false; comp.push(w);
+            if (w === v) break;
+          }
+          sccs.push(comp);
+        }
+        work.pop();
+        if (work.length) { const p = work[work.length - 1][0]; low[p] = Math.min(low[p], low[v]); }
+      }
+    }
+  }
+  return { deps, sccs };
+}
+
+function computeWizardPlan(folderSet) {
+  const { deps, sccs } = wizComputeSccs(folderSet);
+  const sccOf = {};
+  sccs.forEach((c, i) => c.forEach(v => sccOf[v] = i));
+  const sdeps = sccs.map(() => new Set());
+  Object.keys(deps).forEach(a => {
+    for (const b of deps[a]) if (sccOf[a] !== sccOf[b]) sdeps[sccOf[a]].add(sccOf[b]);
+  });
+  const remaining = sdeps.map(s => s.size);
+  const reverse = sccs.map(() => new Set());
+  sdeps.forEach((s, i) => { for (const j of s) reverse[j].add(i); });
+  const eligible = [];
+  for (let i = 0; i < sccs.length; i++) if (remaining[i] === 0) eligible.push(i);
+  const out = [];
+  while (eligible.length) {
+    eligible.sort((a, b) => sccs[a].length - sccs[b].length || (sccs[a][0] || '').localeCompare(sccs[b][0] || ''));
+    const pick = eligible.shift();
+    const fs = sccs[pick].slice().sort();
+    out.push({
+      step: out.length + 1,
+      folders: fs,
+      is_cycle: fs.length > 1,
+      size: fs.length,
+      targets: fs.map(f => wiz.assign[f]),
+    });
+    for (const r of reverse[pick]) {
+      remaining[r]--;
+      if (remaining[r] === 0) eligible.push(r);
+    }
+  }
+  return out;
+}
+
+function renderWizardPlan() {
+  document.getElementById('targetBanner').style.display = 'none';
+  document.getElementById('planFilter').style.display = 'none';
+  document.getElementById('stuckDetails').style.display = 'none';
+  const rec = document.getElementById('recCard');
+  const srcLabel = (PACKAGES.find(p => p.id === wiz.sourceId) || {}).label || '?';
+  const tgtLabels = wiz.targetIds.map(labelForTarget).join(', ') || '(none)';
+  if (!wizPlan || !wizPlan.length) {
+    rec.innerHTML = '<h3>No steps</h3><div class="info">Nothing to migrate — every source folder is set to <b>stay</b>.</div>';
+    document.getElementById('planList').innerHTML = '';
+    return;
+  }
+  rec.innerHTML = '<h3>🧭 Wizard plan</h3>' +
+    '<div class="info"><b>From:</b> ' + escapeHtml(srcLabel) + '<br><b>To:</b> ' + escapeHtml(tgtLabels) + '<br>' +
+    '<b>' + wizPlan.length + '</b> step(s), ordered so each step\'s deps are already migrated.</div>';
+  const wrap = document.getElementById('planList');
+  wrap.innerHTML = '';
+  wizPlan.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'step';
+    const lines = s.folders.map((f, i) =>
+      '<div style="margin: 2px 0;"><code>' + escapeHtml(f) + '</code>' +
+      ' <span class="small">→ ' + escapeHtml(labelForTarget(s.targets[i])) + '</span></div>'
+    ).join('');
+    div.innerHTML = '<div><span class="stepNum">' + s.step + '.</span>' +
+      (s.is_cycle ? '<b>⚠ Bundle of ' + s.size + ' (cyclically coupled)</b>' : '<b>Move folder</b>') +
+      '</div>' + lines;
+    wrap.appendChild(div);
+  });
+}
+
+document.getElementById('wizAddTarget').onclick = () => {
+  const el = document.getElementById('wizNewTarget');
+  const name = el.value.trim();
+  if (!name) return;
+  if (!wiz.newPkgs.includes(name)) {
+    wiz.newPkgs.push(name);
+    if (!wiz.targetIds.includes('new:' + name)) wiz.targetIds.push('new:' + name);
+  }
+  el.value = '';
+  renderWizard();
+};
+document.getElementById('wizReset').onclick = () => {
+  wiz.sourceId = null; wiz.targetIds = []; wiz.assign = {}; wiz.newPkgs = [];
+  wizPlan = null;
+  renderWizard();
+};
+document.getElementById('wizCompute').onclick = () => {
+  if (!wiz.sourceId) { alert('Pick a source.'); return; }
+  if (!wiz.targetIds.length) { alert('Pick at least one target.'); return; }
+  const moving = Object.keys(wiz.assign).filter(f => wiz.assign[f] !== 'stay');
+  if (!moving.length) { alert('Every folder is set to stay — nothing to move.'); return; }
+  wizPlan = computeWizardPlan(moving);
+  switchTab('plan');
+  renderWizardPlan();
+};
+
+// Patch renderPlan to honor wizard plan when active + in migration mode.
+const _origRenderPlan = renderPlan;
+renderPlan = function() {
+  if (currentMode === 'migration' && wizPlan) { renderWizardPlan(); return; }
+  _origRenderPlan();
+};
+
 renderPlan();
+renderWizard();
+applyMode('explore');
 updateMigratedSidebar();
 updateExcludeSidebar();
 // Defer the first graph render until layout is settled. Rendering synchronously
@@ -2683,12 +3430,13 @@ def main() -> int:
         h_label = head["folders"][0] if head["size"] == 1 else f"cycle of {head['size']} folders"
         print(f"  → Start with: {h_label} (unlocks {len(head['unlocks'])} bundle(s))")
 
-    # Edges between migrated endpoints are never displayed (the JS folder graph
-    # filters them out at every render). Drop them to shrink the HTML payload.
-    edges_for_html = {
-        (a, b): w for (a, b), w in leaf_edges.items()
-        if a not in initial_migrated and b not in initial_migrated
-    }
+    # Ship every edge to the HTML — Explore mode now renders SPM-to-SPM
+    # coupling as first-class. Migration mode filters per the chosen
+    # source/target at render time.
+    edges_for_html = dict(leaf_edges)
+    folder_package, packages = _build_package_map(
+        all_source_folders, migrated_prefixes
+    )
 
     # Decide which outputs to emit. --out is a back-compat alias for --graph.
     graph_path: Path | None = args.graph
@@ -2707,6 +3455,7 @@ def main() -> int:
             plan, stuck, root_label, str(root), sorted(initial_migrated),
             migrated_prefixes, graph_path, type_kinds=type_kinds,
             initial_excluded=sorted(excluded), excluded_file=excluded_file,
+            folder_package=folder_package, packages=packages,
         )
         print(f"\nWrote graph: {graph_path}")
 
