@@ -349,7 +349,11 @@ def load_index_graph(json_path: Path):
     resolved pair_types and the caller skips the by-name compute_pair_types().
 
     Returns: (decls, leaf_edges, multi_decl_types, all_folders, file_records,
-              type_owners, raw_owners, pair_types)
+              type_owners, raw_owners, pair_types, type_kinds, file_edges)
+
+    file_edges: list of {"src": rel_path, "dst": rel_path, "w": int, "symbols": [name,...]}
+    surfacing file-to-file couplings the type-only folder graph hides (e.g. a
+    computed property declared in file A and used by file B).
     """
     print(f"Loading index graph {json_path} ...", file=sys.stderr)
     data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -379,10 +383,24 @@ def load_index_graph(json_path: Path):
     for r in file_records:
         all_folders.add(r["folder"])
 
+    file_edges = [
+        {"src": fe["src"], "dst": fe["dst"], "w": fe["w"],
+         "symbols": list(fe.get("symbols", []))}
+        for fe in data.get("file_edges", [])
+    ]
+    type_edges = [
+        {"src": te["src"], "dst": te["dst"], "w": te["w"],
+         "symbols": list(te.get("symbols", [])),
+         "src_file": te.get("src_file", ""), "dst_file": te.get("dst_file", "")}
+        for te in data.get("type_edges", [])
+    ]
+
     print(f"  {len(leaf_edges)} edge(s), {len(all_folders)} folder(s), "
-          f"{sum(len(v) for v in decls.values())} type decl(s)", file=sys.stderr)
+          f"{sum(len(v) for v in decls.values())} type decl(s), "
+          f"{len(file_edges)} file edge(s), {len(type_edges)} type edge(s)", file=sys.stderr)
     return (decls, leaf_edges, multi_decl_types, all_folders,
-            file_records, type_owners, raw_owners, pair_types, type_kinds)
+            file_records, type_owners, raw_owners, pair_types, type_kinds,
+            file_edges, type_edges)
 
 
 def _tarjan_sccs(nodes: set[str], deps: dict[str, set[str]]) -> list[list[str]]:
@@ -487,9 +505,36 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str]):
     migrated: set[int] = set()
     plan: list[dict] = []
     step = 0
-    # Pre-sort SCCs by size descending then alphabetical for deterministic ranking.
 
-    def impact(i: int) -> int:
+    # Precompute transitive reverse-reach per SCC — how many other SCCs
+    # ultimately depend on this one (directly OR transitively). Used as primary
+    # rank: migrating a high-reach SCC frees up the most downstream work, so the
+    # rest of the plan rolls forward faster. Iterative DP over the condensation
+    # DAG in reverse-topological order.
+    topo_order: list[int] = []
+    indeg = {i: len(scc_deps.get(i, ())) for i in range(n_sccs)}
+    queue = [i for i in range(n_sccs) if indeg[i] == 0]
+    while queue:
+        v = queue.pop()
+        topo_order.append(v)
+        for w in scc_rdeps.get(v, ()):
+            indeg[w] -= 1
+            if indeg[w] == 0:
+                queue.append(w)
+    reverse_reach: dict[int, int] = {i: 0 for i in range(n_sccs)}
+    for v in reversed(topo_order):
+        seen: set[int] = set()
+        for w in scc_rdeps.get(v, ()):
+            seen.add(w)
+        # Union descendants of each direct predecessor via inclusion-exclusion is
+        # expensive; an exact DP needs bitset closure. For typical project sizes
+        # the direct + 1-hop approximation tracks the user-facing intuition
+        # ("things that depend on me") well enough — keep it cheap by counting
+        # direct dependents plus their reverse_reach (double-counts in diamonds,
+        # but ordering remains stable).
+        reverse_reach[v] = sum(1 + reverse_reach[w] for w in scc_rdeps.get(v, ()))
+
+    def immediate_unlocks(i: int) -> int:
         return sum(
             1
             for s in scc_rdeps.get(i, ())
@@ -497,10 +542,13 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str]):
         )
 
     while eligible:
-        # Rank: highest impact, then smallest SCC (easier first), then alphabetical.
+        # Rank: highest transitive reverse-reach (unblocks most downstream), then
+        # immediate unlocks (next-step momentum), then smaller SCC (easier first),
+        # then alphabetical for determinism.
         pick = max(
             eligible,
-            key=lambda i: (impact(i), -len(sccs[i]), -ord(sccs[i][0][0]) if sccs[i] else 0),
+            key=lambda i: (reverse_reach[i], immediate_unlocks(i), -len(sccs[i]),
+                           -ord(sccs[i][0][0]) if sccs[i] else 0),
         )
         eligible.remove(pick)
         migrated.add(pick)
@@ -652,7 +700,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 plan, stuck, root_label, root_path, initial_migrated,
                 migrated_prefixes, out_path, type_kinds=None,
                 initial_excluded=None, excluded_file=None,
-                folder_package=None, packages=None):
+                folder_package=None, packages=None, file_edges=None, type_edges=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -674,6 +722,8 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         "excluded_file_path": str(excluded_file) if excluded_file else "",
         "folder_package": folder_package or {},
         "packages": packages or [],
+        "file_edges": file_edges or [],
+        "type_edges": type_edges or [],
     }
     html = HTML_TEMPLATE.replace("__PAYLOAD__", json.dumps(payload)).replace(
         "__ROOT_LABEL__", root_label
@@ -769,8 +819,10 @@ HTML_TEMPLATE = r"""<!doctype html>
       display: inline-block; font-weight: 600; }
     .np-state.excluded { background: #fbe9e9; color: #b91c1c; }
     .np-state.migrated { background: #e2e8f0; color: #475569; }
+    .np-state.blocked { background: #fff1e0; color: #b65213; }
     [data-theme="dark"] .np-state.excluded { background: #3a2a2e; color: #fca5a5; }
     [data-theme="dark"] .np-state.migrated { background: #3a4152; color: #cbd5e1; }
+    [data-theme="dark"] .np-state.blocked { background: #3a2f1e; color: #fdba74; }
     .np-actions { display: flex; flex-direction: column; gap: 4px; }
     .np-actions button { width: 100%; padding: 6px 10px; font-size: 11.5px; }
     .np-hint { font-size: 10.5px; color: var(--text-faint); margin-top: 6px; }
@@ -788,6 +840,61 @@ HTML_TEMPLATE = r"""<!doctype html>
     .appbar .eyebrow { font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase; color: #a9b0e6; font-weight: 600; }
     .appbar .title { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; margin-top: 2px; }
     .appbar .path { font-size: 11px; color: rgba(255,255,255,.55); word-break: break-all; margin-top: 3px; }
+    /* ── call-tree popup (big modal hosting its own vis-network) ──────────── */
+    .ct-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 200;
+      display: flex; align-items: center; justify-content: center; }
+    .ct-overlay.hidden { display: none; }
+    .ct-modal { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      width: min(1400px, 95vw); height: min(900px, 88vh); display: flex; flex-direction: column;
+      box-shadow: var(--shadow-lg); overflow: hidden; }
+    .ct-head { padding: 12px 18px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .ct-head .ttl { font-weight: 700; font-size: 14px; color: var(--text); flex: 1;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ct-close { display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; border-radius: 8px; background: var(--surface-2);
+      border: 1px solid var(--border); color: var(--text-dim); cursor: pointer;
+      padding: 0; flex-shrink: 0; transition: background .12s, color .12s, border-color .12s, transform .08s; }
+    .ct-close:hover { background: var(--red, #ef4444); color: #fff; border-color: var(--red, #ef4444); }
+    .ct-close:active { transform: scale(0.94); }
+    .ct-close svg { display: block; }
+    .ct-canvas { flex: 1; min-height: 0; background: var(--bg); }
+
+    /* ── type-view hover popover (mirrors folder-graph popover shape) ───── */
+    .tv-popover { position: absolute; z-index: 7; min-width: 200px; max-width: 280px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; box-shadow: var(--shadow-lg); pointer-events: auto;
+      font-size: 12px; color: var(--text); transform: translate(-50%, calc(-100% - 14px)); }
+    .tv-popover.hidden { display: none; }
+    .tv-popover .tvp-name { font-weight: 700; font-size: 12.5px; word-break: break-all; }
+    .tv-popover .tvp-sub { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
+    .tv-popover .tvp-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .tv-popover button { font-size: 11px; padding: 4px 9px; }
+
+    /* ── global search (appbar-anchored) ───────────────────────────────────── */
+    .global-search { position: relative; margin-top: 10px; }
+    .global-search input { width: 100%; box-sizing: border-box; padding: 8px 12px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.10); color: #fff;
+      font-size: 12.5px; outline: none; transition: background .12s, border-color .12s; }
+    .global-search input::placeholder { color: rgba(255,255,255,.55); }
+    .global-search input:focus { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.45); }
+    .global-search-results { position: absolute; left: 0; right: 0; top: calc(100% + 4px);
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: var(--shadow-lg); max-height: 360px; overflow: auto; z-index: 100; padding: 4px; }
+    .gsr-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px;
+      cursor: pointer; font-size: 12px; color: var(--text); }
+    .gsr-item:hover, .gsr-item.active { background: var(--accent-soft); }
+    .gsr-icon { font-size: 13px; width: 18px; text-align: center; flex-shrink: 0; }
+    .gsr-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .gsr-label b { color: var(--accent-strong); font-weight: 700; }
+    .gsr-sub { color: var(--text-faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; max-width: 50%; }
+    .gsr-kind { font-size: 9.5px; padding: 2px 6px; border-radius: 999px; background: var(--surface-2);
+      color: var(--text-dim); border: 1px solid var(--border); text-transform: uppercase; letter-spacing: .4px;
+      flex-shrink: 0; }
+    .gsr-empty { padding: 14px; text-align: center; color: var(--text-faint); font-size: 11px; }
+    .gsr-section { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint);
+      font-weight: 700; padding: 8px 10px 4px; }
 
     /* ── top-level mode toggle ────────────────────────────────────────────── */
     .modes { display: flex; gap: 6px; padding: 10px 12px 0; }
@@ -906,7 +1013,6 @@ HTML_TEMPLATE = r"""<!doctype html>
       vertical-align: middle; margin-right: 2px; }
     .stuck { color: var(--red); }
     details > summary { cursor: pointer; font-size: 12px; color: var(--text-dim); margin: 6px 0; font-weight: 600; }
-    #newlyBanner { background: var(--orange-soft); border: 1px solid #fcd9a0; padding: 11px 13px; border-radius: var(--r); font-size: 12px; margin: 10px 0; }
 
     /* ── segmented control (settings) ──────────────────────────────────────── */
     .seg { display: inline-flex; gap: 3px; background: var(--surface-2); padding: 4px; border-radius: var(--r-sm); }
@@ -946,6 +1052,26 @@ HTML_TEMPLATE = r"""<!doctype html>
     .wiz-chip { background: var(--accent-soft); color: var(--accent-strong); padding: 3px 9px;
       border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--accent); box-shadow: none; }
     .wiz-chip:hover { background: var(--accent); color: #fff; }
+
+    /* ── wizard plan step extras (mark/unmark, unlock chips, status badge) ── */
+    .wiz-step-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .wiz-step-header .grow { flex: 1; }
+    .step-status { font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .5px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-faint); }
+    .step-status.done { background: var(--green-soft); color: var(--green); border-color: var(--green); }
+    .step-status.next { background: var(--orange-soft); color: var(--orange); border-color: var(--orange); }
+    .step-status.locked { background: var(--gray-soft); color: var(--gray); border-color: var(--gray); }
+    .unlock-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    .unlock-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px;
+      background: var(--blue-soft); color: var(--blue); border: 1px solid var(--blue); border-radius: 999px;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 10.5px; cursor: pointer;
+      max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: filter .12s; }
+    .unlock-chip:hover { filter: brightness(1.1); }
+    .unlock-chip.cycle { background: var(--orange-soft); color: var(--orange); border-color: var(--orange); }
+    .unlock-chip .arrow { opacity: .7; font-size: 9px; }
+    .unlock-header { font-size: 11px; color: var(--text-dim); font-weight: 600; margin-top: 8px; display: flex; align-items: center; gap: 5px; }
+    .unlock-count-badge { background: var(--blue); color: #fff; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; }
+    .wiz-usage { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--surface-2); color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; font-size: 10.5px; margin-top: 6px; }
 
     /* ── plan target banner ────────────────────────────────────────────────── */
     .target-banner { background: linear-gradient(135deg, var(--accent-soft), var(--surface)); border: 1px solid var(--accent); }
@@ -999,6 +1125,10 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="eyebrow">Module graph</div>
       <div class="title" id="projectLabel">__ROOT_LABEL__</div>
       <div class="path" id="projectPath"></div>
+      <div class="global-search">
+        <input id="globalSearch" placeholder="🔎 Search folders, files, types…" autocomplete="off" />
+        <div id="globalSearchResults" class="global-search-results" style="display:none;"></div>
+      </div>
     </div>
     <div class="modes">
       <div class="mode active" data-mode="explore">🔍 Explore mode</div>
@@ -1015,17 +1145,22 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="panel active" id="panel-explore">
         <div class="small migrationOnly">Click a circle to drill in. Use <b>✓ migrate</b> to mark a folder migrated, or <b>🎯 plan</b> to generate the path to extract it. Clicking never migrates.</div>
         <div class="small exploreOnly">Click a circle to drill in. Clicking never mutates state.</div>
-        <input id="filter" placeholder="filter children..." />
+        <!-- Hidden no-op filter input: the visible global search lives in the
+             appbar now, but `render()` still reads `#filter.value`. Keeping the
+             element (empty value) preserves the call-site contract. -->
+        <input id="filter" type="hidden" value="" />
         <h2>Hierarchy</h2>
         <span id="leafCount" style="display:none;"></span>
         <ul id="kids"></ul>
-        <div id="newlyBanner" class="migrationOnly" style="display:none;"></div>
         <div class="migrationOnly">
           <h2 style="margin-top: 16px;">Migrated <span class="pill gray" id="migCount2">0</span></h2>
           <ul id="migList" style="font-size:12px;"></ul>
           <h2 style="margin-top: 16px;">🚫 Won't modularize <span class="pill gray" id="exclCount">0</span></h2>
           <ul id="exclList" style="font-size:12px;"></ul>
           <div id="exclSync" style="display:none;margin:6px 0;"></div>
+          <h2 style="margin-top: 16px;">🔒 Can't modularize <span class="pill gray" id="blockedCount">0</span></h2>
+          <div class="small" style="color:var(--text-faint);margin:-4px 0 4px;">Transitively depend on a won't-modularize folder. Unmark the blocker (or sever the dep) to free them.</div>
+          <ul id="blockedList" style="font-size:12px;"></ul>
         </div>
       </div>
 
@@ -1076,7 +1211,9 @@ HTML_TEMPLATE = r"""<!doctype html>
             <button id="resetMig" class="danger">Reset</button>
           </div>
           <h3 id="planListHeading" class="rec-list-heading">Recommended order</h3>
-          <input id="planFilter" placeholder="filter steps..." />
+          <!-- Hidden no-op plan filter: search moved to the appbar. Empty value
+               makes the existing renderPlan filter logic a passthrough. -->
+          <input id="planFilter" type="hidden" value="" />
         </div>
         <div id="planList"></div>
         <details id="stuckDetails" style="margin-top: 10px;">
@@ -1126,6 +1263,20 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
     <div id="net"></div>
     <div id="nodePopover" class="node-popover" style="display:none;"></div>
+    <div id="tvPopover" class="tv-popover hidden"></div>
+    <div id="callTreeOverlay" class="ct-overlay hidden">
+      <div class="ct-modal">
+        <div class="ct-head">
+          <span class="ttl" id="ctTitle"></span>
+          <button class="ct-close" id="ctClose" aria-label="Close call tree" title="Close (Esc)">
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+              <path d="M5 5 L15 15 M15 5 L5 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="ct-canvas" id="ctNet"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Always-visible legend dock (floats over the graph) -->
@@ -1139,7 +1290,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         <div class="legend-group-title">Nodes</div>
         <div class="legend">
           <div><span class="swatch" style="background:#6366f1"></span><span class="legend-row-label">Folder</span></div>
-          <div><span class="swatch" style="background:#eab308"></span><span class="legend-row-label">Loose files anchor <span class="dim">(★ in this folder)</span></span></div>
+          <div><span class="swatch" style="background:#eab308"></span><span class="legend-row-label">Loose files anchor <span class="dim">(in this folder)</span></span></div>
           <div><span class="swatch sq" style="background:#fde68a"></span><span class="legend-row-label">Swift file</span></div>
         </div>
       </div>
@@ -1147,25 +1298,29 @@ HTML_TEMPLATE = r"""<!doctype html>
         <div class="legend-group-title">Folders</div>
         <div class="legend">
           <div><span class="swatch" style="background:#22c55e"></span><span class="legend-row-label">Migratable leaf <span class="dim">(no deps)</span></span></div>
-          <div><span class="swatch" style="background:#f59e0b"></span><span class="legend-row-label">Newly unlocked</span></div>
+          <div><span class="swatch" style="background:#14b8a6"></span><span class="legend-row-label">Partially migratable <span class="dim">(subset of files extractable)</span></span></div>
           <div><span class="swatch" style="background:#3b82f6"></span><span class="legend-row-label">Has dependencies</span></div>
           <div><span class="swatch" style="background:#cbd5e1"></span><span class="legend-row-label">Already migrated</span></div>
           <div><span class="swatch dashed"></span><span class="legend-row-label">Won't modularize</span></div>
+          <div><span class="swatch" style="background:#f97316"></span><span class="legend-row-label">Can't modularize <span class="dim">(depends on won't-modularize)</span></span></div>
         </div>
       </div>
       <div class="legend-divider"></div>
       <div class="legend-section">
         <div class="legend-group-title">Type view</div>
         <div class="legend">
-          <div><span class="swatch" style="background:#8b5cf6"></span><span class="legend-row-label">Inspected folder <span class="dim">(★)</span></span></div>
+          <div><span class="swatch" style="background:#8b5cf6"></span><span class="legend-row-label">Inspected folder</span></div>
           <div><span class="swatch sq" style="background:#eef1f6;border:1px solid #cbd5e1;box-shadow:none;"></span><span class="legend-row-label">File</span></div>
           <div><span class="swatch" style="background:#e2e8f0"></span><span class="legend-row-label">External folder</span></div>
+          <div><span class="swatch sq" style="background:#22c55e"></span><span class="legend-row-label">Type: extractable now</span></div>
+          <div><span class="swatch sq" style="background:#14b8a6"></span><span class="legend-row-label">Type: moves with folder <span class="dim">(only intra-folder refs)</span></span></div>
+          <div><span class="swatch sq" style="background:#3b82f6"></span><span class="legend-row-label">Type: blocked <span class="dim">(external deps)</span></span></div>
           <div class="legend-kinds">
-            <span class="legend-chip"><span class="swatch sq" style="background:#3b82f6"></span>class</span>
-            <span class="legend-chip"><span class="swatch sq" style="background:#22c55e"></span>struct</span>
-            <span class="legend-chip"><span class="swatch sq" style="background:#f59e0b"></span>enum</span>
-            <span class="legend-chip"><span class="swatch sq" style="background:#a855f7"></span>protocol</span>
-            <span class="legend-chip"><span class="swatch sq" style="background:#14b8a6"></span>typealias</span>
+            <span class="legend-chip">🏛 class</span>
+            <span class="legend-chip">🧱 struct</span>
+            <span class="legend-chip">🔢 enum</span>
+            <span class="legend-chip">📐 protocol</span>
+            <span class="legend-chip">🔗 typealias</span>
           </div>
         </div>
       </div>
@@ -1189,7 +1344,283 @@ const files = DATA.files;
 const typeOwners = DATA.type_owners;
 const typeKinds = DATA.type_kinds || {};   // type name -> "class"|"struct"|"enum"|"protocol"|"typealias"
 function kindOf(t) { return typeKinds[t] || 'type'; }
+const KIND_EMOJI = { class: '🏛', struct: '🧱', enum: '🔢', protocol: '📐', typealias: '🔗', type: '❔' };
+function kindEmoji(t) { return KIND_EMOJI[kindOf(t)] || '❔'; }
+// Type migratability: a type can be extracted today iff its declaring file's
+// outbound references all resolve to the same folder or to an already-migrated
+// folder. File-level is the right granularity because Swift moves files, not
+// individual decls. Returns 'yes' (extractable) | 'no' (blocked) | 'self' (only
+// internal refs to siblings in the same folder — trivially extractable with
+// the rest of that folder).
+function fileMigratability(file, focusFolderId) {
+  const refs = file.ref_owners || [];
+  let sawExternal = false;
+  for (const ro of refs) {
+    const owner = ro[1];
+    if (!owner) continue;
+    if (owner === focusFolderId) continue;
+    sawExternal = true;
+    if (!migrated.has(owner)) return 'no';
+  }
+  return sawExternal ? 'yes' : 'self';
+}
+function typeMigratability(typeName, focusFolderId, declToFileMap, folderFilesByName) {
+  const fname = declToFileMap[typeName];
+  if (!fname) return 'no';
+  const file = folderFilesByName[fname];
+  if (!file) return 'no';
+  return fileMigratability(file, focusFolderId);
+}
 const plan = DATA.plan;            // [{step, folder, unlocks: [...]}]
+// File-level edges resolved by USR over ALL symbol kinds (not just types).
+// Surfaces couplings the type-only folder graph hides — e.g. a computed property
+// declared in file A and read by file B never appears in `edges`, but is captured
+// here as {src: 'folder/A.swift', dst: 'folder/B.swift', symbols: ['propName',...]}.
+const fileEdges = DATA.file_edges || [];
+// Precise type→type edges (containing-type-resolved by the Swift reader via
+// .containedBy relations). Each entry: {src, dst, w, symbols, src_file, dst_file}
+// where src/dst are "<name>\t<owner_folder>" keys. The type-view consumes these
+// directly so a class can connect to a struct without going through a file box.
+const typeEdges = DATA.type_edges || [];
+
+// ── Reverse-lookup indexes for the call-tree view ─────────────────────────
+//   fileEdgesByDst[absRelPath]   → [{src, w, symbols}, …]  (file-level callers)
+//   inboundEdgesByFolder[folder] → [{src_folder, w}]       (folder-level callers)
+const fileEdgesByDst = {};
+for (const fe of fileEdges) {
+  (fileEdgesByDst[fe.dst] = fileEdgesByDst[fe.dst] || []).push(fe);
+}
+const inboundEdgesByFolder = {};
+edges.forEach(e => {
+  (inboundEdgesByFolder[e.dst] = inboundEdgesByFolder[e.dst] || []).push(e);
+});
+
+// ── Call tree popup: opens a big modal hosting its own vis-network so the
+// underlying graph stays put. Seeds from chosen target (file/type/folder),
+// BFS upstream via file_edges & folder edges. Every drawn arrow is a real
+// ref the index store recorded. Click any node to re-seed from there.
+let ctNetwork = null;
+const CALL_TREE_MAX_NODES = 180;
+const CALL_TREE_MAX_DEPTH = 6;
+const CALL_TREE_MAX_FANOUT = 25;
+
+function _lastSeg(p) { const i = p.lastIndexOf('/'); return i < 0 ? p : p.substring(i + 1); }
+function _folderOf(p) { const i = p.lastIndexOf('/'); return i < 0 ? '.' : p.substring(0, i); }
+
+function showCallTree(opts) {
+  // opts: {kind: 'file'|'type'|'folder', key, label}
+  // Close any hover popovers — they belong to the underlying network.
+  const np = document.getElementById('nodePopover'); if (np) np.style.display = 'none';
+  const tvp = document.getElementById('tvPopover'); if (tvp) tvp.classList.add('hidden');
+  document.getElementById('ctTitle').textContent = '🌳 Call tree — ' + opts.label;
+  document.getElementById('callTreeOverlay').classList.remove('hidden');
+  renderCallTree(opts);
+}
+function exitCallTree() {
+  document.getElementById('callTreeOverlay').classList.add('hidden');
+  if (ctNetwork) { try { ctNetwork.destroy(); } catch (e) {} ctNetwork = null; }
+}
+document.getElementById('ctClose').onclick = exitCallTree;
+document.getElementById('callTreeOverlay').addEventListener('click', (ev) => {
+  if (ev.target.id === 'callTreeOverlay') exitCallTree();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !document.getElementById('callTreeOverlay').classList.contains('hidden')) exitCallTree();
+});
+
+function _callTreeSeedFiles(target) {
+  // Returns the set of file paths that are the "level 1" callers/owners of the
+  // target — everything we BFS upstream from. For a file target it's just the
+  // file itself; for a type it's every declaring file; for a folder it's every
+  // file inside it.
+  const out = new Set();
+  if (target.kind === 'file') {
+    out.add(target.key);
+  } else if (target.kind === 'type') {
+    const [name, owner] = target.key.split('\t');
+    (DATA.files || []).forEach(f => {
+      if ((!owner || f.folder === owner) && (f.decls || []).includes(name)) {
+        out.add((f.folder === '.' ? '' : f.folder + '/') + f.name);
+      }
+    });
+  } else if (target.kind === 'folder') {
+    (DATA.files || []).forEach(f => {
+      if (f.folder === target.key || (target.key !== '.' && f.folder.startsWith(target.key + '/'))) {
+        out.add((f.folder === '.' ? '' : f.folder + '/') + f.name);
+      }
+    });
+  }
+  return out;
+}
+
+function renderCallTree(target) {
+  if (!target) return;
+  const seedFiles = _callTreeSeedFiles(target);
+  // Node map: file_path -> {id, label, level, isSeed}
+  const fileNodes = new Map();
+  const edgeList = [];
+  const edgeKeys = new Set();
+  const TARGET_ID = '__call_target__';
+  // The target node always exists — even if seedFiles is empty (e.g. a type
+  // with no canonical owner file), so the user sees what we tried to resolve.
+  seedFiles.forEach(p => fileNodes.set(p, { id: 'cf::' + p, label: _lastSeg(p), level: 1, path: p, isSeed: true }));
+  seedFiles.forEach(p => {
+    edgeList.push({
+      from: fileNodes.get(p).id, to: TARGET_ID, arrows: 'to',
+      color: { color: '#f59e0b', opacity: 0.85 }, width: 2,
+      smooth: { type: 'cubicBezier', forceDirection: 'horizontal' },
+    });
+  });
+  let frontier = [...seedFiles];
+  let capped = false;
+  for (let depth = 1; depth <= CALL_TREE_MAX_DEPTH && frontier.length; depth++) {
+    if (fileNodes.size >= CALL_TREE_MAX_NODES) { capped = true; break; }
+    const next = [];
+    for (const path of frontier) {
+      const callers = (fileEdgesByDst[path] || [])
+        .slice().sort((a, b) => b.w - a.w).slice(0, CALL_TREE_MAX_FANOUT);
+      for (const fe of callers) {
+        if (fileNodes.size >= CALL_TREE_MAX_NODES) { capped = true; break; }
+        if (!fileNodes.has(fe.src)) {
+          fileNodes.set(fe.src, { id: 'cf::' + fe.src, label: _lastSeg(fe.src), level: depth + 1, path: fe.src, isSeed: false });
+          next.push(fe.src);
+        }
+        const k = fe.src + '\t' + path;
+        if (!edgeKeys.has(k)) {
+          edgeKeys.add(k);
+          const symsTxt = (fe.symbols || []).slice(0, 6).join(', ') +
+            ((fe.symbols || []).length > 6 ? ', …' : '');
+          edgeList.push({
+            from: fileNodes.get(fe.src).id, to: fileNodes.get(path).id, arrows: 'to',
+            color: { color: '#60a5fa', opacity: 0.7 }, width: Math.min(4, 1 + Math.log2(fe.w + 1)),
+            label: fe.w > 1 ? String(fe.w) : '',
+            font: { size: 9, color: '#60a5fa', strokeWidth: 0, align: 'middle' },
+            title: fe.src + ' → ' + fe.dst + '\n' + fe.w + ' ref(s)' + (symsTxt ? '\nuses: ' + symsTxt : ''),
+            smooth: { type: 'cubicBezier', forceDirection: 'horizontal' },
+          });
+        }
+      }
+      if (fileNodes.size >= CALL_TREE_MAX_NODES) { capped = true; break; }
+    }
+    frontier = next;
+  }
+
+  const nodeList = [];
+  // Target node on the right.
+  nodeList.push({
+    id: TARGET_ID, label: '🎯 ' + target.label, level: 0,
+    color: { background: '#f59e0b', border: '#d97706' },
+    font: { color: '#1c2333', size: 14, bold: true }, shape: 'box',
+    margin: { top: 10, bottom: 10, left: 16, right: 16 },
+    title: target.label + '\nkind: ' + target.kind,
+  });
+  fileNodes.forEach(n => {
+    const fld = _folderOf(n.path);
+    const isMig = migrated.has(fld);
+    const palette = n.isSeed
+      ? { bg: '#fef3c7', border: '#f59e0b', fg: '#78350f' }
+      : isMig
+        ? { bg: '#1f2937', border: '#475569', fg: '#cbd5e1' }
+        : { bg: '#1e2a3a', border: '#60a5fa', fg: '#bfdbfe' };
+    nodeList.push({
+      id: n.id, label: '📄 ' + n.label, level: -n.level,
+      title: n.path + '\nfolder: ' + fld + (n.isSeed ? '\n(seed: directly references target)' : ''),
+      color: { background: palette.bg, border: palette.border },
+      font: { color: palette.fg, size: 11 }, shape: 'box',
+    });
+  });
+  if (ctNetwork) { try { ctNetwork.destroy(); } catch (e) {} ctNetwork = null; }
+  ctNetwork = new vis.Network(document.getElementById('ctNet'),
+    { nodes: new vis.DataSet(nodeList), edges: new vis.DataSet(edgeList) },
+    {
+      layout: { hierarchical: { direction: 'LR', sortMethod: 'directed', nodeSpacing: 60, levelSeparation: 240 } },
+      physics: false,
+      interaction: { hover: true, tooltipDelay: 80, navigationButtons: false, selectConnectedEdges: false, dragView: true, zoomView: true },
+      edges: { smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 } },
+    }
+  );
+  ctNetwork.on('click', params => {
+    if (!params.nodes.length) return;
+    const id = params.nodes[0];
+    if (id === TARGET_ID) return;
+    const node = nodeList.find(x => x.id === id);
+    if (!node) return;
+    const path = node.title.split('\n')[0];
+    const src = params.event && params.event.srcEvent;
+    if (src && (src.metaKey || src.ctrlKey) && window.LIVE) { window.LIVE.openPath(path); return; }
+    renderCallTree({ kind: 'file', key: path, label: _lastSeg(path) });
+    document.getElementById('ctTitle').textContent = '🌳 Call tree — ' + _lastSeg(path) +
+      (capped ? '  · capped at ' + CALL_TREE_MAX_NODES + ' nodes / depth ' + CALL_TREE_MAX_DEPTH : '');
+  });
+  if (capped) {
+    const t = document.getElementById('ctTitle');
+    t.textContent = t.textContent + '  · capped at ' + CALL_TREE_MAX_NODES + ' nodes / depth ' + CALL_TREE_MAX_DEPTH;
+  }
+}
+
+// ── Type-view hover popover (mirrors folder-graph popover, but for t::/file::/xfile::) ──
+let _tvPopNode = null;
+let _tvPopNet = null;
+let _tvPopFocusId = null;
+let _tvPopHideTimer = null;
+function _tvPopEl() { return document.getElementById('tvPopover'); }
+function _cancelTvPopHide() { clearTimeout(_tvPopHideTimer); }
+function scheduleTvPopoverHide() {
+  clearTimeout(_tvPopHideTimer);
+  _tvPopHideTimer = setTimeout(() => {
+    const el = _tvPopEl(); if (el) el.classList.add('hidden');
+    _tvPopNode = null; _tvPopNet = null;
+  }, 220);
+}
+function positionTvPopoverIfShown(net) {
+  if (!_tvPopNode || !net) return;
+  const el = _tvPopEl(); if (!el || el.classList.contains('hidden')) return;
+  const pos = net.getPositions([_tvPopNode])[_tvPopNode];
+  if (!pos) return;
+  const dom = net.canvasToDOM(pos);
+  const wrap = document.getElementById('netWrap').getBoundingClientRect();
+  const netRect = document.getElementById('net').getBoundingClientRect();
+  el.style.left = (netRect.left - wrap.left + dom.x) + 'px';
+  el.style.top  = (netRect.top  - wrap.top  + dom.y) + 'px';
+}
+function showTvPopover(nodeId, net, focusId) {
+  if (!nodeId) return;
+  const el = _tvPopEl(); if (!el) return;
+  _cancelTvPopHide();
+  _tvPopNode = nodeId; _tvPopNet = net; _tvPopFocusId = focusId;
+  let callerOpts = null;
+  let name = nodeId;
+  let sub = '';
+  if (nodeId.startsWith('t::')) {
+    const t = nodeId.slice(3);
+    callerOpts = { kind: 'type', key: t + '\t' + focusId, label: t, sub: 'type · ' + focusId };
+    name = t; sub = 'type declared in ' + focusId;
+  } else if (nodeId.startsWith('xtype::')) {
+    const key = nodeId.slice(7);
+    const [tname, owner] = key.split('\t');
+    callerOpts = { kind: 'type', key: key, label: tname, sub: 'type · ' + owner };
+    name = tname; sub = 'external type · ' + owner;
+  } else {
+    // Folder/self nodes — hide; the regular network click handles navigation.
+    el.classList.add('hidden');
+    return;
+  }
+  el.innerHTML =
+    '<div class="tvp-name">' + escapeHtml(name) + '</div>' +
+    '<div class="tvp-sub">' + escapeHtml(sub) + '</div>' +
+    '<div class="tvp-actions">' +
+      '<button class="ghost" id="tvpCallTree">🌳 Call tree</button>' +
+    '</div>';
+  el.classList.remove('hidden');
+  positionTvPopoverIfShown(net);
+  document.getElementById('tvpCallTree').onclick = () => {
+    showCallTree(callerOpts);
+    el.classList.add('hidden');
+    _tvPopNode = null;
+  };
+  el.onmouseenter = _cancelTvPopHide;
+  el.onmouseleave = scheduleTvPopoverHide;
+}
 const stuck = DATA.stuck;
 document.getElementById('amb').textContent = DATA.multi_decl;
 
@@ -1219,11 +1650,13 @@ function folderGroups() {
   const d = isDark();
   return {
     leaf:     { color: { background: '#22c55e', border: '#16a34a' } },
-    newly:    { color: { background: '#f59e0b', border: '#d97706' }, borderWidth: 3 },
+    partial:  { color: { background: '#14b8a6', border: '#0d9488' }, borderWidth: 3 },
     migrated: d ? { color: { background: '#3a4152', border: '#586074' } }
                 : { color: { background: '#cbd5e1', border: '#94a3b8' } },
     excluded: d ? { color: { background: '#3a2a2e', border: '#f87171' }, borderWidth: 2, shapeProperties: { borderDashes: [4, 3] } }
                 : { color: { background: '#fbe9e9', border: '#ef4444' }, borderWidth: 2, shapeProperties: { borderDashes: [4, 3] } },
+    blocked:  d ? { color: { background: '#3a2f1e', border: '#f97316' }, borderWidth: 2, shapeProperties: { borderDashes: [2, 2] } }
+                : { color: { background: '#fff1e0', border: '#f97316' }, borderWidth: 2, shapeProperties: { borderDashes: [2, 2] } },
     mid:      { color: { background: '#3b82f6', border: '#2563eb' } },
     spm:      { color: { background: '#8b5cf6', border: '#7c3aed' }, borderWidth: 2 },
     // Explore-mode: every folder uses the same neutral indigo regardless of
@@ -1248,6 +1681,8 @@ function typeGroups() {
     type:           { color: { background: '#eab308', border: '#ca8a04' }, font: { color: '#3d2c06' } },
     ext:            d ? { color: { background: '#475569', border: '#64748b' }, font: { color: '#e7e9f0' } }
                       : { color: { background: '#e2e8f0', border: '#94a3b8' }, font: { color: '#334155' } },
+    spm_ext:        d ? { color: { background: '#3a2f55', border: '#8b5cf6' }, font: { color: '#e0d4ff' } }
+                      : { color: { background: '#ede9fe', border: '#8b5cf6' }, font: { color: '#4c1d95' } },
   };
 }
 function applyTheme(t) {
@@ -1290,6 +1725,11 @@ function migrationClosure(targetId) {
 function setTarget(id) { migrationTarget = id; switchTab('plan'); renderPlan(); }
 function clearTarget() { migrationTarget = null; renderPlan(); }
 
+// ── Runway view: "if I migrate X next, how far does the cascade go before a wall?"
+let runwaySeed = null;
+function setRunway(id) { runwaySeed = id; migrationTarget = null; switchTab('plan'); renderPlan(); }
+function clearRunway() { runwaySeed = null; renderPlan(); }
+
 // Tab switching
 document.querySelectorAll('.tab').forEach(t => {
   t.onclick = () => {
@@ -1329,7 +1769,7 @@ function applyMode(mode) {
     }
   }
   // Use a root-level mode flag + CSS so we don't clobber inline display values
-  // (e.g. newlyBanner is normally `display:none` and only shown after applyStep).
+  // on `.migrationOnly` elements that may have their own display rules.
   document.documentElement.setAttribute('data-app-mode', mode);
   // Explore mode only has one tab (Graph) — hide the whole tab bar.
   const tabsBar = document.querySelector('.tabs');
@@ -1409,6 +1849,73 @@ let lastRenderedFocusId = undefined;
 let folderNodesDS = null;
 let folderEdgesDS = null;
 
+// ── hover focus highlight ────────────────────────────────────────────────────
+// Dim non-neighbour nodes/edges so the hovered node + its connections pop.
+// Snapshot edge color once into _origColor so blur can restore exact baseline.
+const HOVER_DIM_NODE_OPACITY = 0.15;
+const HOVER_DIM_EDGE_OPACITY = 0.04;
+const _hoverOrigNodeFont = new WeakMap(); // nodesDS -> Map(id -> origFont)
+const _hoverOrigEdgeColor = new WeakMap(); // edgesDS -> Map(id -> origColor)
+function _ensureOrig(weakMap, ds, getField) {
+  let m = weakMap.get(ds);
+  if (!m) {
+    m = new Map();
+    ds.get().forEach(it => {
+      const f = getField(it);
+      const snap = (f && typeof f === 'object') ? JSON.parse(JSON.stringify(f))
+        : (typeof f === 'string' ? { color: f } : {});
+      m.set(it.id, snap);
+    });
+    weakMap.set(ds, m);
+  }
+  return m;
+}
+function applyHoverHighlight(nodesDS, edgesDS, focusId) {
+  if (!nodesDS || !edgesDS) return;
+  const origFont = _ensureOrig(_hoverOrigNodeFont, nodesDS, n => n.font);
+  const origColor = _ensureOrig(_hoverOrigEdgeColor, edgesDS, e => e.color);
+  const neigh = new Set();
+  neigh.add(focusId);
+  edgesDS.get().forEach(e => {
+    if (e.from === focusId) neigh.add(e.to);
+    if (e.to === focusId) neigh.add(e.from);
+  });
+  const defaultTextColor = themeText();
+  const nodeUpd = nodesDS.get().map(n => {
+    const dim = !neigh.has(n.id);
+    const base = origFont.get(n.id) || {};
+    const restoreColor = (base.color != null) ? base.color : defaultTextColor;
+    const font = Object.assign({}, base, { color: dim ? 'rgba(148,163,184,0.25)' : restoreColor });
+    return { id: n.id, opacity: dim ? HOVER_DIM_NODE_OPACITY : 1.0, font: font };
+  });
+  const edgeUpd = edgesDS.get().map(e => {
+    const incident = e.from === focusId || e.to === focusId;
+    const base = origColor.get(e.id) || {};
+    const baseOpacity = (base.opacity != null) ? base.opacity : 1.0;
+    return {
+      id: e.id,
+      color: Object.assign({}, base, { opacity: incident ? baseOpacity : HOVER_DIM_EDGE_OPACITY }),
+    };
+  });
+  nodesDS.update(nodeUpd);
+  edgesDS.update(edgeUpd);
+}
+function clearHoverHighlight(nodesDS, edgesDS) {
+  if (!nodesDS || !edgesDS) return;
+  const origFont = _hoverOrigNodeFont.get(nodesDS);
+  const origColor = _hoverOrigEdgeColor.get(edgesDS);
+  if (!origFont || !origColor) return;
+  const defaultTextColor = themeText();
+  nodesDS.update(nodesDS.get().map(n => {
+    const base = origFont.get(n.id) || {};
+    const restoreColor = (base.color != null) ? base.color : defaultTextColor;
+    return { id: n.id, opacity: 1.0, font: Object.assign({}, base, { color: restoreColor }) };
+  }));
+  edgesDS.update(edgesDS.get().map(e => ({
+    id: e.id, color: origColor.get(e.id) || e.color,
+  })));
+}
+
 // ── view history (back / forward) ─────────────────────────────────────────────
 // Every navigation goes through go(); pure repaints (filter, migrate) call
 // render() directly and don't touch history.
@@ -1440,7 +1947,6 @@ function updateNavButtons() {
 const INITIAL_MIGRATED = new Set(DATA.initial_migrated || []);
 let migrated = new Set(INITIAL_MIGRATED);  // pre-populated with already-SPM folders
 let currentOutDeg = new Map();
-let lastNewlyRevealed = [];
 
 // ── "won't be modularized" exclusions ───────────────────────────────────────
 // Disk file (DATA.initial_excluded, read by Python every run) seeds the FIRST
@@ -1479,15 +1985,61 @@ function outOfScope(id) {
   return migrated.has(id) || excluded.has(id);
 }
 
+// Transitive "can't modularize" set. Reverse-BFS from `excluded` over leaf
+// edges: any folder that depends (transitively) on a won't-modularize folder
+// cannot be moved to SPM either, because the new SPM package can't link
+// against non-SPM app-target code. Migrated nodes break the chain (SPM→SPM
+// is fine). Recomputed lazily; invalidated whenever excluded/migrated change.
+let _blockedCache = null;
+function _invalidateBlockedCache() { _blockedCache = null; }
+function blockedByExcludedSet() {
+  if (_blockedCache) return _blockedCache;
+  const rev = new Map();
+  for (const e of edges) {
+    if (!rev.has(e.dst)) rev.set(e.dst, []);
+    rev.get(e.dst).push(e.src);
+  }
+  const blocked = new Set();
+  let frontier = [...excluded];
+  while (frontier.length) {
+    const next = [];
+    for (const node of frontier) {
+      const preds = rev.get(node) || [];
+      for (const p of preds) {
+        if (migrated.has(p)) continue;     // SPM→SPM is fine, chain breaks here
+        if (excluded.has(p)) continue;     // already excluded — not "blocked"
+        if (blocked.has(p)) continue;
+        blocked.add(p);
+        next.push(p);
+      }
+    }
+    frontier = next;
+  }
+  _blockedCache = blocked;
+  return blocked;
+}
+// Every source folder in id's subtree is in the blocked set (mirrors isAllExcluded).
+function isAllBlocked(id) {
+  const blocked = blockedByExcludedSet();
+  let anySource = false;
+  for (const d of descendantsOf(id)) {
+    if ((filesByFolder[d] || []).length === 0) continue;
+    anySource = true;
+    if (!blocked.has(d)) return false;
+  }
+  return anySource;
+}
+
 function toggleExclude(displayNodeId) {
   const sub = [...descendantsOf(displayNodeId)].filter(d => (filesByFolder[d] || []).length > 0);
   if (sub.length === 0) return;
   const allExcl = sub.every(d => excluded.has(d));
   sub.forEach(d => { if (allExcl) excluded.delete(d); else excluded.add(d); });
   saveExcludedLS();
-  document.getElementById('newlyBanner').style.display = 'none';
-  lastNewlyRevealed = [];
+  _invalidateBlockedCache();
+  _invalidatePartialCache();
   updateExcludeSidebar();
+  updateBlockedSidebar();
   renderPlan();
   render();
 }
@@ -1552,16 +2104,18 @@ function updateExcludeSidebar() {
 
 document.getElementById('resetMig').onclick = () => {
   migrated = new Set(INITIAL_MIGRATED);
-  lastNewlyRevealed = [];
-  document.getElementById('newlyBanner').style.display = 'none';
+  _invalidateBlockedCache();
   renderPlan();
   render();
 };
 document.getElementById('applyAll').onclick = () => {
   migrated = new Set(INITIAL_MIGRATED);
-  plan.forEach(s => s.folders.forEach(f => migrated.add(f)));
-  lastNewlyRevealed = [];
-  document.getElementById('newlyBanner').style.display = 'none';
+  // Plan tab is wizard-driven now — apply the wizard's plan when one exists,
+  // otherwise fall back to the global plan (only reachable if the user opens
+  // a target-driven plan and clicks Apply All from that view).
+  const src = (wizPlan && wizPlan.length) ? wizPlan : plan;
+  src.forEach(s => s.folders.forEach(f => migrated.add(f)));
+  _invalidateBlockedCache();
   renderPlan();
   render();
 };
@@ -1587,19 +2141,40 @@ function isAllMigrated(id) {
   return anySource;
 }
 
-function snapshotLeavesAtFocus() {
-  const focus = tree[focusId];
-  const displaySet = new Set(focus.children);
-  const outDeg = new Map();
-  for (const e of edges) {
-    if (outOfScope(e.src) || outOfScope(e.dst)) continue;
-    const a = ownerInDisplay(e.src, displaySet);
-    const b = ownerInDisplay(e.dst, displaySet);
-    if (!a) continue;
-    if (a === b) continue;
-    outDeg.set(a, (outDeg.get(a) || 0) + 1);
+// Memoized per-render. A folder is "partially migratable" when a strict subset
+// of its source files have every outbound reference resolving inside the same
+// subtree or to an already-migrated folder — those files alone could move to a
+// new SPM today even though sibling files still block the whole-folder move.
+// Excluded folders / fully-migrated folders / leaves never count as partial.
+const _partialCache = new Map();
+function _invalidatePartialCache() { _partialCache.clear(); }
+function isPartialFolder(id) {
+  if (_partialCache.has(id)) return _partialCache.get(id);
+  let result = false;
+  compute: {
+    if (isAllMigrated(id) || isAllExcluded(id)) break compute;
+    const subtree = descendantsOf(id);
+    let total = 0, extractable = 0;
+    for (const d of subtree) {
+      const fs = filesByFolder[d] || [];
+      for (const f of fs) {
+        total++;
+        const refs = f.ref_owners || [];
+        let ok = true;
+        for (const ro of refs) {
+          const owner = ro[1];
+          if (!owner) continue;                 // unresolved / external lib
+          if (subtree.has(owner)) continue;     // internal to this subtree
+          if (migrated.has(owner)) continue;    // already-migrated leaf folder
+          ok = false; break;
+        }
+        if (ok) extractable++;
+      }
+    }
+    result = total > 0 && extractable > 0 && extractable < total;
   }
-  return new Set(focus.children.filter(id => !(outDeg.get(id) > 0) && !isAllMigrated(id) && !isAllExcluded(id)));
+  _partialCache.set(id, result);
+  return result;
 }
 
 function goUp() {
@@ -1610,21 +2185,12 @@ function goUp() {
 }
 
 function migrate(displayNodeId) {
-  const before = snapshotLeavesAtFocus();
   // mark every leaf-folder in subtree as migrated
   descendantsOf(displayNodeId).forEach(d => migrated.add(d));
-  const after = snapshotLeavesAtFocus();
-  lastNewlyRevealed = [...after].filter(x => !before.has(x));
+  _invalidateBlockedCache();
   render();
-  // Banner
-  const banner = document.getElementById('newlyBanner');
-  if (lastNewlyRevealed.length === 0) {
-    banner.innerHTML = '<b>Migrated:</b> ' + displayNodeId + '<br/>No new leaves revealed at this zoom.';
-  } else {
-    banner.innerHTML = '<b>Migrated:</b> ' + displayNodeId + '<br/><b>Newly migratable (' + lastNewlyRevealed.length + '):</b><br/>' + lastNewlyRevealed.map(x => '• ' + x).join('<br/>');
-  }
-  banner.style.display = 'block';
   updateMigratedSidebar();
+  updateBlockedSidebar();
   renderPlan();
 }
 
@@ -1644,17 +2210,31 @@ function unmigrate(displayNodeId) {
   descendantsOf(displayNodeId).forEach(d => {
     if (!INITIAL_MIGRATED.has(d)) migrated.delete(d);
   });
-  lastNewlyRevealed = [];
-  const banner = document.getElementById('newlyBanner');
-  banner.innerHTML = '<b>↩ Un-migrated:</b> ' + displayNodeId;
-  banner.style.display = 'block';
+  _invalidateBlockedCache();
   updateMigratedSidebar();
+  updateBlockedSidebar();
   renderPlan();
   render();
 }
 
 function stepIsDone(step) {
   return step.folders.every(f => migrated.has(f));
+}
+// A step is eligible to migrate only when every folder it points to outside
+// the step is already migrated. An excluded (won't-modularize) target is
+// NOT satisfying: SPM packages can't link against non-SPM code, so any step
+// depending on excluded transitively can't be modularized at all — those
+// steps stay locked and surface in the dedicated "Can't modularize" list.
+function isStepEligible(step) {
+  if (stepIsDone(step)) return true;
+  const inStep = new Set(step.folders);
+  for (const e of edges) {
+    if (!inStep.has(e.src)) continue;
+    if (inStep.has(e.dst)) continue;       // intra-step cycle dep
+    if (migrated.has(e.dst)) continue;     // already SPM — satisfied
+    return false;                          // anything else (incl. excluded) blocks
+  }
+  return true;
 }
 function stepLabel(step) {
   if (step.size === 1) return step.folders[0];
@@ -1673,7 +2253,7 @@ function renderPlan() {
   document.getElementById('planFilter').style.display = '';
   const rec = document.getElementById('recCard');
   rec.style.display = '';
-  const nextStep = plan.find(s => !stepIsDone(s));
+  const nextStep = plan.find(s => !stepIsDone(s) && isStepEligible(s));
   if (!nextStep) {
     if (plan.length === 0) {
       rec.innerHTML = '<h3>No actionable plan</h3><div class="info">No SCCs to process.</div>';
@@ -1735,10 +2315,16 @@ function renderPlan() {
   const filter = (document.getElementById('planFilter').value || '').toLowerCase();
   const wrap = document.getElementById('planList');
   wrap.innerHTML = '';
+  // Locked steps (deps not yet migrated) are hidden — they aren't actionable,
+  // so showing a long list of greyed-out rows is noise. A counter at the bottom
+  // tells the user how many remain and what's blocking them.
+  let lockedCount = 0;
   plan.forEach(s => {
     const hay = s.folders.join(' ') + ' ' + s.unlocks.map(u => u.folders.join(' ')).join(' ');
     if (filter && !hay.toLowerCase().includes(filter)) return;
     const isDone = stepIsDone(s);
+    const isEligible = isStepEligible(s);
+    if (!isDone && !isEligible) { lockedCount++; return; }
     const isNext = !isDone && (!nextStep || s.step === nextStep.step);
     const div = document.createElement('div');
     div.className = 'step' + (isDone ? ' done' : '') + (isNext ? ' next' : '');
@@ -1834,6 +2420,13 @@ function renderPlan() {
     });
     wrap.appendChild(div);
   });
+  if (lockedCount > 0) {
+    const lockedRow = document.createElement('div');
+    lockedRow.className = 'info';
+    lockedRow.style.cssText = 'margin-top:8px;padding:8px 10px;border-radius:6px;color:var(--text-faint);font-size:12px;background:var(--surface);';
+    lockedRow.innerHTML = '🔒 <b>' + lockedCount + '</b> locked step(s) hidden — finish the steps above to unlock them.';
+    wrap.appendChild(lockedRow);
+  }
 
   // Stuck (shouldn't happen with full DAG plan)
   const stuckFlat = [].concat(...stuck);
@@ -1899,7 +2492,6 @@ function renderTargetPlan() {
   document.getElementById('targetClear').onclick = () => clearTarget();
   document.getElementById('targetApply').onclick = () => {
     closure.forEach(f => migrated.add(f));
-    lastNewlyRevealed = [];
     renderPlan(); render();
   };
 
@@ -1932,15 +2524,7 @@ function renderTargetPlan() {
 
 function applyStep(step) {
   step.folders.forEach(f => migrated.add(f));
-  lastNewlyRevealed = [].concat(...step.unlocks.map(u => u.folders));
-  const banner = document.getElementById('newlyBanner');
-  const label = step.size === 1 ? step.folders[0] : ('cycle of ' + step.size + ' folders');
-  banner.innerHTML = '<b>✓ Migrated step ' + step.step + ' (' + escapeHtml(label) + ')</b><br/>' +
-    (step.unlocks.length === 0
-      ? 'No new folders unlocked.'
-      : '<b>Unlocked ' + step.unlocks.length + ' bundle(s):</b> ' +
-        step.unlocks.map(u => u.size === 1 ? escapeHtml(u.folders[0]) : ('⚠cycle×' + u.size)).join(', '));
-  banner.style.display = 'block';
+  _invalidateBlockedCache();
   renderPlan();
   render();
 }
@@ -1950,10 +2534,7 @@ function applyUpTo(step) {
     s.folders.forEach(f => migrated.add(f));
     if (s.step === step.step) break;
   }
-  lastNewlyRevealed = [].concat(...step.unlocks.map(u => u.folders));
-  const banner = document.getElementById('newlyBanner');
-  banner.innerHTML = '<b>Applied plan through step ' + step.step + '</b>';
-  banner.style.display = 'block';
+  _invalidateBlockedCache();
   renderPlan();
   render();
 }
@@ -2004,7 +2585,36 @@ function updateMigratedSidebar() {
   });
 }
 
+// Sidebar list of transitively-blocked folders. Display dedup: only show
+// folders whose parent isn't itself blocked (mirrors the excluded sidebar).
+function updateBlockedSidebar() {
+  const ul = document.getElementById('blockedList');
+  const countEl = document.getElementById('blockedCount');
+  if (!ul || !countEl) return;
+  const blockedSet = blockedByExcludedSet();
+  const items = [];
+  Object.keys(tree).forEach(id => {
+    if (!id) return;
+    if (!isAllBlocked(id)) return;
+    const parent = tree[id].parent;
+    if (parent !== null && parent !== undefined && isAllBlocked(parent)) return;
+    items.push(id);
+  });
+  items.sort();
+  countEl.textContent = items.length;
+  ul.innerHTML = '';
+  items.forEach(id => {
+    const li = document.createElement('li');
+    li.innerHTML = '🔒 ' + escapeHtml(id);
+    li.title = 'Transitively depends on a won\'t-modularize folder. Click to inspect.';
+    li.style.cursor = 'pointer';
+    li.onclick = () => focusToFolder(id);
+    ul.appendChild(li);
+  });
+}
+
 function render() {
+  _invalidatePartialCache();
   const focus = tree[focusId];
   const kids = focus.children;
   // Terminal folder (no child folders) -> show type-level view.
@@ -2046,7 +2656,6 @@ function render() {
     // self-loop (a === b): ignored.
   }
 
-  const newlySet = new Set(lastNewlyRevealed);
   // Smart labels: with many siblings, always-on labels overlap into mush.
   // Label only the hubs (top by total degree) + actionable nodes (leaf/newly);
   // the rest stay unlabelled and reveal on hover (see handlers below).
@@ -2061,6 +2670,7 @@ function render() {
     const hasKids = n.children.length > 0;
     const isMigrated = isAllMigrated(id);
     const isExcluded = isAllExcluded(id);
+    const isBlocked = !isMigrated && !isExcluded && isAllBlocked(id);
     let group;
     if (exploreMode) {
       // Explore: every folder gets the same color — node TYPE drives color,
@@ -2069,20 +2679,22 @@ function render() {
     } else {
       group = 'mid';
       if (isExcluded) group = 'excluded';
+      else if (isBlocked) group = 'blocked';
       else if (isMigrated) group = 'migrated';
-      else if (newlySet.has(id)) group = 'newly';
+      else if (isPartialFolder(id, displaySet)) group = 'partial';
       else if (isLeaf && !hasKids) group = 'leaf';
     }
     const oe = outExternal.get(id) || 0;
     const ie = inExternal.get(id) || 0;
     const fullLabel = n.name + (hasKids ? '  ▸' : '')
-      + (exploreMode ? '' : (isExcluded ? ' 🚫' : (isMigrated ? ' ✓' : '')));
-    const actionable = !exploreMode && (group === 'leaf' || group === 'newly');
+      + (exploreMode ? '' : (isExcluded ? ' 🚫' : (isBlocked ? ' 🔒' : (isMigrated ? ' ✓' : ''))));
+    const actionable = !exploreMode && (group === 'leaf' || group === 'partial');
     const keepLabel = labelCut < 0 || actionable || degOf(id) >= labelCut;
     const migrationTitle = (isExcluded ? '\n🚫 WON\'T BE MODULARIZED (excluded from the plan)'
+      : (isBlocked ? '\n🔒 CAN\'T MODULARIZE — transitively depends on a won\'t-modularize folder'
       : (isMigrated ? '\nMIGRATED (treated as external)'
       : (isLeaf ? (hasKids ? '\nLEAF AT THIS ZOOM — no first-party outgoing deps left, but has sub-folders to migrate first.'
-                          : '\nLEAF — no first-party outgoing deps. Click to open it; migrate from the type-view button.') : '')));
+                          : '\nLEAF — no first-party outgoing deps. Click to open it; migrate from the type-view button.') : ''))));
     return {
       id,
       label: keepLabel ? fullLabel : '',
@@ -2123,24 +2735,33 @@ function render() {
       id: selfAnchorId,
       label: '📂 ' + (focus.name || focus.id) + ' (files)',
       title: focus.id + '\n' + ownFilesHere.length + ' file(s) directly in this folder\n(click to open type-view)',
-      shape: 'star',
-      color: { background: '#eab308', border: '#ca8a04' },
-      font: { size: 13, color: '#1a1300' },
-      value: 4,
-      x: clusterX, y: clusterY0 - 70, fixed: true, physics: false,
+      shape: 'text',
+      font: { size: 14, color: '#eab308', face: 'Inter, sans-serif', bold: true },
+      value: 1,
+      x: clusterX, y: clusterY0 - 56, fixed: true, physics: false,
     });
     ownFilesHere.forEach((f, i) => {
       const fid = 'file::' + focusId + '::' + f.name;
       const declCount = (f.decls || []).length;
+      const mig = fileMigratability(f, focusId);
+      // Same palette as type-view: green = extractable now, teal = only
+      // intra-folder refs (moves with the folder), blue = blocked.
+      const palette = mig === 'yes'  ? { background: '#22c55e', border: '#16a34a', fontColor: '#06281a' }
+                    : mig === 'self' ? { background: '#14b8a6', border: '#0d9488', fontColor: '#fff' }
+                                     : { background: '#3b82f6', border: '#2563eb', fontColor: '#fff' };
+      const migLabel = mig === 'yes' ? 'extractable now'
+                     : mig === 'self' ? 'moves with this folder (only intra-folder refs)'
+                                      : 'blocked by external deps';
       nodes.push({
         id: fid,
         label: '📄 ' + f.name,
         title: f.name + '\nfolder: ' + focus.id
           + (declCount ? '\ndeclares: ' + f.decls.join(', ') : '\n(no declared types)')
+          + '\nmigratability: ' + migLabel
           + '\n(click to open type-view)',
         shape: 'box',
-        color: { background: '#fde68a', border: '#ca8a04' },
-        font: { size: 12, color: '#1a1300' },
+        color: { background: palette.background, border: palette.border },
+        font: { size: 12, color: palette.fontColor },
         value: 2,
         x: clusterX, y: clusterY0 + i * 56, fixed: true, physics: false,
       });
@@ -2211,7 +2832,7 @@ function render() {
     edges: { arrows: { to: { scaleFactor: 0.6 } }, smooth: { type: 'continuous' }, color: { color: '#c3c8d6', highlight: '#6366f1', opacity: 0.7 } },
     physics: { stabilization: { iterations: 320 },
       barnesHut: { gravitationalConstant: -9000 * spread, springLength: 170 * spread, springConstant: 0.035, centralGravity: 0.12, damping: 0.45, avoidOverlap: 0.55 } },
-    interaction: { hover: true, tooltipDelay: 100 },
+    interaction: { hover: true, tooltipDelay: 100, hoverConnectedEdges: false, selectConnectedEdges: false },
     groups: folderGroups(),
   });
   network.once('stabilizationIterationsDone', () => {
@@ -2228,9 +2849,11 @@ function render() {
       if (n && n._full && !n.label) { upd.push({ id: nid, label: n._full }); hoverShown.push(nid); }
     });
     if (upd.length) nodesDS.update(upd);
+    applyHoverHighlight(nodesDS, edgesDS, p.node);
   });
   network.on('blurNode', () => {
-    if (!hoverShown.length) return;
+    clearHoverHighlight(nodesDS, edgesDS);
+    if (!hoverShown.length) { schedulePopoverHide(); return; }
     nodesDS.update(hoverShown.map(id => ({ id, label: '' })));
     hoverShown = [];
     schedulePopoverHide();
@@ -2263,15 +2886,18 @@ function render() {
     const hasKids = n.children.length > 0;
     const isMigrated = isAllMigrated(nodeId);
     const isExcluded = isAllExcluded(nodeId);
+    const isBlocked = !isMigrated && !isExcluded && isAllBlocked(nodeId);
     const baseline = isMigrated && isInitialMigrated(nodeId);
     const exploreMode = currentMode === 'explore';
     let swatch = '#3b82f6';
     if (exploreMode) swatch = '#6366f1';
     else if (isExcluded) swatch = '#ef4444';
+    else if (isBlocked) swatch = '#f97316';
     else if (isMigrated) swatch = '#cbd5e1';
-    else if (newlySet.has(nodeId)) swatch = '#f59e0b';
+    else if (isPartialFolder(nodeId)) swatch = '#14b8a6';
     else if (isLeaf && !hasKids) swatch = '#22c55e';
     const stateBadge = (!exploreMode && isExcluded) ? '<div class="np-state excluded">🚫 Won\'t modularize</div>'
+      : (!exploreMode && isBlocked) ? '<div class="np-state blocked">🔒 Can\'t modularize <span class="dim">(depends on won\'t-modularize)</span></div>'
       : (!exploreMode && baseline) ? '<div class="np-state migrated">⚪️ SPM baseline</div>'
       : (!exploreMode && isMigrated) ? '<div class="np-state migrated">✓ Migrated</div>'
       : '';
@@ -2281,10 +2907,16 @@ function render() {
       const exclLabel = isExcluded ? '↩ Will modularize' : '🚫 Won\'t modularize';
       const migCls = isExcluded ? 'ghost' : (isMigrated ? 'ghost' : '');
       const exclCls = isExcluded ? 'ghost' : 'danger';
-      const canPlan = !isExcluded && !isMigrated;
+      // Blocked folders can't be planned/migrated until their excluded dep is
+      // unmarked or the dependency severed — the excl button still works (user
+      // may want to also mark them excluded explicitly).
+      const canPlan = !isExcluded && !isMigrated && !isBlocked;
+      const canMig = !isExcluded && !isBlocked;
+      const inboundCt = (inboundEdgesByFolder[nodeId] || []).length;
       actions = '<div class="np-actions">'
-        + (canPlan ? '<button class="ghost" data-act="plan">🎯 Plan to move</button>' : '')
-        + (isExcluded ? '' : '<button class="' + migCls + '" data-act="mig">' + migLabel + '</button>')
+        + (canPlan ? '<button class="ghost" data-act="planmig">🗺 Plan migration</button>' : '')
+        + '<button class="ghost" data-act="calltree">🌳 Call tree' + (inboundCt ? ' (' + inboundCt + ')' : '') + '</button>'
+        + (canMig ? '<button class="' + migCls + '" data-act="mig">' + migLabel + '</button>' : '')
         + '<button class="' + exclCls + '" data-act="excl">' + exclLabel + '</button>'
         + '</div>';
     }
@@ -2305,7 +2937,8 @@ function render() {
         const act = b.dataset.act;
         if (act === 'mig') (isMigrated ? unmigrate(nodeId) : migrate(nodeId));
         else if (act === 'excl') toggleExclude(nodeId);
-        else if (act === 'plan') setTarget(nodeId);
+        else if (act === 'planmig') setRunway(nodeId);
+        else if (act === 'calltree') showCallTree({ kind: 'folder', key: nodeId, label: nodeId });
         pop.style.display = 'none'; popNodeId = null;
       };
     });
@@ -2334,6 +2967,14 @@ function render() {
     pop.style.display = 'none'; popNodeId = null;
     if (!params.nodes.length) return;
     const id = params.nodes[0];
+    // Cmd/Ctrl + click on a folder node → open the folder in Xcode via the
+    // live-mode daemon; never navigate. Falls through to navigation if the
+    // daemon isn't running or the node isn't a folder.
+    const src = params.event && params.event.srcEvent;
+    if (src && (src.metaKey || src.ctrlKey) && window.LIVE && tree[id]) {
+      window.LIVE.openPath(id);
+      return;
+    }
     if (id === '__ext__') { goUp(); return; }
     // self/file nodes belong to the focused folder's own files — open the
     // type-view instead of treating them as navigation targets.
@@ -2373,6 +3014,23 @@ function renderTypeView(focus) {
   const externals = new Set();
   const outboundByExt = new Map();   // ext -> Set(typeName) for sidebar summary
   const inboundByExt = new Map();    // ext -> Set(typeName)
+  const edgeKeys = new Set();        // dedupe (from|to|label) — refs repeat per occurrence
+  const edgeByPair = new Map();
+  function pushEdge(e) {
+    const k = e.from + '' + e.to + '' + (e.label || e.title || '');
+    if (edgeKeys.has(k)) return;
+    edgeKeys.add(k);
+    const pairKey = e.from + '' + e.to;
+    const existing = edgeByPair.get(pairKey);
+    if (existing && !e.label && e.title) {
+      const names = new Set((existing.title || '').split(', ').filter(Boolean));
+      names.add(e.title);
+      existing.title = [...names].sort().join(', ');
+      return;
+    }
+    edgeByPair.set(pairKey, e);
+    edgeList.push(e);
+  }
 
   // Every reference is matched to the EXACT type the compiler bound, by its
   // USR-resolved owner folder (ref_owners = [[name, ownerFolder], ...]). This
@@ -2389,33 +3047,31 @@ function renderTypeView(focus) {
   }
 
   // Outbound (files in this folder referencing external types).
+  // Already-migrated owners aren't blockers — the new SPM can depend on them —
+  // so they go into a separate map and get a muted edge color.
+  const outboundBySpm = new Map();   // ext (migrated) -> Set(typeName)
   folderFiles.forEach(f => {
     const hasDecls = f.decls.length > 0;
     resolvedRefs(f).forEach(([u, owner]) => {
       if (!owner || owner === focus.id) return;   // unresolved or intra-folder
       externals.add(owner);
-      if (!outboundByExt.has(owner)) outboundByExt.set(owner, new Set());
-      outboundByExt.get(owner).add(u);
-      const sources = hasDecls ? f.decls.map(t => 't::' + t) : [selfId];
-      sources.forEach(src => {
-        edgeList.push({ from: src, to: 'd::' + owner, arrows: 'to', label: u, font: { size: 10, align: 'middle' }, color: { color: '#c0392b', opacity: 0.55 } });
-      });
+      const isSpm = migrated.has(owner);
+      const bucket = isSpm ? outboundBySpm : outboundByExt;
+      if (!bucket.has(owner)) bucket.set(owner, new Set());
+      bucket.get(owner).add(u);
+      // Folder-level outbound is now represented as explicit type→type edges
+      // (added in the typeEdges loop below). The legacy folder-bubble edge
+      // path is intentionally suppressed; we still populate externals so the
+      // dependent sidebar (Migration mode) can count blockers, but no edge is
+      // pushed here.
     });
   });
 
-  // Intra-folder type-to-type refs (only refs bound to THIS folder's types).
-  folderFiles.forEach(f => {
-    resolvedRefs(f).forEach(([u, owner]) => {
-      if (owner !== focus.id || !localDecls.has(u)) return;
-      f.decls.forEach(t => {
-        if (t === u) return;
-        edgeList.push({ from: 't::' + t, to: 't::' + u, arrows: 'to', color: { color: '#7f8c8d', opacity: 0.5 } });
-      });
-    });
-  });
+  // (Intra-folder type→type refs are emitted from typeEdges below — no longer
+  // synthesised from ref_owners here.)
 
-  // Inbound (files in other folders that reference local types) — only when the
-  // reference resolves to a type OWNED by this folder.
+  // Inbound is also covered by typeEdges. Still record the external folder so
+  // the existing sidebar counters (blockers/migrated/etc.) keep working.
   for (const f of files) {
     if (f.folder === focus.id) continue;
     resolvedRefs(f).forEach(([u, owner]) => {
@@ -2423,94 +3079,183 @@ function renderTypeView(focus) {
       externals.add(f.folder);
       if (!inboundByExt.has(f.folder)) inboundByExt.set(f.folder, new Set());
       inboundByExt.get(f.folder).add(u);
-      edgeList.push({ from: 'd::' + f.folder, to: 't::' + u, arrows: 'to', label: u, font: { size: 10, align: 'middle' }, color: { color: '#2980b9', opacity: 0.55 } });
     });
   }
-
-  // Hierarchical L→R layers: inbound-only folders (0) → self+files (1) →
-  // types (2) → outbound folders (3). Keeps the dependency flow left-to-right
-  // instead of collapsing into a force-directed hairball.
-  // Self node (always present).
-  nodes.push({
-    id: selfId,
-    label: '📂 ' + (focus.name || focus.id),
-    title: focus.id + '\ndeclared types: ' + localDecls.size + '\nfiles: ' + folderFiles.length,
-    group: 'self',
-    shape: 'star',
-    value: 4,
-    level: 1,
-  });
-  // File nodes (📄) — one per source file in this folder, linked to the folder
-  // anchor. Surfaces file names directly, and (below) which types each declares.
-  folderFiles.forEach(f => {
-    nodes.push({
-      id: 'file::' + f.name,
-      label: '📄 ' + f.name,
-      title: f.name + '\nfolder: ' + focus.id + '\ndeclares: ' + (f.decls.length ? f.decls.join(', ') : '(none)'),
-      group: 'file',
-      shape: 'box',
-      level: 1,
-    });
-    edgeList.push({ from: selfId, to: 'file::' + f.name, arrows: '', color: { color: '#bdc3c7', opacity: 0.5 }, dashes: true });
-  });
-
-  // Type nodes — labelled and coloured by kind (class/struct/enum/protocol/...).
-  // Each is linked to the file that declares it.
+  // Type-only rendering. Files become small labels above each type rather than
+  // their own nodes — every arrow goes type→type (class to struct, struct to
+  // enum, …), which is the migration-decision shape the user actually cares
+  // about. The precise containing-type resolution happens upstream in the
+  // Swift reader via .containedBy relations.
+  const folderFilesByName = {};
+  folderFiles.forEach(f => { folderFilesByName[f.name] = f; });
+  const folderPrefix = focus.id === '.' ? '' : (focus.id + '/');
+  function lastSeg(p) { const i = p.lastIndexOf('/'); return i < 0 ? p : p.substring(i + 1); }
+  // vis-network multi-line label trick: `font.multi:'md'` enables _italic_ /
+  // *bold* markers, which we use to render the filename on a smaller italic
+  // top line and the type name on a bigger bold bottom line.
+  function typeLabel(typeName, fileName) {
+    return '_' + (fileName || '?') + '_\n*' + kindEmoji(typeName) + ' ' + typeName + '*';
+  }
+  // Local type nodes (declared in this folder).
   localDecls.forEach(t => {
     const kind = kindOf(t);
+    const mig = typeMigratability(t, focus.id, declToFile, folderFilesByName);
+    const palette = mig === 'yes'  ? { background: '#22c55e', border: '#16a34a', fontColor: '#06281a' }
+                  : mig === 'self' ? { background: '#14b8a6', border: '#0d9488', fontColor: '#fff' }
+                                   : { background: '#3b82f6', border: '#2563eb', fontColor: '#fff' };
+    const migLabel = mig === 'yes' ? 'extractable now'
+                   : mig === 'self' ? 'moves with this folder (only intra-folder refs)'
+                                    : 'blocked by external deps';
     nodes.push({
       id: 't::' + t,
-      label: kind + '\n' + t,
-      title: kind + ' ' + t + '\nfile: ' + declToFile[t] + '\nfolder: ' + focus.id,
-      group: 'kind_' + kind,
+      label: typeLabel(t, declToFile[t]),
+      title: kindEmoji(t) + ' ' + kind + ' ' + t + '\nfile: ' + declToFile[t] + '\nfolder: ' + focus.id + '\nmigratability: ' + migLabel,
+      color: { background: palette.background, border: palette.border },
+      font: { color: palette.fontColor, multi: 'md', size: 14, ital: { size: 10, color: palette.fontColor, mod: 'italic' }, bold: { size: 14, color: palette.fontColor, mod: 'bold' } },
       shape: 'box',
+      shapeProperties: { borderRadius: 10 },
+      margin: { top: 8, bottom: 8, left: 12, right: 12 },
       level: 2,
     });
-    if (declToFile[t]) {
-      edgeList.push({ from: 'file::' + declToFile[t], to: 't::' + t, arrows: 'to', color: { color: '#7f8c8d', opacity: 0.35 } });
-    }
   });
-  // External folder nodes (click to navigate)
-  externals.forEach(d => {
-    const out = outboundByExt.get(d);
-    const inn = inboundByExt.get(d);
-    const lines = ['External folder: ' + d, '(click to navigate)'];
-    if (out && out.size) lines.push('this folder USES from there: ' + [...out].sort().join(', '));
-    if (inn && inn.size) lines.push('that folder USES from here: ' + [...inn].sort().join(', '));
-    // Outbound (or bidirectional) folders sit on the right (level 3); folders
-    // that only consume this one sit on the left (level 0).
+  // Type→type edges. typeEdges entries use "<name>\t<owner_folder>" keys so we
+  // can distinguish same-named types across folders. Edges are kept if at least
+  // one endpoint is in the current folder; the other endpoint, if external,
+  // gets rendered as a dashed ghost type node so the user can still see "from
+  // here to there".
+  const MAX_XTYPES_PER_DIR = 30;
+  const localTypeKeys = new Set([...localDecls].map(t => t + '\t' + focus.id));
+  const xtypeAdded = new Set();
+  function addXTypeNode(key, isInbound) {
+    const id = 'xtype::' + key;
+    if (xtypeAdded.has(id)) return id;
+    xtypeAdded.add(id);
+    const [name, owner] = key.split('\t');
+    const isMig = migrated.has(owner);
+    const palette = isMig
+      ? { bg: '#1f2937', border: '#475569', fg: '#cbd5e1' }
+      : isInbound
+        ? { bg: '#1e2a3a', border: '#60a5fa', fg: '#bfdbfe' }
+        : { bg: '#2a1e3a', border: '#a855f7', fg: '#ddd6fe' };
     nodes.push({
-      id: 'd::' + d,
-      label: '📁 ' + d,
-      title: lines.join('\n'),
-      group: 'ext',
-      shape: 'ellipse',
-      level: (out && out.size) ? 3 : 0,
+      id: id,
+      label: typeLabel(name, lastSeg(owner)),
+      title: kindEmoji(name) + ' ' + (kindOf(name) || 'type') + ' ' + name +
+             '\nfolder: ' + owner + '\n(click to navigate)',
+      color: { background: palette.bg, border: palette.border },
+      font: { color: palette.fg, multi: 'md', size: 13, ital: { size: 9, color: palette.fg, mod: 'italic' }, bold: { size: 13, color: palette.fg, mod: 'bold' } },
+      shape: 'box',
+      shapeProperties: { borderDashes: [4, 3], borderRadius: 10 },
+      margin: { top: 8, bottom: 8, left: 12, right: 12 },
+      level: isInbound ? 0 : 3,
     });
+    return id;
+  }
+  const inboundXTypes = [];
+  const outboundXTypes = [];
+  const localToLocal = [];
+  typeEdges.forEach(te => {
+    const srcLocal = localTypeKeys.has(te.src);
+    const dstLocal = localTypeKeys.has(te.dst);
+    if (srcLocal && dstLocal) localToLocal.push(te);
+    else if (dstLocal) inboundXTypes.push(te);   // external → here
+    else if (srcLocal) outboundXTypes.push(te);  // here → external
   });
+  inboundXTypes.sort((a, b) => b.w - a.w);
+  outboundXTypes.sort((a, b) => b.w - a.w);
+  function edgeFromTypeEdge(te, fromId, toId, color) {
+    const symsTxt = (te.symbols || []).slice(0, 6).join(', ') +
+      ((te.symbols || []).length > 6 ? ', …' : '');
+    edgeList.push({
+      from: fromId, to: toId, arrows: 'to',
+      color: { color: color, opacity: 0.8 },
+      width: Math.min(4, 1 + Math.log2(te.w + 1)),
+      label: te.w > 1 ? String(te.w) : '',
+      font: { size: 9, color: color, strokeWidth: 0, align: 'middle' },
+      title: te.src.split('\t')[0] + ' → ' + te.dst.split('\t')[0] +
+             '\n' + te.w + ' ref(s)' + (symsTxt ? '\nuses: ' + symsTxt : '') +
+             (te.src_file ? '\nfrom: ' + te.src_file : '') +
+             (te.dst_file ? '\nto: ' + te.dst_file : ''),
+      smooth: { type: 'curvedCW', roundness: 0.2 },
+    });
+  }
+  localToLocal.forEach(te => {
+    edgeFromTypeEdge(te, 't::' + te.src.split('\t')[0], 't::' + te.dst.split('\t')[0], '#a855f7');
+  });
+  inboundXTypes.slice(0, MAX_XTYPES_PER_DIR).forEach(te => {
+    const xid = addXTypeNode(te.src, true);
+    edgeFromTypeEdge(te, xid, 't::' + te.dst.split('\t')[0], '#60a5fa');
+  });
+  outboundXTypes.slice(0, MAX_XTYPES_PER_DIR).forEach(te => {
+    const xid = addXTypeNode(te.dst, false);
+    edgeFromTypeEdge(te, 't::' + te.src.split('\t')[0], xid, '#a855f7');
+  });
+  // External folder bubbles (📁/📦) are intentionally NOT drawn in the
+  // type-only view — external participation is shown via per-type xtype nodes
+  // instead. The `externals`/`inboundByExt`/`outboundByExt` maps are still
+  // populated above for the side-panel counters elsewhere in the UI.
 
   if (network) network.destroy();
+  const tvNodesDS = new vis.DataSet(nodes);
+  const tvEdgesDS = new vis.DataSet(edgeList);
   network = new vis.Network(document.getElementById('net'),
-    { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edgeList) }, {
+    { nodes: tvNodesDS, edges: tvEdgesDS }, {
     nodes: { font: { size: 13, face: 'Inter, sans-serif', color: themeText() }, borderWidth: 2, shapeProperties: { borderRadius: 8 },
       shadow: { enabled: true, color: 'rgba(20,28,55,0.12)', size: 8, x: 0, y: 2 } },
     // Hierarchical L→R: dependency flow reads inbound → types → outbound in
     // tidy layered columns. physics off so layout is deterministic & fast.
     layout: { hierarchical: {
       enabled: true, direction: 'LR', sortMethod: 'directed',
-      levelSeparation: 320, nodeSpacing: 45, treeSpacing: 60,
+      levelSeparation: 360, nodeSpacing: 110, treeSpacing: 90,
       blockShifting: true, edgeMinimization: true, parentCentralization: true,
     } },
     physics: false,
     edges: { smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.5 } },
-    interaction: { hover: true, tooltipDelay: 100 },
+    interaction: { hover: true, tooltipDelay: 100, hoverConnectedEdges: false, selectConnectedEdges: false },
     groups: typeGroups(),
   });
   network.on('click', params => {
     if (!params.nodes.length) return;
     const id = params.nodes[0];
-    if (id.startsWith('d::')) { go(id.slice(3)); }
+    // Cmd/Ctrl + click → open in Xcode where we can: type nodes open the
+    // declaring file (we have it via the local declToFile / type_edges file
+    // mapping); xtype nodes open the external type's file when known, else
+    // fall back to its folder; folder bubble (d::) opens its folder.
+    const src = params.event && params.event.srcEvent;
+    if (src && (src.metaKey || src.ctrlKey) && window.LIVE) {
+      if (id.startsWith('t::')) {
+        const name = id.slice(3);
+        const localFile = declToFile[name];
+        if (localFile) { window.LIVE.openPath((focus.id === '.' ? '' : focus.id + '/') + localFile); return; }
+      }
+      if (id.startsWith('xtype::')) {
+        // Stored mapping → external type's declaring file (filled when the
+        // typeEdge entry had a non-empty dst_file/src_file). Best-effort lookup
+        // via the typeEdges payload — find any edge referencing this xtype key.
+        const key = id.slice(7);
+        const fe = typeEdges.find(te => te.src === key || te.dst === key);
+        const path = fe ? (fe.src === key ? fe.src_file : fe.dst_file) : '';
+        if (path) { window.LIVE.openPath(path); return; }
+        window.LIVE.openPath(key.split('\t')[1] || '.');
+        return;
+      }
+      if (id.startsWith('d::')) { window.LIVE.openPath(id.slice(3)); return; }
+    }
+    if (id.startsWith('d::')) { go(id.slice(3)); return; }
+    if (id.startsWith('xtype::')) {
+      const owner = id.slice(7).split('\t')[1] || '.';
+      focusToFolder(owner);
+    }
   });
+  network.on('hoverNode', p => {
+    applyHoverHighlight(tvNodesDS, tvEdgesDS, p.node);
+    showTvPopover(p.node, network, focus.id);
+  });
+  network.on('blurNode', () => {
+    clearHoverHighlight(tvNodesDS, tvEdgesDS);
+    scheduleTvPopoverHide();
+  });
+  network.on('afterDrawing', () => positionTvPopoverIfShown(network));
   // Hierarchical layout is computed synchronously (physics off) — fit once.
   try { network.fit({ animation: false }); } catch (e) {}
 
@@ -2527,8 +3272,11 @@ function renderTypeView(focus) {
   // actions live in Plan mode and on the node popover instead.
 
   // Files & the types they declare (grouped by file) — shown FIRST: it's what
-  // this folder IS, before what it depends on.
-  const KIND_ICON = { class: '🔵', struct: '🟢', enum: '🟠', protocol: '🟣', typealias: '🩵', type: '🟡' };
+  // this folder IS, before what it depends on. Swatch matches graph node color
+  // (migratability), emoji prefix carries kind.
+  const MIG_COLOR = { yes: '#22c55e', self: '#14b8a6', no: '#3b82f6' };
+  const _sidebarFilesByName = {};
+  folderFiles.forEach(f => { _sidebarFilesByName[f.name] = f; });
   if (folderFiles.length > 0) {
     const h = document.createElement('li');
     h.style.listStyle = 'none';
@@ -2551,9 +3299,16 @@ function renderTypeView(focus) {
         ul.appendChild(fileLi);
         decls.sort().forEach(t => {
           const k = kindOf(t);
+          const mig = typeMigratability(t, focus.id, declToFile, _sidebarFilesByName);
+          const swatchColor = MIG_COLOR[mig] || '#3b82f6';
           const li = document.createElement('li');
           li.style.paddingLeft = '14px';
-          li.textContent = (KIND_ICON[k] || '🟡') + ' ' + k + ' ' + t;
+          li.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'
+            + swatchColor + ';margin-right:8px;vertical-align:middle;flex-shrink:0;"></span>'
+            + kindEmoji(t) + ' ' + k + ' ' + escapeHtml(t);
+          li.title = mig === 'yes' ? 'extractable now'
+                   : mig === 'self' ? 'moves with this folder (only intra-folder refs)'
+                                    : 'blocked by external deps';
           li.onclick = () => { network.focus('t::' + t, { scale: 1.6, animation: true }); network.selectNodes(['t::' + t]); };
           ul.appendChild(li);
         });
@@ -2578,6 +3333,28 @@ function renderTypeView(focus) {
         const li = document.createElement('li');
         const typeList = [...types].sort();
         li.innerHTML = '<span style="color:#c0392b;">📁 ' + d + '</span>'
+          + '<div style="font-size:11px;color:#555;padding-left:14px;">uses: ' + typeList.join(', ') + '</div>';
+        li.onclick = () => { go(d); };
+        ul.appendChild(li);
+      });
+  }
+  // Satisfied SPM deps: targets already inside a migrated package. Not blockers
+  // — the new SPM can declare a dependency on them — so they're listed quietly.
+  if (outboundBySpm.size > 0) {
+    const h = document.createElement('li');
+    h.style.listStyle = 'none';
+    h.style.fontWeight = 'bold';
+    h.style.marginTop = '8px';
+    h.style.cursor = 'default';
+    h.textContent = 'SPM deps (already migrated, ' + outboundBySpm.size + '):';
+    ul.appendChild(h);
+    [...outboundBySpm.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .filter(([d]) => !filter || d.toLowerCase().includes(filter))
+      .forEach(([d, types]) => {
+        const li = document.createElement('li');
+        const typeList = [...types].sort();
+        li.innerHTML = '<span style="color:#7c3aed;">📦 ' + d + '</span>'
           + '<div style="font-size:11px;color:#555;padding-left:14px;">uses: ' + typeList.join(', ') + '</div>';
         li.onclick = () => { go(d); };
         ul.appendChild(li);
@@ -2635,7 +3412,13 @@ function renderKids(kids, outDeg) {
   // a visible index.
   const ownFiles = filesByFolder[focusId] || [];
   if (ownFiles.length > 0 && focusId && tree[focusId]) {
-    const KIND_ICON = { class: '🔵', struct: '🟢', enum: '🟠', protocol: '🟣', typealias: '🩵', type: '🟡' };
+    const MIG_COLOR = { yes: '#22c55e', self: '#14b8a6', no: '#3b82f6' };
+    const ownDeclToFile = {};
+    const ownFilesByName = {};
+    ownFiles.forEach(f => {
+      ownFilesByName[f.name] = f;
+      (f.decls || []).forEach(t => { ownDeclToFile[t] = f.name; });
+    });
     const declCount = ownFiles.reduce((n, f) => n + (f.decls ? f.decls.length : 0), 0);
     const header = document.createElement('li');
     header.style.listStyle = 'none';
@@ -2659,21 +3442,27 @@ function renderKids(kids, outDeg) {
         fileLi.style.listStyle = 'none';
         fileLi.style.marginTop = '2px';
         fileLi.style.cursor = 'pointer';
-        fileLi.innerHTML = '📄 <b>' + f.name + '</b>';
+        fileLi.innerHTML = '📄 <b>' + escapeHtml(f.name) + '</b>';
         fileLi.onclick = () => renderTypeView(tree[focusId]);
         ul.appendChild(fileLi);
         decls.sort().forEach(t => {
           const k = kindOf(t);
+          const mig = typeMigratability(t, focusId, ownDeclToFile, ownFilesByName);
+          const swatchColor = MIG_COLOR[mig] || '#3b82f6';
           const tli = document.createElement('li');
           tli.style.paddingLeft = '14px';
           tli.style.cursor = 'pointer';
-          tli.textContent = (KIND_ICON[k] || '🟡') + ' ' + k + ' ' + t;
+          tli.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'
+            + swatchColor + ';margin-right:8px;vertical-align:middle;flex-shrink:0;"></span>'
+            + kindEmoji(t) + ' ' + k + ' ' + escapeHtml(t);
+          tli.title = mig === 'yes' ? 'extractable now'
+                    : mig === 'self' ? 'moves with this folder (only intra-folder refs)'
+                                     : 'blocked by external deps';
           tli.onclick = () => renderTypeView(tree[focusId]);
           ul.appendChild(tli);
         });
       });
   }
-  const newlySet = new Set(lastNewlyRevealed);
   const leaves = kids.filter(id => !(outDeg.get(id) > 0) && !isAllMigrated(id) && !isAllExcluded(id) && tree[id].children.length === 0);
   document.getElementById('leafCount').textContent = leaves.length + ' leaf';
   kids
@@ -2703,7 +3492,7 @@ function renderKids(kids, outDeg) {
       } else {
         if (isExcl) { swatchColor = '#ef4444'; iconPrefix = '🚫 '; }
         else if (isMig) swatchColor = '#cbd5e1';
-        else if (newlySet.has(id)) swatchColor = '#f59e0b';
+        else if (isPartialFolder(id)) swatchColor = '#14b8a6';
         else if (isLeaf && !hasKids) swatchColor = '#22c55e';
       }
       const label = document.createElement('span');
@@ -2718,7 +3507,7 @@ function renderKids(kids, outDeg) {
       if (!exploreMode) {
         if (isExcl) label.style.color = '#b91c1c';
         else if (isMig) label.style.color = '#7f8c8d';
-        else if (newlySet.has(id)) label.style.color = '#a26209';
+        else if (isPartialFolder(id)) label.style.color = '#0f766e';
       }
       li.appendChild(label);
 
@@ -2861,10 +3650,16 @@ function renderWizard() {
 function wizComputeSccs(set) {
   const S = new Set(set);
   const deps = {};
+  // Excluded folders aren't part of the migration plan — strip both their
+  // outgoing and incoming edges so they neither block nor get migrated.
+  // Migrated folders are external SPM deps now: edges into them are satisfied
+  // and must NOT impose ordering on what's still moving.
   edges.forEach(e => {
-    if (S.has(e.src) && S.has(e.dst) && e.src !== e.dst) {
-      (deps[e.src] = deps[e.src] || []).push(e.dst);
-    }
+    if (!S.has(e.src) || !S.has(e.dst)) return;
+    if (e.src === e.dst) return;
+    if (excluded.has(e.src) || excluded.has(e.dst)) return;
+    if (migrated.has(e.src) || migrated.has(e.dst)) return;
+    (deps[e.src] = deps[e.src] || []).push(e.dst);
   });
   const idx = {}, low = {}, onS = {}, st = [], sccs = [];
   let counter = 0;
@@ -2904,34 +3699,118 @@ function wizComputeSccs(set) {
 }
 
 function computeWizardPlan(folderSet) {
-  const { deps, sccs } = wizComputeSccs(folderSet);
+  // Mirror Python's compute_migration_plan: SCC condensation + impact-based
+  // ranking, so the wizard plan respects the dependency DAG. Drops out-of-scope
+  // folders up front:
+  //   - excluded — user said won't-modularize, ignore entirely.
+  //   - migrated — already SPM, edges into them are satisfied deps, not work.
+  //   - blocked  — transitively depend on excluded; SPM can't link non-SPM
+  //                code so they can't be moved either. Surface elsewhere.
+  const blockedSet = blockedByExcludedSet();
+  const sourceSet = folderSet.filter(f =>
+    !excluded.has(f) && !migrated.has(f) && !blockedSet.has(f)
+  );
+  const { deps, sccs } = wizComputeSccs(sourceSet);
+  const sccsSorted = sccs.map(c => c.slice().sort());
   const sccOf = {};
-  sccs.forEach((c, i) => c.forEach(v => sccOf[v] = i));
-  const sdeps = sccs.map(() => new Set());
+  sccsSorted.forEach((c, i) => c.forEach(v => sccOf[v] = i));
+  const sdeps = sccsSorted.map(() => new Set());
+  const sRdeps = sccsSorted.map(() => new Set());
   Object.keys(deps).forEach(a => {
-    for (const b of deps[a]) if (sccOf[a] !== sccOf[b]) sdeps[sccOf[a]].add(sccOf[b]);
+    for (const b of deps[a]) {
+      const sa = sccOf[a], sb = sccOf[b];
+      if (sa !== sb) { sdeps[sa].add(sb); sRdeps[sb].add(sa); }
+    }
   });
   const remaining = sdeps.map(s => s.size);
-  const reverse = sccs.map(() => new Set());
-  sdeps.forEach((s, i) => { for (const j of s) reverse[j].add(i); });
-  const eligible = [];
-  for (let i = 0; i < sccs.length; i++) if (remaining[i] === 0) eligible.push(i);
+  const migratedScc = new Set();
+  const eligible = new Set();
+  for (let i = 0; i < sccsSorted.length; i++) if (remaining[i] === 0) eligible.add(i);
+  // Precompute transitive reverse-reach — same definition + caveat as Python
+  // compute_migration_plan. Iterative DP in reverse-topological order.
+  const reverseReach = sccsSorted.map(() => 0);
+  {
+    const topo = [];
+    const indeg = sdeps.map(s => s.size);
+    const q = [];
+    for (let i = 0; i < sccsSorted.length; i++) if (indeg[i] === 0) q.push(i);
+    while (q.length) {
+      const v = q.pop();
+      topo.push(v);
+      for (const w of sRdeps[v]) { indeg[w]--; if (indeg[w] === 0) q.push(w); }
+    }
+    for (let k = topo.length - 1; k >= 0; k--) {
+      const v = topo[k];
+      let acc = 0;
+      for (const w of sRdeps[v]) acc += 1 + reverseReach[w];
+      reverseReach[v] = acc;
+    }
+  }
+  const immediateUnlocks = i => {
+    let n = 0;
+    for (const s of sRdeps[i]) {
+      if (migratedScc.has(s)) continue;
+      if (s !== i && remaining[s] === 1) n++;
+    }
+    return n;
+  };
+  // "Most-used" tiebreaker: total inbound reference weight per SCC, restricted
+  // to consumers inside sourceSet (we don't credit edges from excluded/blocked
+  // folders since they aren't going anywhere). Bigger = more call sites will
+  // benefit from this folder becoming SPM. Acts as a tiebreaker among equally
+  // impactful SCCs — it never reorders past the DAG constraint.
+  const sccOfNode = new Map();
+  sccsSorted.forEach((c, idx) => c.forEach(f => sccOfNode.set(f, idx)));
+  const sourceSetLookup = new Set(sourceSet);
+  const inboundWeight = sccsSorted.map(() => 0);
+  edges.forEach(e => {
+    const dstScc = sccOfNode.get(e.dst);
+    if (dstScc === undefined) return;
+    if (!sourceSetLookup.has(e.src)) return;     // consumer must also be in scope
+    const srcScc = sccOfNode.get(e.src);
+    if (srcScc === dstScc) return;
+    inboundWeight[dstScc] += (e.refs || e.value || 1);
+  });
   const out = [];
-  while (eligible.length) {
-    eligible.sort((a, b) => sccs[a].length - sccs[b].length || (sccs[a][0] || '').localeCompare(sccs[b][0] || ''));
-    const pick = eligible.shift();
-    const fs = sccs[pick].slice().sort();
+  while (eligible.size) {
+    let pick = -1, best = null;
+    for (const i of eligible) {
+      const key = [
+        reverseReach[i],          // DAG-correctness signal: transitive unlocks
+        inboundWeight[i],         // "most-used" — primary user preference
+        immediateUnlocks(i),      // local unlock count (secondary)
+        -sccsSorted[i].length,    // prefer smaller bundles (smaller PRs)
+        sccsSorted[i][0] || '',   // deterministic last-resort tiebreaker
+      ];
+      const better = best === null
+        || key[0] > best[0]
+        || (key[0] === best[0] && key[1] > best[1])
+        || (key[0] === best[0] && key[1] === best[1] && key[2] > best[2])
+        || (key[0] === best[0] && key[1] === best[1] && key[2] === best[2] && key[3] > best[3])
+        || (key[0] === best[0] && key[1] === best[1] && key[2] === best[2] && key[3] === best[3] && key[4] < best[4]);
+      if (better) { best = key; pick = i; }
+    }
+    eligible.delete(pick);
+    migratedScc.add(pick);
+    const fs = sccsSorted[pick];
+    const unlocks = [];
+    for (const r of sRdeps[pick]) {
+      if (migratedScc.has(r)) continue;
+      remaining[r]--;
+      if (remaining[r] === 0) {
+        eligible.add(r);
+        unlocks.push({ folders: sccsSorted[r], size: sccsSorted[r].length });
+      }
+    }
     out.push({
       step: out.length + 1,
       folders: fs,
       is_cycle: fs.length > 1,
       size: fs.length,
-      targets: fs.map(f => wiz.assign[f]),
+      targets: fs.map(f => wiz.assign[f] || 'stay'),
+      unlocks: unlocks,
+      inbound_weight: inboundWeight[pick],
     });
-    for (const r of reverse[pick]) {
-      remaining[r]--;
-      if (remaining[r] === 0) eligible.push(r);
-    }
   }
   return out;
 }
@@ -2953,17 +3832,73 @@ function renderWizardPlan() {
     '<b>' + wizPlan.length + '</b> step(s), ordered so each step\'s deps are already migrated.</div>';
   const wrap = document.getElementById('planList');
   wrap.innerHTML = '';
-  wizPlan.forEach(s => {
+  const wizStepIsDone = s => s.folders.every(f => migrated.has(f));
+  const firstUndoneIdx = wizPlan.findIndex(s => !wizStepIsDone(s));
+  wizPlan.forEach((s, idx) => {
     const div = document.createElement('div');
-    div.className = 'step';
+    const isDone = wizStepIsDone(s);
+    const isNext = !isDone && idx === firstUndoneIdx;
+    const isLocked = !isDone && !isNext;
+    div.className = 'step' + (isDone ? ' done' : '') + (isNext ? ' next' : '');
     const lines = s.folders.map((f, i) =>
-      '<div style="margin: 2px 0;"><code>' + escapeHtml(f) + '</code>' +
+      '<div style="margin: 2px 0;" class="wiz-folder" data-folder="' + escapeHtml(f) + '">' +
+      '<code style="cursor:pointer;text-decoration:underline;">' + escapeHtml(f) + '</code>' +
       ' <span class="small">→ ' + escapeHtml(labelForTarget(s.targets[i])) + '</span></div>'
     ).join('');
-    div.innerHTML = '<div><span class="stepNum">' + s.step + '.</span>' +
-      (s.is_cycle ? '<b>⚠ Bundle of ' + s.size + ' (cyclically coupled)</b>' : '<b>Move folder</b>') +
-      '</div>' + lines;
+    const unlocks = s.unlocks || [];
+    const unlocksHtml = unlocks.length === 0
+      ? '<div class="info" style="margin-top:8px;font-size:11px;color:var(--text-faint);">📭 Unlocks nothing new (sink in DAG).</div>'
+      : '<div class="unlock-header">🔓 Unlocks <span class="unlock-count-badge">' + unlocks.length + '</span> bundle' + (unlocks.length === 1 ? '' : 's') + '</div>' +
+        '<div class="unlock-list">' +
+          unlocks.slice(0, 12).map(u => {
+            const label = u.size === 1 ? u.folders[0] : '⚠ cycle×' + u.size;
+            const cls = u.size === 1 ? 'unlock-chip' : 'unlock-chip cycle';
+            const title = u.size === 1 ? u.folders[0] : 'Cycle of ' + u.size + ': ' + u.folders.join(', ');
+            return '<span class="' + cls + '" data-folder="' + escapeHtml(u.folders[0]) + '" title="' + escapeHtml(title) + '">' +
+              '<span class="arrow">↗</span>' + escapeHtml(label) + '</span>';
+          }).join('') +
+          (unlocks.length > 12 ? '<span class="unlock-chip" style="background:var(--surface-2);color:var(--text-faint);border-color:var(--border);cursor:default;">+' + (unlocks.length - 12) + ' more</span>' : '') +
+        '</div>';
+    const usageHtml = (s.inbound_weight && s.inbound_weight > 0)
+      ? '<div class="wiz-usage">📈 ' + s.inbound_weight + ' incoming ref' + (s.inbound_weight === 1 ? '' : 's') + ' • most-used picked earlier</div>'
+      : '';
+    const statusBadge = isDone
+      ? '<span class="step-status done">✓ migrated</span>'
+      : isNext
+        ? '<span class="step-status next">▶ next</span>'
+        : '<span class="step-status locked">⏳ pending</span>';
+    const headerHtml = '<div class="wiz-step-header">' +
+      '<span class="stepNum">' + s.step + '.</span>' +
+      '<span class="grow"><b>' + (s.is_cycle ? '⚠ Bundle of ' + s.size + ' (cyclically coupled)' : 'Move folder') + '</b></span>' +
+      statusBadge +
+      '</div>';
+    const actionHtml = '<div class="step-actions">' +
+      (isDone
+        ? '<button class="ghost" data-act="unmark">↩ Unmark migrated</button>'
+        : '<button data-act="mark">✓ Mark migrated</button>') +
+      '</div>';
+    div.innerHTML = headerHtml + lines + usageHtml + unlocksHtml + actionHtml;
     wrap.appendChild(div);
+    div.querySelectorAll('.wiz-folder code, .unlock-chip[data-folder]').forEach(el => {
+      el.onclick = (ev) => {
+        ev.stopPropagation();
+        const f = (el.closest('[data-folder]') || el).dataset.folder;
+        if (f) focusToFolder(f);
+      };
+    });
+    div.querySelectorAll('.step-actions button').forEach(b => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        if (b.dataset.act === 'mark') {
+          s.folders.forEach(f => migrated.add(f));
+        } else {
+          s.folders.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
+        }
+        _invalidateBlockedCache();
+        renderWizardPlan();
+        render();
+      };
+    });
   });
 }
 
@@ -2993,11 +3928,334 @@ document.getElementById('wizCompute').onclick = () => {
   renderWizardPlan();
 };
 
-// Patch renderPlan to honor wizard plan when active + in migration mode.
+// Empty-plan placeholder shown until the wizard has been run. The plan is
+// intentionally NOT auto-generated from the global graph — the user must
+// declare source/targets/per-folder destinations in the wizard so the plan
+// reflects THEIR intent (and respects migrated/excluded/blocked sets).
+function renderEmptyPlan() {
+  document.getElementById('targetBanner').style.display = 'none';
+  document.getElementById('planFilter').style.display = 'none';
+  document.getElementById('stuckDetails').style.display = 'none';
+  document.getElementById('planListHeading').textContent = 'Recommended order';
+  const planList = document.getElementById('planList');
+  if (planList) planList.innerHTML = '';
+  const rec = document.getElementById('recCard');
+  rec.innerHTML =
+    '<h3>🧭 No plan yet</h3>' +
+    '<div class="info">' +
+      'Run the <b>Migration wizard</b> to generate a plan. ' +
+      'The wizard asks where code is moving from and to, then orders the ' +
+      'steps so each folder\'s dependencies are migrated first. ' +
+      'It already respects <b>migrated</b>, <b>won\'t-modularize</b>, and ' +
+      '<b>can\'t-modularize</b> sets, and prefers the <b>most-used</b> ' +
+      'folders inside each eligible wave.' +
+    '</div>' +
+    '<div class="card-actions">' +
+      '<button id="emptyPlanGoWizard">🧭 Open wizard</button>' +
+    '</div>';
+  const btn = document.getElementById('emptyPlanGoWizard');
+  if (btn) btn.onclick = () => switchTab('wizard');
+  // Apply Full Plan / Reset are no-ops without a plan — hide their row.
+  const globalActions = document.querySelector('#panel-plan .rec-global-actions');
+  if (globalActions) globalActions.style.display = 'none';
+  updateMigrationCounts();
+}
+
+// ── Runway computation: pin a seed folder as "next migrated", then forward-cascade
+// until something locks (cycle bundle or eligible set empties). Reuses the same
+// SCC condensation + inbound-weight tiebreak as the global plan.
+function computeRunway(seed) {
+  const blocked = blockedByExcludedSet();
+  if (excluded.has(seed)) return { error: '🚫 Seed is marked won\'t-modularize.' };
+  if (blocked.has(seed))  return { error: '🔒 Seed transitively depends on a won\'t-modularize folder.' };
+  if (migrated.has(seed)) return { error: '✓ Seed is already migrated.' };
+  const pending = new Set();
+  plan.forEach(s => s.folders.forEach(f => {
+    if (!migrated.has(f) && !excluded.has(f) && !blocked.has(f)) pending.add(f);
+  }));
+  // Seed may be a container folder (no direct edges) — expand to all pending leaf
+  // descendants and treat them as one bundle so the user can pick e.g.
+  // "Fever/Core/Models" instead of drilling to every leaf inside it.
+  const seedFolders = new Set();
+  if (pending.has(seed)) {
+    seedFolders.add(seed);
+  } else if (tree[seed]) {
+    const stk = [seed];
+    while (stk.length) {
+      const v = stk.pop();
+      if (pending.has(v)) seedFolders.add(v);
+      (tree[v]?.children || []).forEach(c => stk.push(c));
+    }
+    if (seedFolders.size === 0) {
+      return { error: 'No pending leaf folders under this node — every descendant is migrated, excluded, or blocked.' };
+    }
+  } else {
+    return { error: 'Seed not in the project tree.' };
+  }
+  const { deps, sccs } = wizComputeSccs([...pending]);
+  const sccsSorted = sccs.map(c => c.slice().sort());
+  const sccOf = {};
+  sccsSorted.forEach((c, i) => c.forEach(v => sccOf[v] = i));
+  const sdeps = sccsSorted.map(() => new Set());
+  const sRdeps = sccsSorted.map(() => new Set());
+  Object.keys(deps).forEach(a => {
+    for (const b of deps[a]) {
+      const sa = sccOf[a], sb = sccOf[b];
+      if (sa !== sb) { sdeps[sa].add(sb); sRdeps[sb].add(sa); }
+    }
+  });
+  const inboundWeight = sccsSorted.map(() => 0);
+  edges.forEach(e => {
+    const ds = sccOf[e.dst], ss = sccOf[e.src];
+    if (ds === undefined || ss === undefined || ds === ss) return;
+    inboundWeight[ds] += (e.refs || e.value || 1);
+  });
+  const seedSccs = new Set();
+  seedFolders.forEach(f => { const i = sccOf[f]; if (i !== undefined) seedSccs.add(i); });
+  const prereqIdx = new Set();
+  {
+    const st = [];
+    seedSccs.forEach(i => sdeps[i].forEach(d => { if (!seedSccs.has(d)) st.push(d); }));
+    while (st.length) {
+      const v = st.pop();
+      if (prereqIdx.has(v) || seedSccs.has(v)) continue;
+      prereqIdx.add(v);
+      sdeps[v].forEach(w => { if (!prereqIdx.has(w) && !seedSccs.has(w)) st.push(w); });
+    }
+  }
+  // Topo-order prereqs (deepest dep first — those have nothing left inside prereqIdx to wait on).
+  const prereqs = [];
+  {
+    const done = new Set();
+    while (done.size < prereqIdx.size) {
+      let pick = -1;
+      for (const i of prereqIdx) {
+        if (done.has(i)) continue;
+        let ok = true;
+        for (const d of sdeps[i]) if (prereqIdx.has(d) && !done.has(d)) { ok = false; break; }
+        if (ok) { pick = i; break; }
+      }
+      if (pick < 0) break;
+      done.add(pick);
+      prereqs.push({ folders: sccsSorted[pick], size: sccsSorted[pick].length, is_cycle: sccsSorted[pick].length > 1 });
+    }
+  }
+  // Cascade after seed: greedy pick by inbound-weight; cycle = wall.
+  const cascade = [];
+  const cascadeDone = new Set([...prereqIdx, ...seedSccs]);
+  const remaining = sdeps.map(s => {
+    let n = 0; s.forEach(d => { if (!cascadeDone.has(d)) n++; }); return n;
+  });
+  // Aggregate the seed SCC(s) into a single visible bundle.
+  const seedBundleFolders = [];
+  let seedBundleWeight = 0;
+  let seedHasCycle = false;
+  seedSccs.forEach(i => {
+    seedBundleFolders.push(...sccsSorted[i]);
+    seedBundleWeight += inboundWeight[i];
+    if (sccsSorted[i].length > 1) seedHasCycle = true;
+  });
+  seedBundleFolders.sort();
+  cascade.push({ folders: seedBundleFolders, size: seedBundleFolders.length,
+                 is_cycle: seedHasCycle, inbound_weight: seedBundleWeight,
+                 unlocks: [], isSeed: true });
+  seedSccs.forEach(seedScc => {
+    sRdeps[seedScc].forEach(r => {
+      if (cascadeDone.has(r)) return;
+      remaining[r]--;
+      if (remaining[r] === 0) cascade[0].unlocks.push({ folders: sccsSorted[r], size: sccsSorted[r].length });
+    });
+  });
+  let wall = null;
+  const HARD_CAP = 80;
+  while (cascade.length < HARD_CAP) {
+    const eligible = [];
+    for (let i = 0; i < sccsSorted.length; i++) {
+      if (cascadeDone.has(i)) continue;
+      if (remaining[i] === 0) eligible.push(i);
+    }
+    if (!eligible.length) {
+      const anyPending = sccsSorted.some((_, i) => !cascadeDone.has(i));
+      wall = anyPending
+        ? { type: 'unreachable', detail: 'Cascade exhausted. Remaining folders aren\'t reachable from this seed — pick another seed.' }
+        : { type: 'all_clear', detail: '🎉 Migrating this seed cascades through every remaining folder.' };
+      break;
+    }
+    const singles = eligible.filter(i => sccsSorted[i].length === 1);
+    const cyclesOnly = singles.length === 0;
+    if (cyclesOnly) {
+      const cyc = eligible.sort((a,b) => sccsSorted[a].length - sccsSorted[b].length)[0];
+      wall = { type: 'cycle', sccIdx: cyc, folders: sccsSorted[cyc], size: sccsSorted[cyc].length,
+               detail: 'Next move requires breaking a cyclic bundle.' };
+      break;
+    }
+    singles.sort((a,b) => inboundWeight[b] - inboundWeight[a] || sccsSorted[a][0].localeCompare(sccsSorted[b][0]));
+    const pick = singles[0];
+    cascadeDone.add(pick);
+    const step = { folders: sccsSorted[pick], size: 1, is_cycle: false,
+                   inbound_weight: inboundWeight[pick], unlocks: [] };
+    sRdeps[pick].forEach(r => {
+      if (cascadeDone.has(r)) return;
+      remaining[r]--;
+      if (remaining[r] === 0) step.unlocks.push({ folders: sccsSorted[r], size: sccsSorted[r].length });
+    });
+    cascade.push(step);
+  }
+  if (!wall && cascade.length >= HARD_CAP) wall = { type: 'cap', detail: 'Runway view capped at ' + HARD_CAP + ' steps.' };
+  return { seed, prereqs, cascade, wall };
+}
+
+function renderRunway() {
+  document.getElementById('targetBanner').style.display = 'none';
+  document.getElementById('planFilter').style.display = 'none';
+  document.getElementById('stuckDetails').style.display = 'none';
+  document.getElementById('planListHeading').textContent = '🗺 Migration plan';
+  const globalActions = document.querySelector('#panel-plan .rec-global-actions');
+  if (globalActions) globalActions.style.display = 'none';
+  const rec = document.getElementById('recCard');
+  const wrap = document.getElementById('planList');
+  wrap.innerHTML = '';
+  const r = computeRunway(runwaySeed);
+  const seedHtml = '<code>' + escapeHtml(runwaySeed) + '</code>';
+  if (r.error) {
+    rec.innerHTML = '<h3>🗺 Migration plan — ' + seedHtml + '</h3>' +
+      '<div class="info">' + escapeHtml(r.error) + '</div>' +
+      '<div class="card-actions"><button class="ghost" id="rwExit">← Back</button></div>';
+    document.getElementById('rwExit').onclick = clearRunway;
+    return;
+  }
+  const prereqsCount = r.prereqs.length;
+  const cascadeCount = r.cascade.length - 1; // exclude seed
+  const wallTxt = r.wall ? (
+    r.wall.type === 'all_clear' ? '🎉 unlocks everything remaining'
+      : r.wall.type === 'cycle' ? '⚠ blocks at cycle of ' + r.wall.size
+      : r.wall.type === 'unreachable' ? '🚧 cascade ends, others need another seed'
+      : '⏸ capped'
+  ) : '';
+  rec.innerHTML = '<h3>🗺 Migration plan — ' + seedHtml + '</h3>' +
+    '<div class="info">' +
+      '<b>' + prereqsCount + '</b> prereq step(s) needed first • ' +
+      'then your <b>seed</b> • ' +
+      'unlocks <b>' + cascadeCount + '</b> cascade step(s) • ' +
+      '<span style="font-weight:600;">' + wallTxt + '</span>' +
+    '</div>' +
+    '<div class="info" style="margin-top:6px;font-size:11px;color:var(--text-faint);background:var(--surface-2);padding:6px 10px;border-radius:4px;">' +
+      'ℹ️ Cascade is a <b>simulation</b>: it assumes you actually do the prereqs + seed. If you skip them, the unlocks below won\'t materialize.' +
+    '</div>' +
+    '<div class="card-actions">' +
+      '<button class="ghost" id="rwExit">← Back</button>' +
+      '<button class="ghost" id="rwReveal">Focus seed in graph</button>' +
+    '</div>';
+  document.getElementById('rwExit').onclick = clearRunway;
+  document.getElementById('rwReveal').onclick = () => focusToFolder(runwaySeed);
+
+  const renderStepCard = (s, opts) => {
+    const cls = opts.cls || 'step';
+    const badge = opts.badge || '';
+    const titleHtml = opts.title;
+    const unlocks = s.unlocks || [];
+    const unlocksHtml = unlocks.length === 0
+      ? ''
+      : '<div class="unlock-header">🔓 Unlocks <span class="unlock-count-badge">' + unlocks.length + '</span></div>' +
+        '<div class="unlock-list">' +
+          unlocks.slice(0, 12).map(u => {
+            const label = u.size === 1 ? u.folders[0] : '⚠ cycle×' + u.size;
+            const ccls = u.size === 1 ? 'unlock-chip' : 'unlock-chip cycle';
+            return '<span class="' + ccls + '" data-folder="' + escapeHtml(u.folders[0]) + '">' +
+              '<span class="arrow">↗</span>' + escapeHtml(label) + '</span>';
+          }).join('') +
+          (unlocks.length > 12 ? '<span class="unlock-chip" style="background:var(--surface-2);color:var(--text-faint);border-color:var(--border);cursor:default;">+' + (unlocks.length - 12) + ' more</span>' : '') +
+        '</div>';
+    const folderList = s.folders.slice(0, 6).map(f =>
+      '<div class="wiz-folder" data-folder="' + escapeHtml(f) + '">' +
+      '<code style="cursor:pointer;text-decoration:underline;">' + escapeHtml(f) + '</code></div>'
+    ).join('') + (s.folders.length > 6 ? '<div class="small">…+' + (s.folders.length - 6) + ' more</div>' : '');
+    const usageHtml = (s.inbound_weight && s.inbound_weight > 0)
+      ? '<div class="wiz-usage">📈 ' + s.inbound_weight + ' incoming ref' + (s.inbound_weight === 1 ? '' : 's') + '</div>'
+      : '';
+    const div = document.createElement('div');
+    div.className = cls;
+    div.innerHTML = '<div class="wiz-step-header">' +
+      '<span class="stepNum">' + escapeHtml(opts.label) + '</span>' +
+      '<span class="grow"><b>' + titleHtml + '</b></span>' +
+      badge + '</div>' + folderList + usageHtml + unlocksHtml;
+    div.querySelectorAll('[data-folder]').forEach(el => {
+      el.onclick = (ev) => { ev.stopPropagation(); focusToFolder(el.dataset.folder); };
+    });
+    return div;
+  };
+
+  if (r.prereqs.length) {
+    const h = document.createElement('div');
+    h.className = 'small';
+    h.style.cssText = 'margin-top:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;font-size:11px;';
+    h.textContent = '⚙️ Prereqs — migrate first';
+    wrap.appendChild(h);
+    r.prereqs.forEach((p, i) => {
+      wrap.appendChild(renderStepCard(p, {
+        cls: 'step',
+        label: 'P' + (i + 1),
+        title: p.is_cycle ? '⚠ Cycle bundle of ' + p.size : 'Migrate folder',
+        badge: '<span class="step-status locked">prereq</span>',
+      }));
+    });
+  }
+  const sh = document.createElement('div');
+  sh.className = 'small';
+  sh.style.cssText = 'margin-top:14px;font-weight:700;color:var(--accent-strong);text-transform:uppercase;letter-spacing:.5px;font-size:11px;';
+  sh.textContent = '🎯 Seed + forward cascade';
+  wrap.appendChild(sh);
+  r.cascade.forEach((c, i) => {
+    wrap.appendChild(renderStepCard(c, {
+      cls: 'step' + (c.isSeed ? ' next' : ''),
+      label: c.isSeed ? 'SEED' : ('+' + i),
+      title: c.isSeed ? '🎯 Seed folder' : 'Becomes eligible',
+      badge: c.isSeed ? '<span class="step-status next">seed</span>' : '',
+    }));
+  });
+  if (r.wall) {
+    const w = document.createElement('div');
+    w.className = 'step';
+    if (r.wall.type === 'all_clear') {
+      w.style.cssText = 'background:var(--green-soft);border-color:var(--green);margin-top:10px;';
+      w.innerHTML = '<b style="color:var(--green);">' + escapeHtml(r.wall.detail) + '</b>';
+    } else if (r.wall.type === 'cycle') {
+      w.style.cssText = 'background:var(--orange-soft);border-color:var(--orange);margin-top:10px;';
+      const cyc = r.wall.folders.slice(0, 8).map(f =>
+        '<div class="wiz-folder" data-folder="' + escapeHtml(f) + '"><code style="cursor:pointer;text-decoration:underline;">' + escapeHtml(f) + '</code></div>'
+      ).join('');
+      w.innerHTML = '<div class="wiz-step-header"><span class="stepNum">🚧</span>' +
+        '<span class="grow"><b>Wall — cycle of ' + r.wall.size + ' folders</b></span>' +
+        '<span class="step-status next">blocker</span></div>' +
+        '<div class="info" style="font-size:11px;margin:4px 0;">' + escapeHtml(r.wall.detail) +
+        ' To pass this wall, extract one folder at a time from the cycle (see global Plan view for extraction candidates).</div>' +
+        cyc + (r.wall.folders.length > 8 ? '<div class="small">…+' + (r.wall.folders.length - 8) + ' more in cycle</div>' : '');
+      w.querySelectorAll('[data-folder]').forEach(el => {
+        el.onclick = (ev) => { ev.stopPropagation(); focusToFolder(el.dataset.folder); };
+      });
+    } else {
+      w.style.cssText = 'background:var(--surface-2);margin-top:10px;';
+      w.innerHTML = '<b>🚧 ' + escapeHtml(r.wall.detail) + '</b>';
+    }
+    wrap.appendChild(w);
+  }
+}
+
+// Patch renderPlan: target-driven (drill from a node) keeps original behavior;
+// otherwise the plan is wizard-driven. No global "Start here" is ever shown.
 const _origRenderPlan = renderPlan;
 renderPlan = function() {
-  if (currentMode === 'migration' && wizPlan) { renderWizardPlan(); return; }
-  _origRenderPlan();
+  if (runwaySeed) { renderRunway(); return; }
+  // Target-driven plan (clicked "🎯 Plan to move" on a node) still uses the
+  // original render — it's an explicit user intent, not the default landing.
+  if (migrationTarget) { _origRenderPlan(); return; }
+  const globalActions = document.querySelector('#panel-plan .rec-global-actions');
+  if (currentMode === 'migration' && wizPlan) {
+    if (globalActions) globalActions.style.display = '';
+    renderWizardPlan();
+    return;
+  }
+  renderEmptyPlan();
 };
 
 renderPlan();
@@ -3005,6 +4263,7 @@ renderWizard();
 applyMode('explore');
 updateMigratedSidebar();
 updateExcludeSidebar();
+updateBlockedSidebar();
 // Defer the first graph render until layout is settled. Rendering synchronously
 // at parse time builds the vis network into a not-yet-sized #net container, so
 // it draws into a 0×0 canvas and shows blank until the next render. Waiting for
@@ -3013,6 +4272,232 @@ updateExcludeSidebar();
 if (document.readyState === 'complete') { render(); }
 else { window.addEventListener('load', render); }
 window.addEventListener('resize', () => { if (network) try { network.fit({ animation: false }); } catch (e) {} });
+
+// ── Global search (appbar) ─────────────────────────────────────────────────
+// One bar searches folders + files + types. Folders jump to their container,
+// files drill into the leaf folder (the type-view auto-opens), types jump to
+// the owning folder. Replaces the prior per-panel filter inputs.
+(function globalSearch() {
+  const input = document.getElementById('globalSearch');
+  const out = document.getElementById('globalSearchResults');
+  if (!input || !out) return;
+
+  // Build the search index once. Cheap for project-sized graphs (~10k items).
+  const items = [];
+  Object.keys(tree).forEach(id => {
+    if (!id) return;
+    items.push({ kind: 'folder', label: id, sub: '', target: id, icon: '📁' });
+  });
+  (DATA.files || []).forEach(f => {
+    items.push({
+      kind: 'file', label: f.name, sub: f.folder,
+      target: f.folder, icon: '📄',
+      decls: (f.decls || []).join(' ').toLowerCase(),
+    });
+  });
+  Object.keys(typeOwners || {}).forEach(name => {
+    const owners = typeOwners[name] || [];
+    if (!owners.length) return;
+    const kind = (typeKinds && typeKinds[name]) || 'type';
+    const icon = kind === 'protocol' ? '🅿️' : kind === 'enum' ? '🆎' :
+                 kind === 'struct' ? '🟦' : kind === 'class' ? '🟪' :
+                 kind === 'typealias' ? '🔗' : '🔤';
+    owners.forEach(folder => {
+      items.push({ kind: kind, label: name, sub: folder, target: folder, icon: icon });
+    });
+  });
+
+  // Cap haystack to a normalised lowercase key for fast filter.
+  items.forEach(it => { it._k = (it.label + ' ' + (it.sub || '') + ' ' + (it.decls || '')).toLowerCase(); });
+
+  let activeIdx = -1;
+  let lastRendered = [];
+
+  function highlight(text, q) {
+    if (!q) return escapeHtml(text);
+    const idx = text.toLowerCase().indexOf(q);
+    if (idx < 0) return escapeHtml(text);
+    return escapeHtml(text.slice(0, idx)) + '<b>' + escapeHtml(text.slice(idx, idx + q.length)) + '</b>' + escapeHtml(text.slice(idx + q.length));
+  }
+
+  function render(query) {
+    out.innerHTML = '';
+    activeIdx = -1;
+    const q = query.trim().toLowerCase();
+    if (!q) { out.style.display = 'none'; lastRendered = []; return; }
+    // Rank: prefer label-prefix > label-contains > sub-contains.
+    const scored = [];
+    for (const it of items) {
+      const labelLc = it.label.toLowerCase();
+      let score;
+      if (labelLc === q) score = 0;
+      else if (labelLc.startsWith(q)) score = 1;
+      else if (labelLc.includes(q)) score = 2;
+      else if (it._k.includes(q)) score = 3;
+      else continue;
+      scored.push({ it, score });
+      if (scored.length > 600) break; // soft cap on raw match count
+    }
+    scored.sort((a, b) => a.score - b.score || a.it.label.length - b.it.label.length || a.it.label.localeCompare(b.it.label));
+    const top = scored.slice(0, 30);
+    if (!top.length) {
+      out.innerHTML = '<div class="gsr-empty">No matches.</div>';
+      out.style.display = '';
+      lastRendered = [];
+      return;
+    }
+    // Group by kind for skim-ability.
+    const buckets = { folder: [], file: [] };
+    const typeBucket = [];
+    top.forEach(({ it }) => {
+      if (it.kind === 'folder') buckets.folder.push(it);
+      else if (it.kind === 'file') buckets.file.push(it);
+      else typeBucket.push(it);
+    });
+    const sections = [
+      ['Folders', buckets.folder],
+      ['Files', buckets.file],
+      ['Types', typeBucket],
+    ];
+    const rendered = [];
+    sections.forEach(([title, list]) => {
+      if (!list.length) return;
+      const h = document.createElement('div');
+      h.className = 'gsr-section';
+      h.textContent = title;
+      out.appendChild(h);
+      list.forEach(it => {
+        const row = document.createElement('div');
+        row.className = 'gsr-item';
+        const kindLabel = it.kind === 'folder' ? '' :
+          '<span class="gsr-kind">' + escapeHtml(it.kind) + '</span>';
+        row.innerHTML =
+          '<span class="gsr-icon">' + it.icon + '</span>' +
+          '<span class="gsr-label">' + highlight(it.label, q) + '</span>' +
+          (it.sub ? '<span class="gsr-sub">' + escapeHtml(it.sub) + '</span>' : '') +
+          kindLabel;
+        row.onclick = () => selectItem(it);
+        out.appendChild(row);
+        rendered.push({ row, it });
+      });
+    });
+    lastRendered = rendered;
+    out.style.display = '';
+  }
+
+  function selectItem(it) {
+    out.style.display = 'none';
+    input.value = '';
+    if (!it.target) return;
+    focusToFolder(it.target);
+  }
+
+  function setActive(i) {
+    if (!lastRendered.length) return;
+    activeIdx = ((i % lastRendered.length) + lastRendered.length) % lastRendered.length;
+    lastRendered.forEach((r, idx) => r.row.classList.toggle('active', idx === activeIdx));
+    const el = lastRendered[activeIdx].row;
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  input.addEventListener('input', () => render(input.value));
+  input.addEventListener('focus', () => { if (input.value.trim()) render(input.value); });
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); setActive(activeIdx + 1); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); setActive(activeIdx - 1); }
+    else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (activeIdx >= 0 && lastRendered[activeIdx]) selectItem(lastRendered[activeIdx].it);
+      else if (lastRendered.length) selectItem(lastRendered[0].it);
+    } else if (ev.key === 'Escape') {
+      out.style.display = 'none'; input.blur();
+    }
+  });
+  document.addEventListener('click', (ev) => {
+    if (!out.contains(ev.target) && ev.target !== input) out.style.display = 'none';
+  });
+  // Keyboard shortcut: Cmd/Ctrl+K focuses the search bar from anywhere.
+  document.addEventListener('keydown', (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === 'k') {
+      ev.preventDefault();
+      input.focus();
+      input.select();
+    }
+  });
+})();
+
+// ── Live-mode helper (companion `just serve` daemon) ───────────────────────
+// Static HTML can't shell out, so the daemon brokers two things:
+//   • POST /open  → opens a file/folder in Xcode via `xed`
+//   • SSE /events → fires `reload` when dependency_graph.html is rewritten
+// When the daemon isn't running (the page was opened by double-click), every
+// feature below silently degrades — the static graph still works.
+(function liveMode() {
+  // Same-origin probe. file:// pages can't reach 127.0.0.1 without explicit
+  // origin, so we only enable live-mode when served by the daemon itself.
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  fetch('/ping', { method: 'GET' }).then(r => r.ok ? r.json() : null).then(info => {
+    if (!info || !info.ok) return;
+    enableLiveMode(info);
+  }).catch(() => {});
+
+  function openInXcode(folder) {
+    return fetch('/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: folder }),
+    }).then(r => r.ok ? r.json() : r.json().then(j => { console.warn('[live] open failed:', j); return null; }))
+      .catch(e => { console.warn('[live] open error:', e); return null; });
+  }
+  function enableLiveMode(info) {
+    // Expose minimal API so vis-network click handlers (which see canvas
+    // events, not DOM `[data-folder]` clicks) can route into Xcode.
+    window.LIVE = { enabled: true, openPath: openInXcode };
+    // Visual marker so the user knows hot reload + Xcode handoff are armed.
+    const bar = document.querySelector('.appbar');
+    if (bar) {
+      const pill = document.createElement('div');
+      pill.style.cssText = 'display:inline-flex;align-items:center;gap:5px;margin-top:6px;padding:3px 9px;background:var(--green-soft);color:var(--green);border:1px solid var(--green);border-radius:999px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;';
+      pill.innerHTML = '🟢 Live • cmd+click → Xcode';
+      pill.title = 'Helper daemon connected. Cmd+click any folder to open it in Xcode. HTML hot-reloads on `just tree`.';
+      bar.appendChild(pill);
+    }
+    // Hot reload: any rewrite of dependency_graph.html refreshes this tab.
+    try {
+      const es = new EventSource('/events');
+      es.addEventListener('reload', () => {
+        // Preserve focus + tab + mode across the reload via URL hash.
+        const hash = '#focus=' + encodeURIComponent(focusId || '') +
+          '&tab=' + encodeURIComponent((document.querySelector('.tab.active') || {}).dataset?.tab || '') +
+          '&mode=' + encodeURIComponent(currentMode || '');
+        try { history.replaceState(null, '', location.pathname + location.search + hash); } catch (e) {}
+        location.reload();
+      });
+    } catch (e) {}
+    // Cmd/Ctrl + click on any element carrying a folder path opens it in Xcode.
+    // Captures during the capture phase so we run before the in-app focus handler.
+    document.addEventListener('click', (ev) => {
+      if (!(ev.metaKey || ev.ctrlKey)) return;
+      const el = ev.target.closest('[data-folder]');
+      if (!el) return;
+      const folder = el.dataset.folder;
+      if (!folder) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      openInXcode(folder);
+    }, true);
+    // Restore focus/tab/mode from hash (set by the pre-reload handoff above).
+    try {
+      const h = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+      const wantMode = h.get('mode');
+      const wantTab = h.get('tab');
+      const wantFocus = h.get('focus');
+      if (wantMode && wantMode !== currentMode) applyMode(wantMode);
+      if (wantTab) switchTab(wantTab);
+      if (wantFocus) focusToFolder(wantFocus);
+    } catch (e) {}
+  }
+})();
 </script>
 </body>
 </html>
@@ -3112,10 +4597,14 @@ def write_task_list_markdown(tasks: list[dict], meta: dict, out_path: Path) -> N
     lines.append(f"Folders already in SPM (baseline): **{meta['baseline_count']}**"
                  f" — prefixes: `{', '.join(meta['migrated_prefixes']) or '(none)'}`  ")
     excluded_count = meta.get('excluded_count', 0)
+    blocked_reasons = meta.get('blocked_reasons', {}) or {}
+    blocked_count = len(blocked_reasons)
     if excluded_count:
         lines.append(f"Folders marked won't-be-modularized (excluded): **{excluded_count}**  ")
+    if blocked_count:
+        lines.append(f"Folders that can't be modularized (depend on excluded): **{blocked_count}**  ")
     lines.append(f"Folders to extract: "
-                 f"**{meta['source_total'] - meta['baseline_count'] - excluded_count}**  ")
+                 f"**{meta['source_total'] - meta['baseline_count'] - excluded_count - blocked_count}**  ")
     lines.append(f"Total tasks: **{len(tasks)}**")
     lines.append("")
     lines.append("## How to use this list")
@@ -3192,6 +4681,25 @@ def write_task_list_markdown(tasks: list[dict], meta: dict, out_path: Path) -> N
             lines.append("3. Mark types `public` where consumers need them.")
             lines.append("4. Update every consumer to import the new module.")
             lines.append("5. Verify the build and tests are green.")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    if blocked_count:
+        lines.append("## Can't modularize (blocked by won't-modularize)")
+        lines.append("")
+        lines.append(
+            "These folders are out of the migration plan because they "
+            "transitively depend on a folder marked won't-modularize. An SPM "
+            "package cannot link against non-SPM app-target code, so they "
+            "stay where they are until the blocking dependency is severed "
+            "(or the blocker is unmarked)."
+        )
+        lines.append("")
+        for folder in sorted(blocked_reasons):
+            blockers = blocked_reasons[folder]
+            blockers_str = ", ".join(f"`{b}`" for b in blockers)
+            lines.append(f"- `{folder}` — blocked by: {blockers_str}")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -3308,6 +4816,41 @@ def is_migrated(folder: str, prefixes: list[str]) -> bool:
     return False
 
 
+def compute_blocked_by_excluded(
+    leaf_edges: dict, excluded: set[str], migrated: set[str]
+) -> dict[str, set[str]]:
+    """Folders that transitively depend on a won't-modularize folder.
+
+    Reverse-BFS over leaf_edges starting from ``excluded``. Migrated nodes
+    break the chain (SPM→SPM is fine — the new package can link against any
+    already-migrated package), so they don't propagate. Returns a mapping
+    ``blocked_folder -> {excluded_folder, …}`` so the markdown can name the
+    blockers per folder.
+    """
+    rev: dict[str, set[str]] = {}
+    for (src, dst) in leaf_edges:
+        rev.setdefault(dst, set()).add(src)
+    reasons: dict[str, set[str]] = {}
+    frontier: list[tuple[str, str]] = [(e, e) for e in excluded]
+    seen_edge: set[tuple[str, str]] = set(frontier)
+    while frontier:
+        nxt: list[tuple[str, str]] = []
+        for node, root_excl in frontier:
+            for pred in rev.get(node, ()):
+                if pred in migrated:
+                    continue
+                if pred in excluded:
+                    continue
+                reasons.setdefault(pred, set()).add(root_excl)
+                key = (pred, root_excl)
+                if key in seen_edge:
+                    continue
+                seen_edge.add(key)
+                nxt.append(key)
+        frontier = nxt
+    return reasons
+
+
 def load_exclusions(path: Path) -> set[str]:
     """Read the persisted "won't be modularized" folder list.
 
@@ -3341,7 +4884,7 @@ def main() -> int:
     resolved_pair_types: dict | None = None
     if args.from_index is not None:
         (decls, leaf_edges, multi_decl_types, all_folders, file_records, type_owners,
-         raw_owners, resolved_pair_types, type_kinds) = load_index_graph(
+         raw_owners, resolved_pair_types, type_kinds, file_edges, type_edges) = load_index_graph(
             args.from_index.expanduser().resolve()
         )
     else:
@@ -3350,6 +4893,8 @@ def main() -> int:
             root, include_tests=args.include_tests, ignore_patterns=args.ignore, ext=args.ext
         )
         type_kinds = {}  # regex scanner has no symbol-kind info
+        file_edges = []   # only the index path has file-level edges
+        type_edges = []   # only the index path can resolve containing-type
     if not file_records:
         print(f"No {args.ext} files found under {root}. "
               f"(Try --include-tests or check --ignore patterns.)", file=sys.stderr)
@@ -3375,7 +4920,16 @@ def main() -> int:
         f for f in all_source_folders
         if any(f == e or f.startswith(e + "/") for e in raw_excluded)
     }
-    source_folders = all_source_folders - initial_migrated - excluded
+    # Transitive can't-modularize: any folder reaching an excluded folder via
+    # leaf_edges (without crossing an already-migrated node) is itself stuck —
+    # an SPM package can't link against the non-SPM app target where excluded
+    # code stays. These come out of the migration plan and are reported as a
+    # separate bucket.
+    blocked_reasons = compute_blocked_by_excluded(
+        leaf_edges, excluded, initial_migrated
+    )
+    blocked = set(blocked_reasons.keys())
+    source_folders = all_source_folders - initial_migrated - excluded - blocked
 
     tree = build_tree(all_folders, decls, root_label=root_label)
     # Plan computed over source folders only. Edges into pre-migrated folders
@@ -3416,6 +4970,8 @@ def main() -> int:
         print(f"To migrate:        {len(source_folders)} folder(s)")
     if excluded:
         print(f"Won't modularize:  {len(excluded)} folder(s) (from {excluded_file})")
+    if blocked:
+        print(f"Can't modularize:  {len(blocked)} folder(s) (transitively depend on excluded)")
     print(f"Leaf-edges:        {len(leaf_edges)} total, {len(plan_edges)} considered for plan")
     print(f"Types in 2+ folders: {len(multi_decl_types)} (all declarers kept)")
     n_cycles = sum(1 for p in plan if p["is_cycle"])
@@ -3456,6 +5012,7 @@ def main() -> int:
             migrated_prefixes, graph_path, type_kinds=type_kinds,
             initial_excluded=sorted(excluded), excluded_file=excluded_file,
             folder_package=folder_package, packages=packages,
+            file_edges=file_edges, type_edges=type_edges,
         )
         print(f"\nWrote graph: {graph_path}")
 
@@ -3473,6 +5030,7 @@ def main() -> int:
             "baseline_count": len(initial_migrated),
             "source_total": len(all_source_folders),
             "excluded_count": len(excluded),
+            "blocked_reasons": {k: sorted(v) for k, v in blocked_reasons.items()},
             "tasks_total": len(tasks),
         }
         if args.list_format == "json":

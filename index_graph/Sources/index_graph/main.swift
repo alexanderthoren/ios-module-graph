@@ -26,6 +26,27 @@ struct FileRecord: Codable {
     let refs: [String]              // referenced type names (name-only, kept for back-compat)
     let ref_owners: [[String]]      // USR-resolved refs as [type name, owner folder] — collision-free
 }
+struct FileEdge: Codable {
+    let src: String                 // referencing file, path relative to repoRoot
+    let dst: String                 // declaring file, path relative to repoRoot
+    let w: Int                      // total occurrences
+    let symbols: [String]           // referenced symbol names (top-N, capped server-side)
+}
+struct TypeEdge: Codable {
+    // Both endpoints are first-party TYPE declarations. Resolved via the
+    // .containedBy relations index-store emits on every reference occurrence:
+    // for each non-decl ref, we walk up from the contextual entity until we
+    // hit a tracked type — that's the src; the dst is the referenced symbol's
+    // owning type (the symbol's own containing type, or the symbol itself if
+    // it IS a type). Lets the type-view skip file nodes and connect class to
+    // class / struct to struct directly.
+    let src: String                 // type name as "<name>\t<owner_folder>" (collision-safe key)
+    let dst: String
+    let w: Int
+    let symbols: [String]           // top-N referenced symbol names (member or type)
+    let src_file: String            // path of file declaring src type (rel to repoRoot)
+    let dst_file: String            // path of file declaring dst type
+}
 struct Graph: Codable {
     let edges: [Edge]
     let pair_types: [PairTypes]
@@ -33,6 +54,12 @@ struct Graph: Codable {
     let files: [FileRecord]
     let type_owners: [String: [String]]
     let type_kinds: [String: String]   // type name -> "class" | "struct" | "enum" | "protocol" | "typealias"
+    let file_edges: [FileEdge]
+    // Precise type→type edges. Same data as file_edges but lifted one level:
+    // src/dst are the containing TYPES of the ref site / referenced symbol,
+    // not their files. Type-view consumes this directly so a class can connect
+    // to a struct without a file box in between.
+    let type_edges: [TypeEdge]
 }
 
 // MARK: - args
@@ -116,6 +143,16 @@ func relFolder(_ path: String) -> String {
 }
 
 let typeKinds: Set<IndexSymbolKind> = [.class, .struct, .enum, .protocol, .typealias]
+// Symbol kinds tracked for FILE-LEVEL edges only — vars, funcs, methods, props,
+// inits, subscripts. They aren't first-class graph nodes (the folder graph is
+// type-driven on purpose), but they DO couple files together via property/method
+// access and must surface in the type-view so the user sees the real edges.
+let fileEdgeKinds: Set<IndexSymbolKind> = [
+    .class, .struct, .enum, .protocol, .typealias,
+    .function, .instanceMethod, .staticMethod, .classMethod,
+    .constructor, .instanceProperty, .classProperty, .staticProperty,
+    .variable, .enumConstant,
+]
 
 func kindString(_ k: IndexSymbolKind) -> String {
     switch k {
@@ -136,6 +173,15 @@ var folderDecls: [String: Set<String>] = [:]        // folder -> type names
 var typeOwners: [String: Set<String>] = [:]         // name -> folders
 var fileDecls: [String: Set<String>] = [:]          // path -> type names declared
 var typeKindMap: [String: String] = [:]             // name -> kind (class/struct/enum/protocol/typealias)
+// File-level decls: USR -> (declaring file path, symbol name). Covers types AND
+// non-types so we can later resolve any reference's target file by USR.
+struct FileDecl { let path: String; let name: String }
+var fileDeclByUSR: [String: FileDecl] = [:]
+// Containment chain: usr -> immediate parent usr (via .childOf / .containedBy).
+// Lets us resolve "ref happens inside method M of type X" to type X by walking
+// the chain up to the first tracked type USR.
+var parentByUSR: [String: String] = [:]
+var kindByUSR: [String: IndexSymbolKind] = [:]
 
 // Enumerate every symbol name in the store, then resolve each to its canonical
 // occurrences. (An empty `containing:` pattern matches nothing, so we can't use
@@ -149,18 +195,40 @@ log("symbol names scanned: \(names.count)")
 for name in names {
     db.forEachCanonicalSymbolOccurrence(byName: name) { occ in
         let sym = occ.symbol
-        guard typeKinds.contains(sym.kind) else { return true }
+        guard fileEdgeKinds.contains(sym.kind) else { return true }
         guard occ.roles.contains(.definition) || occ.roles.contains(.declaration) else { return true }
         let path = occ.location.path
         guard !occ.location.isSystem, isFirstParty(path) else { return true }
-        let folder = relFolder(path)
-        declByUSR[sym.usr] = Decl(name: sym.name, folder: folder)
-        folderDecls[folder, default: []].insert(sym.name)
-        typeOwners[sym.name, default: []].insert(folder)
-        fileDecls[path, default: []].insert(sym.name)
-        // First kind wins; same-named types rarely differ in kind, and one
-        // label per name is enough for the type-level view.
-        if typeKindMap[sym.name] == nil { typeKindMap[sym.name] = kindString(sym.kind) }
+        // Type-only bookkeeping: feeds the folder-level graph and type-view labels.
+        if typeKinds.contains(sym.kind) {
+            let folder = relFolder(path)
+            declByUSR[sym.usr] = Decl(name: sym.name, folder: folder)
+            folderDecls[folder, default: []].insert(sym.name)
+            typeOwners[sym.name, default: []].insert(folder)
+            fileDecls[path, default: []].insert(sym.name)
+            // First kind wins; same-named types rarely differ in kind, and one
+            // label per name is enough for the type-level view.
+            if typeKindMap[sym.name] == nil { typeKindMap[sym.name] = kindString(sym.kind) }
+        }
+        // File-level bookkeeping: types + non-types alike, used for file_edges.
+        // First definition wins — generated/synthesized re-decls aren't useful targets.
+        if fileDeclByUSR[sym.usr] == nil {
+            fileDeclByUSR[sym.usr] = FileDecl(path: path, name: sym.name)
+        }
+        // Containment chain. The relation `.childOf` / `.containedBy` on this
+        // occurrence points to the immediate parent (extension/type/file). We
+        // store kind/usr for both sides so the chain walk later can climb to
+        // the first type without re-querying the store.
+        kindByUSR[sym.usr] = sym.kind
+        for rel in occ.relations {
+            if rel.roles.contains(.childOf) || rel.roles.contains(.containedBy) {
+                parentByUSR[sym.usr] = rel.symbol.usr
+                if kindByUSR[rel.symbol.usr] == nil {
+                    kindByUSR[rel.symbol.usr] = rel.symbol.kind
+                }
+                break
+            }
+        }
         return true
     }
 }
@@ -176,7 +244,14 @@ var fileRefs: [String: Set<String>] = [:]             // path -> referenced type
 var fileRefPairs: [String: Set<String>] = [:]
 
 for (usr, decl) in declByUSR {
-    for occ in db.occurrences(ofUSR: usr, roles: .reference) {
+    // SymbolRole.all + filter-out-decl matches every non-declaration occurrence
+    // (reference, read, write, call, baseOf, extendedBy, calledBy, containedBy,
+    // specializationOf, ibTypeOf, implicit, …). Previously we asked only for
+    // `.reference` and lost cases like a method-return type annotation whose
+    // sole role is `.reference + .containedBy` — fine — but also property reads
+    // whose roles are `.read` only, which the narrower query dropped.
+    for occ in db.occurrences(ofUSR: usr, roles: .all) {
+        if occ.roles.contains(.definition) || occ.roles.contains(.declaration) { continue }
         let path = occ.location.path
         guard !occ.location.isSystem, isFirstParty(path) else { continue }
         let src = relFolder(path)
@@ -186,6 +261,128 @@ for (usr, decl) in declByUSR {
         pairTypes[src, default: [:]][decl.folder, default: []].insert(decl.name)
     }
 }
+
+// MARK: - phase 3: resolve file-to-file edges (all symbol kinds, by USR)
+
+// (src_path, dst_path) -> (weight, symbol-name -> count). symbol counts let us
+// cap the per-edge symbol list to the top-N callers on the Python side without
+// losing the long tail's weight contribution.
+var fileEdgeWeight: [String: [String: Int]] = [:]
+var fileEdgeSymCounts: [String: [String: [String: Int]]] = [:]
+
+func relPath(_ p: String) -> String {
+    guard p.hasPrefix(repoRoot) else { return p }
+    return String(p.dropFirst(repoRoot.count))
+}
+
+for (usr, fd) in fileDeclByUSR {
+    for occ in db.occurrences(ofUSR: usr, roles: .all) {
+        if occ.roles.contains(.definition) || occ.roles.contains(.declaration) { continue }
+        let path = occ.location.path
+        guard !occ.location.isSystem, isFirstParty(path) else { continue }
+        if path == fd.path { continue }                  // intra-file: not an edge
+        fileEdgeWeight[path, default: [:]][fd.path, default: 0] += 1
+        fileEdgeSymCounts[path, default: [:]][fd.path, default: [:]][fd.name, default: 0] += 1
+    }
+}
+
+var fileEdges: [FileEdge] = []
+let maxSymsPerEdge = 12
+for (src, dsts) in fileEdgeWeight {
+    for (dst, w) in dsts {
+        let counts = fileEdgeSymCounts[src]?[dst] ?? [:]
+        // Top-N by usage; ties broken by name for determinism.
+        let topSyms = counts.sorted {
+            $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }.prefix(maxSymsPerEdge).map { $0.key }
+        fileEdges.append(FileEdge(src: relPath(src), dst: relPath(dst), w: w, symbols: topSyms))
+    }
+}
+log("file_edges: \(fileEdges.count)")
+
+// MARK: - phase 4: type→type edges (containing-type-resolved)
+
+// Walks the parent chain until it hits a USR registered in declByUSR (first-party
+// type). Cycles are guarded with a `seen` set — defensive, the index store
+// shouldn't produce them but cheap insurance.
+func containingType(_ usr: String) -> String? {
+    var seen = Set<String>()
+    var cur: String? = usr
+    while let c = cur, !seen.contains(c) {
+        seen.insert(c)
+        if declByUSR[c] != nil { return c }
+        cur = parentByUSR[c]
+    }
+    return nil
+}
+
+// (srcTypeUSR, dstTypeUSR) -> total weight + symbol-name -> count.
+var typeEdgeWeight: [String: [String: Int]] = [:]
+var typeEdgeSyms: [String: [String: [String: Int]]] = [:]
+
+for (usr, fd) in fileDeclByUSR {
+    // dstType: the type that owns the referenced symbol. If the symbol itself
+    // is a type, that's the answer; otherwise walk the parent chain.
+    let dstType: String?
+    if declByUSR[usr] != nil { dstType = usr }
+    else if let p = parentByUSR[usr] { dstType = containingType(p) }
+    else { dstType = nil }
+    guard let dst = dstType else { continue }
+
+    for occ in db.occurrences(ofUSR: usr, roles: .all) {
+        if occ.roles.contains(.definition) || occ.roles.contains(.declaration) { continue }
+        let path = occ.location.path
+        guard !occ.location.isSystem, isFirstParty(path) else { continue }
+        // Resolve the ref site's containing type via the occurrence's relations.
+        var containerUSR: String? = nil
+        for rel in occ.relations {
+            if rel.roles.contains(.childOf) || rel.roles.contains(.containedBy) {
+                containerUSR = rel.symbol.usr
+                // Backfill parent/kind for transitive walks (the container's
+                // own canonical occurrence may not have been seen yet, e.g.
+                // when the container is itself an extension).
+                if let cu = containerUSR {
+                    if kindByUSR[cu] == nil { kindByUSR[cu] = rel.symbol.kind }
+                }
+                break
+            }
+        }
+        guard let cu = containerUSR, let src = containingType(cu), src != dst else { continue }
+        typeEdgeWeight[src, default: [:]][dst, default: 0] += 1
+        typeEdgeSyms[src, default: [:]][dst, default: [:]][fd.name, default: 0] += 1
+    }
+}
+
+var typeEdges: [TypeEdge] = []
+let maxTypeSymsPerEdge = 12
+for (srcUSR, dsts) in typeEdgeWeight {
+    guard let srcDecl = declByUSR[srcUSR] else { continue }
+    // Type's declaring file lookup: scan fileDecls for the type name in its
+    // owner folder. Tracked indirectly via declByUSR.folder + fileDecls inversion;
+    // for cheap lookup, derive at runtime.
+    var srcFile = ""
+    for (path, names) in fileDecls where names.contains(srcDecl.name) {
+        if relFolder(path) == srcDecl.folder { srcFile = relPath(path); break }
+    }
+    for (dstUSR, w) in dsts {
+        guard let dstDecl = declByUSR[dstUSR] else { continue }
+        var dstFile = ""
+        for (path, names) in fileDecls where names.contains(dstDecl.name) {
+            if relFolder(path) == dstDecl.folder { dstFile = relPath(path); break }
+        }
+        let counts = typeEdgeSyms[srcUSR]?[dstUSR] ?? [:]
+        let topSyms = counts.sorted {
+            $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }.prefix(maxTypeSymsPerEdge).map { $0.key }
+        typeEdges.append(TypeEdge(
+            src: srcDecl.name + "\t" + srcDecl.folder,
+            dst: dstDecl.name + "\t" + dstDecl.folder,
+            w: w, symbols: topSyms,
+            src_file: srcFile, dst_file: dstFile
+        ))
+    }
+}
+log("type_edges: \(typeEdges.count)")
 
 // MARK: - assemble JSON
 
@@ -222,7 +419,9 @@ let graph = Graph(
     folder_decls: folderDecls.mapValues { $0.sorted() },
     files: files,
     type_owners: typeOwners.mapValues { $0.sorted() },
-    type_kinds: typeKindMap
+    type_kinds: typeKindMap,
+    file_edges: fileEdges.sorted { $0.src == $1.src ? $0.dst < $1.dst : $0.src < $1.src },
+    type_edges: typeEdges.sorted { $0.src == $1.src ? $0.dst < $1.dst : $0.src < $1.src }
 )
 
 let enc = JSONEncoder()

@@ -79,6 +79,15 @@ list:
     python3 find_leaf_modules.py "{{project_dir}}" --from-index "{{graph_json}}" --list "{{md}}"
     echo "✓ {{md}}"
 
+# Live mode: serve the HTML on localhost, hot-reload it whenever `just tree`
+# regenerates it, and let cmd+click on a folder pop it open in Xcode (via `xed`).
+# Stays running until Ctrl-C. In another terminal, edit code + `just tree` to refresh.
+serve port="8765":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ -f "{{html}}" ]] || just tree
+    python3 serve.py --port "{{port}}" --html "{{html}}" --root "{{project_dir}}"
+
 # Both deliverables. Rebuilds the index if missing.
 all:
     #!/usr/bin/env bash
