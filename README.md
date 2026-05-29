@@ -18,9 +18,14 @@
 Point it at **any** iOS/Swift project. It builds the project once to populate the
 compiler index store, resolves every type reference **by USR**, and gives you:
 
-- 🕸️ **An interactive HTML graph** — drill into folders, inspect types, see real reference edges.
+- 🕸️ **An interactive HTML graph** — drill into folders, then into individual **types**, and see real reference edges.
 - 🗺️ **A migration plan** — a topologically-ordered, PR-sized path for extracting folders into SPM packages.
 - ✅ **Auto-detected progress** — folders already in SPM (any `Package.swift` subtree, found recursively) are marked done and stop blocking the plan.
+- 🔍 **Two modes** — *Explore* to understand the codebase, *Migration* to plan and execute the SPM split (with a guided **setup wizard**).
+- 🌳 **Call-tree popups & type-level view** — open any folder/file/type in a focused reference tree, or drill a folder down to which of its types are extractable now vs. blocked.
+- 🎯 **Preview & retarget** — preview a migration step in the graph and reassign its folders to new or existing SPM packages/targets before you commit.
+- 🤖 **Ready-to-paste Claude prompts** — generate a migration prompt for the planned moves (code + tests), or an investigation prompt that asks Claude to recommend the destination package/module.
+- ⚡ **Live mode** — serve the graph on localhost, hot-reload it on every rebuild, and `cmd`+click a node to jump straight into Xcode.
 
 > **Edges are real.** A regex scanner can't tell which `Foo` a reference binds to
 > when several folders declare a type named `Foo`, so it fabricates edges. This
@@ -58,6 +63,7 @@ The first run builds your project, indexes it, and opens
 | `just tree` | interactive HTML graph → `dependency_graph.html` |
 | `just list` | migration task list → `migration_plan.md` |
 | `just all` | both |
+| `just serve` | live mode — serve the HTML, hot-reload on rebuild, `cmd`+click → Xcode |
 | `just clean` | wipe generated files (forces a full rebuild next run) |
 
 `tree`/`list`/`all` reuse the resolved graph (`index_graph.json`) from the last
@@ -90,6 +96,38 @@ drill in, or jump to the **Plan** tab to generate an extraction path.
 
 Edge **thickness** = number of references. **Red** = outbound, **blue** = inbound.
 A **dashed red** edge marks a folder you've flagged *won't be modularized*.
+
+---
+
+## 🧭 Modes & tools
+
+A toggle at the top switches the whole UI between two modes:
+
+- **🔍 Explore** — understand the codebase. Every folder is neutral-colored; migration state is hidden so it doesn't get in the way. Already-SPM folders stay in scope so you can see SPM-to-SPM coupling.
+- **🧭 Migration** — plan and execute the split. Adds a **Setup** wizard, a **Plan** tab, and per-node migration state (leaf / blocked / migrated / won't-modularize).
+
+Tools available while exploring or planning:
+
+- **Type-level drill-down** — click into a folder to see its individual types as a graph. Each type is colored by whether it's **extractable now** (no external deps), **moves with the folder** (only intra-folder refs), or **blocked** (depends on other folders).
+- **🌳 Call tree** — open any folder, file, or type in a focused popup that renders its reference tree in its own graph, so you can trace what pulls in what without losing your place.
+- **🔍 Preview & retarget** — from a plan step, preview the affected folders in the graph and reassign them to a **new or existing SPM package/target** before committing to the move.
+- **🤖 Prompt generators** — once a step is scoped, generate a ready-to-paste **Claude prompt**:
+  - *migration prompt* — describes every move in the step (including relocating tests into the new module's test target).
+  - *investigation prompt* — when you don't yet know the destination, asks Claude to inspect the repo (with dependency context attached) and recommend the package, module name, and approach first.
+
+---
+
+## ⚡ Live mode
+
+```sh
+just serve            # serves dependency_graph.html on http://localhost:8765
+```
+
+`just serve` hosts the graph locally and **hot-reloads** it whenever `just tree`
+regenerates the HTML — so in another terminal you can edit code, re-run
+`just tree`, and watch the graph update. `cmd`/`ctrl`+click a folder, file, or
+type to **open it in Xcode** (via `xed`). Stays running until `Ctrl-C`; override
+the port with `just serve port=9000`.
 
 ---
 

@@ -860,6 +860,49 @@ HTML_TEMPLATE = r"""<!doctype html>
     .ct-close svg { display: block; }
     .ct-canvas { flex: 1; min-height: 0; background: var(--bg); }
 
+    /* ── migration preview & retarget modal ──────────────────────────────── */
+    .mp-modal { width: min(760px, 94vw); height: auto; max-height: 88vh; }
+    .mp-body { padding: 16px 18px; overflow: auto; flex: 1; min-height: 0; }
+    .mp-section-h { font-size: 12px; font-weight: 700; color: var(--text); margin: 4px 0 8px; }
+    .mp-section-h.spaced { margin-top: 20px; }
+    .mp-row { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+      margin-bottom: 10px; background: var(--surface); }
+    .mp-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .mp-folder { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px;
+      font-weight: 700; color: var(--text); cursor: pointer; text-decoration: underline;
+      word-break: break-all; }
+    .mp-arrow { color: var(--text-faint); }
+    .mp-pkg, .mp-mod { font-size: 12px; padding: 5px 8px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+      max-width: 220px; }
+    .mp-mod { border-color: var(--accent); }
+    .mp-badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 700;
+      border: 1px solid transparent; white-space: nowrap; }
+    .mp-badge.new { background: var(--green-soft); color: var(--green); border-color: var(--green); }
+    .mp-badge.existing { background: var(--accent-soft); color: var(--accent-strong); border-color: var(--accent); }
+    .mp-badge.stay { background: var(--gray-soft); color: var(--gray); border-color: var(--gray); }
+    .mp-files { margin-top: 8px; font-size: 11px; color: var(--text-dim); }
+    .mp-files summary { cursor: pointer; color: var(--text-faint); }
+    .mp-files ul { margin: 6px 0 0; padding-left: 18px; max-height: 180px; overflow: auto; }
+    .mp-files code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+    .mp-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex;
+      justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+    /* before → after diff */
+    .mp-ba { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center;
+      border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+      background: var(--surface); }
+    .mp-ba-col code { display: inline-block; word-break: break-all; font-size: 11.5px; }
+    .mp-ba-h { font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+      color: var(--text-faint); margin-bottom: 4px; }
+    .mp-ba-sub { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+    .mp-ba-arrow { color: var(--text-faint); font-size: 16px; text-align: center; }
+    .mp-hint { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+    .mp-gen-bar { display: flex; gap: 8px; align-items: center; }
+    .mp-gen-out { width: 100%; box-sizing: border-box; min-height: 240px; margin-top: 10px;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11px; line-height: 1.45;
+      border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+      background: var(--surface-2); color: var(--text); resize: vertical; }
+
     /* ── type-view hover popover (mirrors folder-graph popover shape) ───── */
     .tv-popover { position: absolute; z-index: 7; min-width: 200px; max-width: 280px;
       background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
@@ -1039,6 +1082,57 @@ HTML_TEMPLATE = r"""<!doctype html>
     .legend-section { display: flex; flex-direction: column; gap: 8px; }
     .legend-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
       color: var(--text-faint); font-weight: 700; margin-bottom: 1px; }
+
+    /* ── floating panels dock (bottom-left) ───────────────────────────────── */
+    .panels-dock { position: absolute; left: 14px; bottom: 14px; width: 320px; z-index: 4;
+      height: calc(100% - 84px);
+      display: flex; flex-direction: column; justify-content: flex-end; gap: 10px;
+      overflow: hidden; pointer-events: none; min-width: 0; min-height: 0; }
+    .panels-dock > * { pointer-events: auto; }
+    .panels-dock .panel-card { background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--r-lg); box-shadow: none; overflow: hidden;
+      backdrop-filter: blur(8px); font-size: 12px; display: flex; flex-direction: column;
+      min-height: 0; min-width: 0; flex: 0 1 auto;
+      max-height: calc((100% - 20px) / 3); }
+    .panels-dock .panel-head { display: flex; justify-content: space-between; align-items: center;
+      gap: 8px; padding: 9px 12px; font-weight: 700; font-size: 11px; letter-spacing: .6px;
+      text-transform: uppercase; cursor: pointer; user-select: none;
+      color: var(--text-dim); background: transparent; border-bottom: 1px solid var(--border); }
+    .panels-dock .panel-head:hover { color: var(--text); }
+    .panels-dock .panel-head .panel-title { display: flex; align-items: center; gap: 6px;
+      min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .panels-dock .panel-head .panel-count { display: inline-flex; align-items: center;
+      justify-content: center; min-width: 18px; height: 18px; padding: 0 6px; border-radius: 9px;
+      background: var(--surface-2); color: var(--text-dim); font-size: 10px; font-weight: 700;
+      letter-spacing: 0; flex-shrink: 0; }
+    .panels-dock .panel-body { padding: 8px 10px 10px;
+      overflow-x: hidden; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 4px; min-width: 0; min-height: 0;
+      flex: 1 1 auto; }
+    .panels-dock .panel-card.collapsed .panel-body { display: none; }
+    .panels-dock .panel-card.collapsed .panel-head { border-bottom: none; }
+    .panels-dock .panel-card.collapsed .panel-caret { transform: rotate(-90deg); }
+    .panels-dock .panel-caret { transition: transform .15s; color: var(--text-faint); font-size: 10px;
+      flex-shrink: 0; }
+    .panels-dock .panel-card.hidden { display: none; }
+    .panels-dock .panel-row { cursor: pointer; padding: 6px 8px; border-radius: var(--r);
+      display: flex; flex-direction: column; gap: 4px; min-width: 0;
+      border: 1px solid transparent; }
+    .panels-dock .panel-row:hover { background: var(--accent-soft); border-color: var(--border); }
+    .panels-dock .panel-row .row-head { display: flex; align-items: baseline; gap: 6px;
+      font-weight: 600; min-width: 0; }
+    .panels-dock .panel-row .row-icon { flex-shrink: 0; font-size: 12px; line-height: 1; }
+    .panels-dock .panel-row .row-name { min-width: 0; flex: 1; overflow-wrap: anywhere;
+      word-break: break-word; }
+    .panels-dock .panel-row .row-meta { flex-shrink: 0; font-size: 10px; color: var(--text-faint);
+      font-weight: 500; }
+    .panels-dock .panel-row .row-chips { display: flex; flex-wrap: wrap; gap: 3px;
+      min-width: 0; padding-left: 18px; }
+    .panels-dock .panel-row .row-chip { display: inline-block; font-size: 10.5px; line-height: 1.4;
+      padding: 1px 6px; border-radius: 6px; background: var(--surface-2); color: var(--text-dim);
+      max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+    .panels-dock .panel-empty { font-size: 11px; color: var(--text-faint); padding: 4px 6px;
+      font-style: italic; }
 
     /* ── wizard ────────────────────────────────────────────────────────────── */
     .wiz-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer; }
@@ -1277,6 +1371,48 @@ HTML_TEMPLATE = r"""<!doctype html>
         <div class="ct-canvas" id="ctNet"></div>
       </div>
     </div>
+
+    <div id="migPreviewOverlay" class="ct-overlay hidden">
+      <div class="ct-modal mp-modal">
+        <div class="ct-head">
+          <span class="ttl" id="mpTitle"></span>
+          <button class="ct-close" id="mpClose" aria-label="Close preview" title="Close (Esc)">
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+              <path d="M5 5 L15 15 M15 5 L5 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="mp-body" id="mpBody"></div>
+        <div class="mp-foot">
+          <button class="ghost" id="mpDone">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Floating bottom-left panels (focused-folder relations), inside netWrap so they overlay the canvas only -->
+    <div id="panelsDock" class="panels-dock" style="display:none">
+      <div class="panel-card" id="panelDepends">
+        <div class="panel-head">
+          <span class="panel-title"><span id="panelDependsTitle">Depends on</span><span class="panel-count" id="panelDependsCount">0</span></span>
+          <span class="panel-caret">▾</span>
+        </div>
+        <div class="panel-body" id="panelDependsBody"></div>
+      </div>
+      <div class="panel-card" id="panelSpm">
+        <div class="panel-head">
+          <span class="panel-title"><span id="panelSpmTitle">SPM deps</span><span class="panel-count" id="panelSpmCount">0</span></span>
+          <span class="panel-caret">▾</span>
+        </div>
+        <div class="panel-body" id="panelSpmBody"></div>
+      </div>
+      <div class="panel-card" id="panelConsumers">
+        <div class="panel-head">
+          <span class="panel-title"><span id="panelConsumersTitle">Consumers</span><span class="panel-count" id="panelConsumersCount">0</span></span>
+          <span class="panel-caret">▾</span>
+        </div>
+        <div class="panel-body" id="panelConsumersBody"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Always-visible legend dock (floats over the graph) -->
@@ -1335,6 +1471,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       </div>
     </div>
   </div>
+
 </div>
 <script>
 const DATA = __PAYLOAD__;
@@ -1918,15 +2055,21 @@ function clearHoverHighlight(nodesDS, edgesDS) {
 
 // ── view history (back / forward) ─────────────────────────────────────────────
 // Every navigation goes through go(); pure repaints (filter, migrate) call
-// render() directly and don't touch history.
-let viewHistory = [focusId];
+// render() directly and don't touch history. History entries carry both
+// focusId AND the requested view-mode ('auto' = follow tree, 'type' = force
+// type-view) so the type-view triggered by self/file clicks on a non-terminal
+// folder is also restorable by back/forward.
+let viewHistory = [{ id: focusId, view: 'auto' }];
 let viewPos = 0;
-function go(id) {
-  if (id === focusId) return;                    // already here — no-op, keep graph layout
+let currentView = 'auto';
+function go(id, view = 'auto') {
+  // Same id AND same view: nothing to do — keep graph layout.
+  if (id === focusId && view === currentView) return;
   viewHistory = viewHistory.slice(0, viewPos + 1); // drop any forward entries
-  viewHistory.push(id);
+  viewHistory.push({ id, view });
   viewPos = viewHistory.length - 1;
   focusId = id;
+  currentView = view;
   render();
   updateNavButtons();
 }
@@ -1934,7 +2077,9 @@ function goHistory(delta) {
   const next = viewPos + delta;
   if (next < 0 || next >= viewHistory.length) return;
   viewPos = next;
-  focusId = viewHistory[viewPos];
+  const entry = viewHistory[viewPos];
+  focusId = entry.id;
+  currentView = entry.view;
   render();
   updateNavButtons();
 }
@@ -2615,10 +2760,14 @@ function updateBlockedSidebar() {
 
 function render() {
   _invalidatePartialCache();
+  const panelsDock = document.getElementById('panelsDock');
+  if (panelsDock) panelsDock.style.display = 'none';
   const focus = tree[focusId];
   const kids = focus.children;
-  // Terminal folder (no child folders) -> show type-level view.
-  if (kids.length === 0 && focusId !== '') {
+  // Type-view triggered when (a) folder is terminal, or (b) caller explicitly
+  // asked for type-view via go(id, 'type') (e.g. self/file click in folder
+  // graph). Root ('') stays on folder graph regardless.
+  if (focusId !== '' && (currentView === 'type' || kids.length === 0)) {
     lastRenderedFocusId = undefined; folderNodesDS = null; folderEdgesDS = null;
     renderTypeView(focus);
     return;
@@ -2960,7 +3109,7 @@ function render() {
     if (!params.nodes.length) return;
     const id = params.nodes[0];
     if (id === '__ext__') { goUp(); return; }
-    if (id.startsWith('self::') || id.startsWith('file::')) { renderTypeView(tree[focusId]); return; }
+    if (id.startsWith('self::') || id.startsWith('file::')) { go(focusId, 'type'); return; }
     if (tree[id] && tree[id].children.length > 0) { go(id); }
   });
   network.on('click', params => {
@@ -2977,8 +3126,9 @@ function render() {
     }
     if (id === '__ext__') { goUp(); return; }
     // self/file nodes belong to the focused folder's own files — open the
-    // type-view instead of treating them as navigation targets.
-    if (id.startsWith('self::') || id.startsWith('file::')) { renderTypeView(tree[focusId]); return; }
+    // type-view instead of treating them as navigation targets. Routes through
+    // go() with view='type' so back/forward can restore the folder graph.
+    if (id.startsWith('self::') || id.startsWith('file::')) { go(focusId, 'type'); return; }
     // Clicking NEVER migrates — it only navigates. Drilling into a terminal
     // leaf opens its type-view, which carries an explicit "Mark migrated"
     // button. Lets you explore the graph without mutating migration state.
@@ -3315,72 +3465,66 @@ function renderTypeView(focus) {
       });
   }
 
-  // Blockers section: external folders this folder depends on + the types it pulls in.
-  if (outboundByExt.size > 0) {
-    const h = document.createElement('li');
-    h.style.listStyle = 'none';
-    h.style.fontWeight = 'bold';
-    h.style.marginTop = '8px';
-    h.textContent = currentMode === 'explore'
-      ? 'Depends on:'
-      : 'To migrate, first resolve deps to:';
-    h.style.cursor = 'default';
-    ul.appendChild(h);
-    [...outboundByExt.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .filter(([d]) => !filter || d.toLowerCase().includes(filter))
-      .forEach(([d, types]) => {
-        const li = document.createElement('li');
-        const typeList = [...types].sort();
-        li.innerHTML = '<span style="color:#c0392b;">📁 ' + d + '</span>'
-          + '<div style="font-size:11px;color:#555;padding-left:14px;">uses: ' + typeList.join(', ') + '</div>';
-        li.onclick = () => { go(d); };
-        ul.appendChild(li);
-      });
+  // External relations (Depends on / SPM deps / Consumers) now live in the
+  // bottom-left floating panels dock instead of the sidebar.
+  renderPanelsDock(outboundByExt, outboundBySpm, inboundByExt, filter);
+}
+
+function renderPanelsDock(outboundByExt, outboundBySpm, inboundByExt, filter) {
+  const dock = document.getElementById('panelsDock');
+  function shortName(path) {
+    const i = path.lastIndexOf('/');
+    return i >= 0 ? path.slice(i + 1) : path;
   }
-  // Satisfied SPM deps: targets already inside a migrated package. Not blockers
-  // — the new SPM can declare a dependency on them — so they're listed quietly.
-  if (outboundBySpm.size > 0) {
-    const h = document.createElement('li');
-    h.style.listStyle = 'none';
-    h.style.fontWeight = 'bold';
-    h.style.marginTop = '8px';
-    h.style.cursor = 'default';
-    h.textContent = 'SPM deps (already migrated, ' + outboundBySpm.size + '):';
-    ul.appendChild(h);
-    [...outboundBySpm.entries()]
+  function fill(bodyId, titleId, countId, baseTitle, mp, color, emoji) {
+    const card = document.getElementById(bodyId).parentElement;
+    document.getElementById(titleId).textContent = baseTitle;
+    document.getElementById(countId).textContent = mp.size;
+    const body = document.getElementById(bodyId);
+    body.innerHTML = '';
+    if (mp.size === 0) { card.classList.add('hidden'); return false; }
+    card.classList.remove('hidden');
+    const entries = [...mp.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .filter(([d]) => !filter || d.toLowerCase().includes(filter))
-      .forEach(([d, types]) => {
-        const li = document.createElement('li');
-        const typeList = [...types].sort();
-        li.innerHTML = '<span style="color:#7c3aed;">📦 ' + d + '</span>'
-          + '<div style="font-size:11px;color:#555;padding-left:14px;">uses: ' + typeList.join(', ') + '</div>';
-        li.onclick = () => { go(d); };
-        ul.appendChild(li);
+      .filter(([d]) => !filter || d.toLowerCase().includes(filter));
+    if (entries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'panel-empty';
+      empty.textContent = 'No matches for current filter.';
+      body.appendChild(empty);
+      return true;
+    }
+    entries.forEach(([d, types]) => {
+      const typeList = [...types].sort();
+      const row = document.createElement('div');
+      row.className = 'panel-row';
+      row.title = d + '\nuses: ' + typeList.join(', ');
+      const head = document.createElement('div');
+      head.className = 'row-head';
+      head.innerHTML =
+          '<span class="row-icon">' + emoji + '</span>'
+        + '<span class="row-name" style="color:' + color + ';">' + escapeHtml(shortName(d)) + '</span>'
+        + '<span class="row-meta">' + typeList.length + '</span>';
+      row.appendChild(head);
+      const chips = document.createElement('div');
+      chips.className = 'row-chips';
+      typeList.forEach(t => {
+        const chip = document.createElement('span');
+        chip.className = 'row-chip';
+        chip.textContent = t;
+        chips.appendChild(chip);
       });
+      row.appendChild(chips);
+      row.onclick = () => { go(d); };
+      body.appendChild(row);
+    });
+    return true;
   }
-  // Consumers section: who uses local types
-  if (inboundByExt.size > 0) {
-    const h = document.createElement('li');
-    h.style.listStyle = 'none';
-    h.style.fontWeight = 'bold';
-    h.style.marginTop = '8px';
-    h.style.cursor = 'default';
-    h.textContent = 'Consumers (' + inboundByExt.size + ' folder(s)):';
-    ul.appendChild(h);
-    [...inboundByExt.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .filter(([d]) => !filter || d.toLowerCase().includes(filter))
-      .forEach(([d, types]) => {
-        const li = document.createElement('li');
-        const typeList = [...types].sort();
-        li.innerHTML = '<span style="color:#2980b9;">📁 ' + d + '</span>'
-          + '<div style="font-size:11px;color:#555;padding-left:14px;">uses: ' + typeList.join(', ') + '</div>';
-        li.onclick = () => { go(d); };
-        ul.appendChild(li);
-      });
-  }
+  const dependsTitle = currentMode === 'explore' ? 'Depends on' : 'Blocked by';
+  const hasA = fill('panelDependsBody', 'panelDependsTitle', 'panelDependsCount', dependsTitle, outboundByExt, '#c0392b', '📁');
+  const hasB = fill('panelSpmBody', 'panelSpmTitle', 'panelSpmCount', 'SPM deps', outboundBySpm, '#7c3aed', '📦');
+  const hasC = fill('panelConsumersBody', 'panelConsumersTitle', 'panelConsumersCount', 'Consumers', inboundByExt, '#2980b9', '📁');
+  dock.style.display = (hasA || hasB || hasC) ? '' : 'none';
 }
 
 function renderCrumbs() {
@@ -3429,7 +3573,7 @@ function renderKids(kids, outDeg) {
     header.innerHTML = '📄 Files in this folder <span class="small">(' +
       ownFiles.length + ' file' + (ownFiles.length === 1 ? '' : 's') +
       ', ' + declCount + ' type' + (declCount === 1 ? '' : 's') + ') →</span>';
-    header.onclick = () => renderTypeView(tree[focusId]);
+    header.onclick = () => go(focusId, 'type');
     ul.appendChild(header);
     ownFiles
       .slice()
@@ -3443,7 +3587,7 @@ function renderKids(kids, outDeg) {
         fileLi.style.marginTop = '2px';
         fileLi.style.cursor = 'pointer';
         fileLi.innerHTML = '📄 <b>' + escapeHtml(f.name) + '</b>';
-        fileLi.onclick = () => renderTypeView(tree[focusId]);
+        fileLi.onclick = () => go(focusId, 'type');
         ul.appendChild(fileLi);
         decls.sort().forEach(t => {
           const k = kindOf(t);
@@ -3458,7 +3602,7 @@ function renderKids(kids, outDeg) {
           tli.title = mig === 'yes' ? 'extractable now'
                     : mig === 'self' ? 'moves with this folder (only intra-folder refs)'
                                      : 'blocked by external deps';
-          tli.onclick = () => renderTypeView(tree[focusId]);
+          tli.onclick = () => go(focusId, 'type');
           ul.appendChild(tli);
         });
       });
@@ -3540,6 +3684,10 @@ document.querySelectorAll('#themeSeg button').forEach(b => {
 // Always-visible legend dock: collapse / expand.
 document.getElementById('legendToggle').onclick = () =>
   document.getElementById('legendDock').classList.toggle('collapsed');
+// Bottom-left panels dock: per-card collapse / expand.
+document.querySelectorAll('#panelsDock .panel-head').forEach(h => {
+  h.onclick = () => h.parentElement.classList.toggle('collapsed');
+});
 // Browser-style shortcuts: Alt+← / Alt+→ (and back/forward mouse buttons).
 window.addEventListener('keydown', e => {
   if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); goHistory(-1); }
@@ -3559,9 +3707,47 @@ function wizSourceFolders() {
   if (!wiz.sourceId) return [];
   return Object.keys(FOLDER_PKG).filter(f => FOLDER_PKG[f] === wiz.sourceId);
 }
+// A destination is an SPM *module* (= a SwiftPM target), not a whole package.
+// A package's Sources/ holds many targets, each an immediate subfolder. We
+// encode an assignment as one of:
+//   'stay'                     — keep in source
+//   'new:<Name>'               — brand-new package (its single default module)
+//   '<pkgId>::mod::<seg>'      — module <seg> inside existing package <pkgId>;
+//                                <seg> may be an existing target or a new one
+//                                (existence decides the "new module" badge).
+const MOD_SEP = '::mod::';
+function wizExistingModules(pid) {
+  // Existing SwiftPM targets of a package = immediate subfolders of its prefix.
+  const pkg = PACKAGES.find(p => p.id === pid);
+  if (!pkg) return [];
+  const set = new Set();
+  pkg.folders.forEach(f => {
+    if (f === pid) return;
+    const seg = f.slice(pid.length + 1).split('/')[0];
+    if (seg) set.add(seg);
+  });
+  return [...set].sort();
+}
+function moduleExists(pid, seg) { return wizExistingModules(pid).includes(seg); }
+function targetPkgOf(id) {            // package part of any assignment id
+  if (!id) return id;
+  const i = id.indexOf(MOD_SEP);
+  return i >= 0 ? id.slice(0, i) : id;
+}
+function moduleSegOf(id) {            // module segment, or '' if none
+  const i = id ? id.indexOf(MOD_SEP) : -1;
+  return i >= 0 ? id.slice(i + MOD_SEP.length) : '';
+}
 function labelForTarget(id) {
   if (id === 'stay') return 'stay';
-  if (id.startsWith('new:')) return id.slice(4) + ' (new SPM)';
+  if (id.startsWith('new:')) return id.slice(4) + ' (new package)';
+  const i = id.indexOf(MOD_SEP);
+  if (i >= 0) {
+    const pid = id.slice(0, i), seg = id.slice(i + MOD_SEP.length);
+    const p = PACKAGES.find(pp => pp.id === pid);
+    const plabel = p ? p.label : pid;
+    return plabel + ' › ' + seg + (moduleExists(pid, seg) ? '' : ' (new module)');
+  }
   const p = PACKAGES.find(pp => pp.id === id);
   return p ? p.label : id;
 }
@@ -3630,9 +3816,16 @@ function renderWizard() {
   if (!wiz.sourceId) { asEl.innerHTML = '<div class="small">Pick a source first.</div>'; return; }
   if (!wiz.targetIds.length) { asEl.innerHTML = '<div class="small">Pick at least one target.</div>'; return; }
   const choices = [...wiz.targetIds, 'stay'];
+  const okTargets = new Set(choices);
   const srcFolders = wizSourceFolders().sort();
   srcFolders.forEach(f => {
-    if (wiz.assign[f] === undefined || !choices.includes(wiz.assign[f])) wiz.assign[f] = wiz.targetIds[0];
+    // Keep a value if it (or its package) is still a chosen target — this
+    // preserves module-level picks made in the preview modal. The chip cycles
+    // only the coarse package-level choices; refine to a module in the modal.
+    const cur = wiz.assign[f];
+    if (cur === undefined || !(okTargets.has(cur) || okTargets.has(targetPkgOf(cur)))) {
+      wiz.assign[f] = wiz.targetIds[0];
+    }
     const row = document.createElement('div');
     row.className = 'wiz-asgn';
     row.innerHTML = '<span class="wiz-folder" title="' + escapeHtml(f) + '">' + escapeHtml(f) + '</span>' +
@@ -3873,6 +4066,7 @@ function renderWizardPlan() {
       statusBadge +
       '</div>';
     const actionHtml = '<div class="step-actions">' +
+      '<button class="ghost" data-act="preview">🔍 Preview &amp; retarget</button>' +
       (isDone
         ? '<button class="ghost" data-act="unmark">↩ Unmark migrated</button>'
         : '<button data-act="mark">✓ Mark migrated</button>') +
@@ -3889,6 +4083,7 @@ function renderWizardPlan() {
     div.querySelectorAll('.step-actions button').forEach(b => {
       b.onclick = (ev) => {
         ev.stopPropagation();
+        if (b.dataset.act === 'preview') { openMigPreview(s.folders, s.step); return; }
         if (b.dataset.act === 'mark') {
           s.folders.forEach(f => migrated.add(f));
         } else {
@@ -3901,6 +4096,386 @@ function renderWizardPlan() {
     });
   });
 }
+
+// ── migration preview & retarget modal ──────────────────────────────────────
+// Opened from a wizard plan step. Shows exactly which folders + .swift files
+// move, whether each destination is a NEW SPM module (created) or an EXISTING
+// module (moved into), and lets the user re-pick the destination per folder
+// without leaving the plan. Mutating a destination here writes wiz.assign,
+// recomputes the plan, and re-renders both the plan list and this modal.
+let mpFolders = [];   // folders the open modal previews (the step's folders)
+
+function mpDestKind(id) {
+  if (id === 'stay') return 'stay';
+  if (id.startsWith('new:')) return 'new';           // new package → created
+  const i = id.indexOf(MOD_SEP);
+  if (i >= 0) return moduleExists(id.slice(0, i), id.slice(i + MOD_SEP.length)) ? 'existing' : 'new';
+  return 'existing';
+}
+// Package <select>: existing SPM packages (never the source) + new packages +
+// create-new-package + stay. The chosen package narrows the module list below.
+function mpPackageOptions(curPkg) {
+  const existing = PACKAGES.filter(p => p.kind === 'spm' && p.id !== wiz.sourceId);
+  let html = '';
+  if (existing.length) {
+    html += '<optgroup label="Existing packages">' +
+      existing.map(p => '<option value="' + escapeHtml(p.id) + '"' +
+        (p.id === curPkg ? ' selected' : '') + '>' + escapeHtml(p.label) + '</option>').join('') +
+      '</optgroup>';
+  }
+  if (wiz.newPkgs.length) {
+    html += '<optgroup label="New packages (will be created)">' +
+      wiz.newPkgs.map(n => '<option value="new:' + escapeHtml(n) + '"' +
+        ('new:' + n === curPkg ? ' selected' : '') + '>' + escapeHtml(n) + ' (new)</option>').join('') +
+      '</optgroup>';
+  }
+  html += '<optgroup label="Other">' +
+    '<option value="__newpkg__">➕ New package…</option>' +
+    '<option value="stay"' + (curPkg === 'stay' ? ' selected' : '') + '>Stay in source</option>' +
+    '</optgroup>';
+  return html;
+}
+// Module <select> for the chosen existing package: its targets + new-module.
+function mpModuleOptions(pid, curSeg) {
+  const mods = wizExistingModules(pid);
+  let html = '';
+  if (mods.length) {
+    html += '<optgroup label="Existing modules">' +
+      mods.map(m => '<option value="' + escapeHtml(m) + '"' +
+        (m === curSeg ? ' selected' : '') + '>' + escapeHtml(m) + '</option>').join('') +
+      '</optgroup>';
+  }
+  // A new-but-not-yet-existing segment picked earlier shows as the selection.
+  if (curSeg && !mods.includes(curSeg)) {
+    html += '<option value="' + escapeHtml(curSeg) + '" selected>' + escapeHtml(curSeg) + ' (new module)</option>';
+  }
+  html += '<option value="__newmod__">➕ New module…</option>';
+  return html;
+}
+function mpApplyAndRefresh() {
+  // Recompute the plan from current assignments, keeping the modal open.
+  const moving = Object.keys(wiz.assign).filter(f => wiz.assign[f] !== 'stay');
+  wizPlan = moving.length ? computeWizardPlan(moving) : [];
+  _invalidateBlockedCache();
+  renderWizardPlan();
+  render();
+  renderMigPreview();
+}
+function setFolderPackage(folder, value) {
+  if (value === 'stay') { wiz.assign[folder] = 'stay'; mpApplyAndRefresh(); return; }
+  if (value === '__newpkg__') {
+    const name = (prompt('New SPM package name:') || '').trim();
+    if (!name) { renderMigPreview(); return; }
+    if (!wiz.newPkgs.includes(name)) wiz.newPkgs.push(name);
+    const id = 'new:' + name;
+    if (!wiz.targetIds.includes(id)) wiz.targetIds.push(id);
+    wiz.assign[folder] = id;
+    mpApplyAndRefresh();
+    return;
+  }
+  if (value.startsWith('new:')) {            // existing new-package entry
+    if (!wiz.targetIds.includes(value)) wiz.targetIds.push(value);
+    wiz.assign[folder] = value;
+    mpApplyAndRefresh();
+    return;
+  }
+  // Existing package: default the module to its first target, else prompt one.
+  if (!wiz.targetIds.includes(value)) wiz.targetIds.push(value);
+  const mods = wizExistingModules(value);
+  let seg = mods[0];
+  if (!seg) {
+    seg = (prompt('New module (target) name in ' + value + ':') || '').trim();
+    if (!seg) { renderMigPreview(); return; }
+  }
+  wiz.assign[folder] = value + MOD_SEP + seg;
+  mpApplyAndRefresh();
+}
+function setFolderModule(folder, pid, value) {
+  let seg = value;
+  if (value === '__newmod__') {
+    seg = (prompt('New module (target) name in ' + pid + ':') || '').trim();
+    if (!seg) { renderMigPreview(); return; }
+  }
+  wiz.assign[folder] = pid + MOD_SEP + seg;
+  mpApplyAndRefresh();
+}
+// Destination folder a move lands in (where the .swift files end up).
+function mpDestModulePath(t) {
+  if (t === 'stay') return null;
+  if (t.startsWith('new:')) { const n = t.slice(4); return n + '/Sources/' + n; }
+  const i = t.indexOf(MOD_SEP);
+  if (i >= 0) return t.slice(0, i) + '/' + t.slice(i + MOD_SEP.length);
+  return t;  // bare package id (legacy)
+}
+// Where the moved code's tests should live in the destination package.
+function mpTestPath(t) {
+  if (t === 'stay') return null;
+  if (t.startsWith('new:')) { const n = t.slice(4); return n + '/Tests/' + n + 'Tests'; }
+  const i = t.indexOf(MOD_SEP);
+  if (i < 0) return t + '/Tests';
+  const pid = t.slice(0, i), seg = t.slice(i + MOD_SEP.length);
+  const root = pid.endsWith('/Sources') ? pid.slice(0, -('/Sources'.length)) : pid;
+  return root + '/Tests/' + seg + 'Tests';
+}
+function mpSourceLabel(f) {
+  const pid = FOLDER_PKG[f];
+  const p = PACKAGES.find(pp => pp.id === pid);
+  return p ? p.label : (pid || 'source');
+}
+function mpGeneratePrompt() {
+  const moves = mpFolders.slice().sort()
+    .map(f => ({ f: f, t: wiz.assign[f] || 'stay' }))
+    .filter(m => m.t !== 'stay');
+  const L = [];
+  L.push('# Swift -> SPM module migration');
+  L.push('');
+  L.push('Migrate the folders below out of their current target into Swift Package Manager');
+  L.push('module(s). Apply every rule. This is a move + access-level refactor only -- do NOT');
+  L.push('change behavior.');
+  L.push('');
+  L.push('## Moves');
+  if (!moves.length) L.push('(nothing selected to move)');
+  moves.forEach((m, idx) => {
+    const pid = targetPkgOf(m.t), seg = moduleSegOf(m.t);
+    const isNewPkg = m.t.startsWith('new:');
+    const isNewMod = isNewPkg || !moduleExists(pid, seg);
+    const files = (filesByFolder[m.f] || []).map(x => x.name);
+    L.push('');
+    L.push('### ' + (idx + 1) + '. ' + m.f);
+    L.push('- Source folder: `' + m.f + '` (currently in ' + mpSourceLabel(m.f) + ')');
+    if (isNewPkg) {
+      L.push('- Destination: NEW SPM package `' + m.t.slice(4) + '` (create it) with target `' + m.t.slice(4) + '`');
+    } else {
+      L.push('- Destination package: `' + pid + '`');
+      L.push('- Destination target/module: `' + seg + '` (' + (isNewMod ? 'NEW target -- create it' : 'existing target') + ')');
+    }
+    L.push('- Move source files into: `' + mpDestModulePath(m.t) + '/`');
+    L.push('- Move tests into: `' + mpTestPath(m.t) + '/`');
+    if (files.length) {
+      L.push('- Source files (' + files.length + '):');
+      files.forEach(fn => L.push('  - `' + fn + '`'));
+    } else {
+      L.push('- (Container folder -- move the .swift files in its subfolders too.)');
+    }
+  });
+  L.push('');
+  L.push('## How to migrate each folder');
+  L.push('1. `git mv` the listed `.swift` files into the destination target\'s `Sources/<Module>/` directory (preserve history).');
+  L.push('2. **Move the tests too.** Locate the matching test files for the moved types (e.g. `<Type>Tests.swift`, the mirrored path under the current test target) and `git mv` them into the destination package\'s test target (the `Tests/<Module>Tests/` path shown above). Create that test target if it does not exist. Do NOT leave orphaned tests in the old target.');
+  L.push('3. For any NEW target/package: add the `.target` and a matching `.testTarget` to `Package.swift`, and wire `products`/`dependencies` so dependents can `import` it.');
+  L.push('4. Raise access levels: moved types, initializers, and any members used from outside the new module must become `public` (use `open` only where subclassed).');
+  L.push('5. Add `import <Module>` to every file across the whole project that references the moved types, and fix all references.');
+  L.push('6. Remove the moved source AND test files from the old target membership in the `.xcodeproj` so nothing compiles twice.');
+  L.push('7. Build the package and the app, then run the moved tests. Everything must compile and all moved tests must pass before finishing.');
+  L.push('');
+  L.push('## Constraints');
+  L.push('- Behavior-preserving: no logic changes.');
+  L.push('- Moving the tests alongside the code they cover is mandatory, not optional.');
+  L.push('- If a move would create a circular module dependency, stop and report it instead of forcing it.');
+  return L.join('\n');
+}
+// Folder-level dependency context for the advisory prompt.
+function mpFolderDeps(f) {
+  const out = [], inc = [];
+  edges.forEach(e => {
+    if (e.src === f && e.dst !== f) out.push({ other: e.dst, w: e.w || 1 });
+    else if (e.dst === f && e.src !== f) inc.push({ other: e.src, w: e.w || 1 });
+  });
+  out.sort((a, b) => b.w - a.w);
+  inc.sort((a, b) => b.w - a.w);
+  return { out: out, inc: inc };
+}
+function mpDeclaredTypes(f) {
+  const set = new Set();
+  (filesByFolder[f] || []).forEach(fl => (fl.decls || []).forEach(t => set.add(t)));
+  return [...set].sort();
+}
+// Advisory prompt: when the user does NOT know where to extract to or how to
+// name a new module. Asks Claude to inspect the repo and recommend, supplying
+// the dependency context the tool already computed so the answer is grounded.
+function mpAdvisoryPrompt() {
+  const folders = mpFolders.slice().sort();
+  const L = [];
+  L.push('# Where should this code live? — investigation request');
+  L.push('');
+  L.push('I am modularizing this codebase into Swift Package Manager modules. For the code');
+  L.push('below I do NOT yet know which module it belongs in, or — if it needs a new module —');
+  L.push('what to call it. Inspect this repository and recommend the best approach.');
+  L.push('');
+  L.push('## Code under question');
+  folders.forEach(f => {
+    const files = (filesByFolder[f] || []).map(x => x.name);
+    const types = mpDeclaredTypes(f);
+    const d = mpFolderDeps(f);
+    L.push('');
+    L.push('### ' + f + ' (currently in ' + mpSourceLabel(f) + ')');
+    if (files.length) { L.push('- Files:'); files.forEach(fn => L.push('  - `' + fn + '`')); }
+    if (types.length) L.push('- Declared types: ' + types.map(t => '`' + t + '`').join(', '));
+    if (d.out.length) {
+      L.push('- Depends on (outgoing, by ref count):');
+      d.out.slice(0, 12).forEach(x => L.push('  - `' + x.other + '` (' + x.w + ')'));
+      if (d.out.length > 12) L.push('  - …+' + (d.out.length - 12) + ' more');
+    } else L.push('- Depends on: (nothing first-party)');
+    if (d.inc.length) {
+      L.push('- Used by (incoming, by ref count):');
+      d.inc.slice(0, 12).forEach(x => L.push('  - `' + x.other + '` (' + x.w + ')'));
+      if (d.inc.length > 12) L.push('  - …+' + (d.inc.length - 12) + ' more');
+    } else L.push('- Used by: (nothing first-party — likely a leaf)');
+  });
+  L.push('');
+  L.push('## Existing packages / modules I could extract into');
+  PACKAGES.filter(p => p.kind === 'spm').forEach(p => {
+    const mods = wizExistingModules(p.id);
+    L.push('- **' + p.label + '** (`' + p.id + '`) — ' + mods.length + ' existing target(s): ' +
+      mods.slice(0, 40).map(m => '`' + m + '`').join(', ') + (mods.length > 40 ? ', …' : ''));
+  });
+  L.push('');
+  L.push('## What I need from you');
+  L.push('1. Read the actual source of the files above and their closest dependencies/usages in the repo (do not rely only on this summary).');
+  L.push('2. Decide whether this belongs in an EXISTING module (which one, and why) or warrants a NEW module.');
+  L.push('3. If a new module: study the existing module naming conventions and propose a clear, convention-matching name, and say which package it should live in.');
+  L.push('4. Recommend the module boundary: what should move together, what should stay, and any type that should be split out.');
+  L.push('5. Flag risks: circular dependencies, heavy/unwanted dependencies pulled in, large `public` access surface, and shared test utilities that also need moving.');
+  L.push('6. End with a short recommendation: target package + module name (new or existing) + a one-line rationale, plus the suggested migration order.');
+  L.push('');
+  L.push('Do not move anything yet — investigate and advise first. Remember any eventual migration must move the tests alongside the code.');
+  return L.join('\n');
+}
+// Wire a generate button + its output textarea + copy button. Shared by both
+// the "how to migrate" and "where should it go" generators.
+function mpWireGen(btnId, outId, copyBtnId, okId, builder) {
+  const btn = document.getElementById(btnId);
+  if (btn) btn.onclick = () => {
+    const out = document.getElementById(outId);
+    out.value = builder();
+    out.style.display = '';
+    document.getElementById(copyBtnId).style.display = '';
+    out.focus(); out.select();
+  };
+  const copyBtn = document.getElementById(copyBtnId);
+  if (copyBtn) copyBtn.onclick = () => {
+    const out = document.getElementById(outId);
+    out.style.display = ''; out.focus(); out.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    if (navigator.clipboard) { navigator.clipboard.writeText(out.value).catch(() => {}); ok = true; }
+    const okEl = document.getElementById(okId);
+    if (ok && okEl) { okEl.style.display = ''; setTimeout(() => { okEl.style.display = 'none'; }, 1500); }
+  };
+}
+function renderMigPreview() {
+  const body = document.getElementById('mpBody');
+  if (!body) return;
+  const folders = mpFolders.slice().sort();
+  const rows = folders.map(f => {
+    const t = wiz.assign[f] || 'stay';
+    const pkg = targetPkgOf(t);
+    const seg = moduleSegOf(t);
+    // Module <select> applies only when an EXISTING package is chosen — a new
+    // package or "stay" has no module to pick within.
+    const isExistingPkg = pkg !== 'stay' && !pkg.startsWith('new:') &&
+      PACKAGES.some(p => p.id === pkg && p.kind === 'spm');
+    const moduleSelect = isExistingPkg
+      ? '<select class="mp-mod" data-folder="' + escapeHtml(f) + '" data-pkg="' + escapeHtml(pkg) + '">' +
+          mpModuleOptions(pkg, seg) + '</select>'
+      : '';
+    const badge = t === 'stay'
+      ? '<span class="mp-badge stay">⏸ stays in source</span>'
+      : t.startsWith('new:')
+        ? '<span class="mp-badge new">🆕 new package — created</span>'
+        : moduleExists(pkg, seg)
+          ? '<span class="mp-badge existing">→ existing module</span>'
+          : '<span class="mp-badge new">🆕 new module — created</span>';
+    const fileRecs = filesByFolder[f] || [];
+    const fileList = fileRecs.map(fl => '<li><code>' + escapeHtml(fl.name) + '</code></li>').join('');
+    return '<div class="mp-row">' +
+      '<div class="mp-row-head">' +
+        '<span class="mp-folder" data-folder="' + escapeHtml(f) + '">' + escapeHtml(f) + '</span>' +
+        '<span class="mp-arrow">→</span>' +
+        '<select class="mp-pkg" data-folder="' + escapeHtml(f) + '">' + mpPackageOptions(pkg) + '</select>' +
+        moduleSelect +
+        badge +
+      '</div>' +
+      (fileRecs.length
+        ? '<details class="mp-files"><summary>' + fileRecs.length + ' file' + (fileRecs.length === 1 ? '' : 's') + ' move</summary><ul>' + fileList + '</ul></details>'
+        : '<div class="mp-files">No direct .swift files (container folder only).</div>') +
+      '</div>';
+  }).join('');
+
+  // Before -> after diff of the resulting moves.
+  const moving = folders.map(f => ({ f: f, t: wiz.assign[f] || 'stay' })).filter(m => m.t !== 'stay');
+  const baHtml = !moving.length
+    ? '<div class="mp-hint">Nothing to move yet — every folder is set to stay.</div>'
+    : moving.map(m => {
+        const dest = mpDestModulePath(m.t);
+        const n = (filesByFolder[m.f] || []).length;
+        return '<div class="mp-ba">' +
+          '<div class="mp-ba-col"><div class="mp-ba-h">Before</div>' +
+            '<code>' + escapeHtml(m.f) + '</code>' +
+            '<div class="mp-ba-sub">' + escapeHtml(mpSourceLabel(m.f)) + ' · ' + n + ' file' + (n === 1 ? '' : 's') + '</div></div>' +
+          '<div class="mp-ba-arrow">→</div>' +
+          '<div class="mp-ba-col"><div class="mp-ba-h">After</div>' +
+            '<code>' + escapeHtml(dest) + '/</code>' +
+            '<div class="mp-ba-sub">' + escapeHtml(labelForTarget(m.t)) + '</div>' +
+            '<div class="mp-ba-sub">+ tests → <code>' + escapeHtml(mpTestPath(m.t)) + '/</code></div></div>' +
+        '</div>';
+      }).join('');
+
+  const genHtml =
+    '<div class="mp-section-h spaced">Generate migration prompt</div>' +
+    '<div class="mp-hint">You know where it goes. Builds a ready-to-paste Claude prompt describing every move above — including moving the tests into the new module\'s test target.</div>' +
+    '<div class="mp-gen-bar">' +
+      '<button id="mpGenBtn">⚙️ Generate migration prompt</button>' +
+      '<button class="ghost" id="mpCopyBtn" style="display:none;">📋 Copy</button>' +
+      '<span id="mpCopyOk" class="mp-ba-sub" style="display:none;">copied ✓</span>' +
+    '</div>' +
+    '<textarea id="mpGenOut" class="mp-gen-out" readonly style="display:none;"></textarea>';
+
+  const advHtml =
+    '<div class="mp-section-h spaced">Not sure where it goes?</div>' +
+    '<div class="mp-hint">Don\'t know which module to extract into, or what to name a new one? Builds a prompt that asks Claude to inspect the repo (with the dependency context below) and recommend the best package, module name, and approach — before any move.</div>' +
+    '<div class="mp-gen-bar">' +
+      '<button id="mpAdvBtn">🧭 Generate investigation prompt</button>' +
+      '<button class="ghost" id="mpAdvCopyBtn" style="display:none;">📋 Copy</button>' +
+      '<span id="mpAdvOk" class="mp-ba-sub" style="display:none;">copied ✓</span>' +
+    '</div>' +
+    '<textarea id="mpAdvOut" class="mp-gen-out" readonly style="display:none;"></textarea>';
+
+  body.innerHTML =
+    '<div class="mp-section-h">Choose destinations</div>' + rows +
+    '<div class="mp-section-h spaced">Before → after</div>' + baHtml +
+    genHtml + advHtml;
+
+  body.querySelectorAll('.mp-folder[data-folder]').forEach(el => {
+    el.onclick = () => focusToFolder(el.dataset.folder);
+  });
+  body.querySelectorAll('select.mp-pkg').forEach(sel => {
+    sel.onchange = () => setFolderPackage(sel.dataset.folder, sel.value);
+  });
+  body.querySelectorAll('select.mp-mod').forEach(sel => {
+    sel.onchange = () => setFolderModule(sel.dataset.folder, sel.dataset.pkg, sel.value);
+  });
+  mpWireGen('mpGenBtn', 'mpGenOut', 'mpCopyBtn', 'mpCopyOk', mpGeneratePrompt);
+  mpWireGen('mpAdvBtn', 'mpAdvOut', 'mpAdvCopyBtn', 'mpAdvOk', mpAdvisoryPrompt);
+}
+function openMigPreview(folders, stepNum) {
+  mpFolders = folders.slice();
+  document.getElementById('mpTitle').textContent = '🔍 Migration preview — step ' + stepNum;
+  document.getElementById('migPreviewOverlay').classList.remove('hidden');
+  renderMigPreview();
+}
+function closeMigPreview() {
+  document.getElementById('migPreviewOverlay').classList.add('hidden');
+  mpFolders = [];
+}
+document.getElementById('mpClose').onclick = closeMigPreview;
+document.getElementById('mpDone').onclick = closeMigPreview;
+document.getElementById('migPreviewOverlay').addEventListener('click', (ev) => {
+  if (ev.target.id === 'migPreviewOverlay') closeMigPreview();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !document.getElementById('migPreviewOverlay').classList.contains('hidden')) closeMigPreview();
+});
 
 document.getElementById('wizAddTarget').onclick = () => {
   const el = document.getElementById('wizNewTarget');
