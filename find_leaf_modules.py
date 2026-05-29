@@ -1859,22 +1859,22 @@ function migrationClosure(targetId) {
   for (const f of [...closure]) if (outOfScope(f)) closure.delete(f);
   return { closure, seedSet };
 }
-function setTarget(id) { migrationTarget = id; switchTab('plan'); renderPlan(); }
-function clearTarget() { migrationTarget = null; renderPlan(); }
+function setTarget(id) { migrationTarget = id; savePlanViewLS(); switchTab('plan'); renderPlan(); }
+function clearTarget() { migrationTarget = null; savePlanViewLS(); renderPlan(); }
 
 // ── Runway view: "if I migrate X next, how far does the cascade go before a wall?"
 let runwaySeed = null;
-function setRunway(id) { runwaySeed = id; migrationTarget = null; switchTab('plan'); renderPlan(); }
-function clearRunway() { runwaySeed = null; renderPlan(); }
+function setRunway(id) { runwaySeed = id; migrationTarget = null; savePlanViewLS(); switchTab('plan'); renderPlan(); }
+function clearRunway() { runwaySeed = null; savePlanViewLS(); renderPlan(); }
 
-// Tab switching
+// Tab switching — route through switchTab so the activated tab is (re)rendered.
+// Without this, opening the Plan tab on a fresh load just reveals whatever DOM
+// was last drawn there (e.g. the explore-mode "No plan yet" placeholder), so a
+// restored/persisted plan would never appear until something re-rendered it.
 document.querySelectorAll('.tab').forEach(t => {
   t.onclick = () => {
     if (t.dataset.hidden === '1') return;
-    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    document.getElementById('panel-' + t.dataset.tab).classList.add('active');
+    switchTab(t.dataset.tab);
   };
 });
 
@@ -1985,6 +1985,13 @@ let network = null;
 let lastRenderedFocusId = undefined;
 let folderNodesDS = null;
 let folderEdgesDS = null;
+// Same idea for the type-view network: persist its DataSets so a state toggle
+// (mark migrated/excluded) while drilled into a folder's types updates only the
+// changed nodes in place instead of destroying + re-laying the hierarchical graph
+// (which would reset zoom/pan every click).
+let lastRenderedTypeFocusId = undefined;
+let tvNodesDS = null;
+let tvEdgesDS = null;
 
 // ── hover focus highlight ────────────────────────────────────────────────────
 // Dim non-neighbour nodes/edges so the hovered node + its connections pop.
@@ -2090,7 +2097,20 @@ function updateNavButtons() {
   if (f) f.disabled = viewPos >= viewHistory.length - 1;
 }
 const INITIAL_MIGRATED = new Set(DATA.initial_migrated || []);
-let migrated = new Set(INITIAL_MIGRATED);  // pre-populated with already-SPM folders
+// Like `excluded` below: the SPM baseline (DATA.initial_migrated) is re-detected
+// from disk every run, but USER-applied migration marks live in localStorage so
+// they survive an HTML regeneration (e.g. after editing the Python script). The
+// baseline is always unioned in; saved marks layer on top.
+const MIG_KEY = 'modgraph-migrated::' + (DATA.root_path || '');
+function loadMigratedLS() {
+  try { const v = JSON.parse(localStorage.getItem(MIG_KEY) || 'null');
+        if (Array.isArray(v)) return v; } catch (e) {}
+  return null;
+}
+function saveMigratedLS() {
+  try { localStorage.setItem(MIG_KEY, JSON.stringify([...migrated].sort())); } catch (e) {}
+}
+let migrated = new Set([...INITIAL_MIGRATED, ...(loadMigratedLS() || [])]);
 let currentOutDeg = new Map();
 
 // ── "won't be modularized" exclusions ───────────────────────────────────────
@@ -2136,7 +2156,9 @@ function outOfScope(id) {
 // against non-SPM app-target code. Migrated nodes break the chain (SPM→SPM
 // is fine). Recomputed lazily; invalidated whenever excluded/migrated change.
 let _blockedCache = null;
-function _invalidateBlockedCache() { _blockedCache = null; }
+// Called after every migrated/excluded mutation — the single choke point where
+// the migrated set is also persisted, so no individual handler can forget to save.
+function _invalidateBlockedCache() { _blockedCache = null; saveMigratedLS(); }
 function blockedByExcludedSet() {
   if (_blockedCache) return _blockedCache;
   const rev = new Map();
@@ -2693,6 +2715,11 @@ function switchTab(name) {
   document.querySelectorAll('.panel').forEach(x => x.classList.toggle('active', x.id === 'panel-' + name));
   const sb = document.getElementById('navSettings');
   if (sb) sb.classList.toggle('active', name === 'settings');
+  // Render the activated tab's content. The plan/wizard panels are data-driven
+  // (persisted wizPlan / runway / target), so revealing the panel isn't enough —
+  // it must be re-rendered or a fresh load shows stale/empty content.
+  if (name === 'plan') renderPlan();
+  else if (name === 'wizard') renderWizard();
 }
 
 function focusToFolder(folder) {
@@ -2951,21 +2978,41 @@ function render() {
       '</div>';
     return;
   }
-  // In-place update path: same focus, network already mounted — just refresh
-  // node groups/labels/titles and swap edges. Positions are preserved.
+  // In-place update path: same focus, network already mounted. Toggling
+  // migration/exclusion only flips node groups/labels/titles — the dependency
+  // edges are structural and invariant per focus. So diff against the live
+  // DataSet and touch ONLY the nodes that actually changed, and leave the edges
+  // alone unless their structure differs. No full rebuild, no edge flash,
+  // positions preserved.
   if (network && lastRenderedFocusId === focusId && folderNodesDS && folderEdgesDS) {
     const existingIds = new Set(folderNodesDS.getIds());
     const newIds = new Set(nodes.map(n => n.id));
-    folderNodesDS.update(nodes);
+    const changed = nodes.filter(n => {
+      const cur = folderNodesDS.get(n.id);
+      if (!cur) return true;                       // newly appearing node
+      return cur.group !== n.group
+          || cur.label !== n.label
+          || cur.title !== n.title
+          || cur.value !== n.value;
+    });
+    if (changed.length) folderNodesDS.update(changed);
     [...existingIds].filter(id => !newIds.has(id)).forEach(id => folderNodesDS.remove(id));
-    folderEdgesDS.clear();
-    folderEdgesDS.add(edgeData);
+    // Only rebuild edges when the structural set differs (it doesn't when
+    // marking migrated) — skipping the clear/add avoids re-laying every edge.
+    const edgeKey = e => e.from + '|' + e.to;
+    const curKeys = new Set(folderEdgesDS.get().map(edgeKey));
+    const newKeys = new Set(edgeData.map(edgeKey));
+    const edgesDiffer = curKeys.size !== newKeys.size || [...newKeys].some(k => !curKeys.has(k));
+    if (edgesDiffer) { folderEdgesDS.clear(); folderEdgesDS.add(edgeData); }
     currentOutDeg = outDeg;
     renderCrumbs();
     renderKids(kids, outDeg);
     return;
   }
   if (network) network.destroy();
+  // Folder network owns the canvas now — drop any stale type-view DataSets so a
+  // later type-view re-creates instead of updating the wrong (destroyed) network.
+  tvNodesDS = null; tvEdgesDS = null; lastRenderedTypeFocusId = undefined;
   const nodesDS = new vis.DataSet(nodes);
   const edgesDS = new vis.DataSet(edgeData);
   folderNodesDS = nodesDS;
@@ -3345,9 +3392,39 @@ function renderTypeView(focus) {
   // instead. The `externals`/`inboundByExt`/`outboundByExt` maps are still
   // populated above for the side-panel counters elsewhere in the UI.
 
+  // In-place update path: still in the SAME folder's type-view with its network
+  // mounted. Toggling migration/exclusion only re-colors type nodes and rewrites
+  // titles — the type→type edges are structural and don't change. So diff against
+  // the live DataSet, touch only the changed nodes, leave edges alone unless their
+  // structure differs, and DON'T re-fit — the user's zoom/pan is preserved.
+  if (network && lastRenderedTypeFocusId === focus.id && tvNodesDS && tvEdgesDS) {
+    const existingIds = new Set(tvNodesDS.getIds());
+    const newIds = new Set(nodes.map(n => n.id));
+    const sameColor = (a, b) => (!a && !b) || (a && b && a.background === b.background && a.border === b.border);
+    const changed = nodes.filter(n => {
+      const cur = tvNodesDS.get(n.id);
+      if (!cur) return true;                       // newly appearing node
+      return cur.label !== n.label
+          || cur.title !== n.title
+          || !sameColor(cur.color, n.color);
+    });
+    if (changed.length) tvNodesDS.update(changed);
+    [...existingIds].filter(id => !newIds.has(id)).forEach(id => tvNodesDS.remove(id));
+    const ek = e => e.from + '|' + e.to + '|' + (e.label || '');
+    const curKeys = new Set(tvEdgesDS.get().map(ek));
+    const newKeys = new Set(edgeList.map(ek));
+    const edgesDiffer = curKeys.size !== newKeys.size || [...newKeys].some(k => !curKeys.has(k));
+    if (edgesDiffer) { tvEdgesDS.clear(); tvEdgesDS.add(edgeList); }
+    renderCrumbs();
+    buildTypeSidebar();
+    return;
+  }
   if (network) network.destroy();
-  const tvNodesDS = new vis.DataSet(nodes);
-  const tvEdgesDS = new vis.DataSet(edgeList);
+  // Folder DataSets are stale once the type network owns the canvas.
+  folderNodesDS = null; folderEdgesDS = null; lastRenderedFocusId = undefined;
+  tvNodesDS = new vis.DataSet(nodes);
+  tvEdgesDS = new vis.DataSet(edgeList);
+  lastRenderedTypeFocusId = focus.id;
   network = new vis.Network(document.getElementById('net'),
     { nodes: tvNodesDS, edges: tvEdgesDS }, {
     nodes: { font: { size: 13, face: 'Inter, sans-serif', color: themeText() }, borderWidth: 2, shapeProperties: { borderRadius: 8 },
@@ -3410,6 +3487,11 @@ function renderTypeView(focus) {
   try { network.fit({ animation: false }); } catch (e) {}
 
   renderCrumbs();
+  buildTypeSidebar();
+
+  // Sidebar (kids list + leaf count + panels dock) for the type-view. Factored
+  // out so the in-place update path can refresh it without rebuilding the graph.
+  function buildTypeSidebar() {
   const ul = document.getElementById('kids');
   const filter = document.getElementById('filter').value.toLowerCase();
   ul.innerHTML = '';
@@ -3468,6 +3550,7 @@ function renderTypeView(focus) {
   // External relations (Depends on / SPM deps / Consumers) now live in the
   // bottom-left floating panels dock instead of the sidebar.
   renderPanelsDock(outboundByExt, outboundBySpm, inboundByExt, filter);
+  }
 }
 
 function renderPanelsDock(outboundByExt, outboundBySpm, inboundByExt, filter) {
@@ -3700,8 +3783,61 @@ window.addEventListener('mouseup', e => {
 // ── Migration wizard ─────────────────────────────────────────────────────────
 const PACKAGES = DATA.packages || [];
 const FOLDER_PKG = DATA.folder_package || {};
-const wiz = { sourceId: null, targetIds: [], assign: {}, newPkgs: [] };
+// Migration setup (source/targets/per-folder assignment/new packages) persists in
+// localStorage keyed by root, so it survives HTML regeneration until the user
+// changes it (or clicks Reset). Shape is normalized on load so a partial/old blob
+// can't crash the wizard. `wizPlan` is derived and recomputed at startup below.
+const WIZ_KEY = 'modgraph-wiz::' + (DATA.root_path || '');
+function loadWizLS() {
+  try {
+    const v = JSON.parse(localStorage.getItem(WIZ_KEY) || 'null');
+    if (v && typeof v === 'object') return {
+      sourceId: v.sourceId || null,
+      targetIds: Array.isArray(v.targetIds) ? v.targetIds : [],
+      assign: (v.assign && typeof v.assign === 'object') ? v.assign : {},
+      newPkgs: Array.isArray(v.newPkgs) ? v.newPkgs : [],
+    };
+  } catch (e) {}
+  return null;
+}
+function saveWizLS() {
+  try { localStorage.setItem(WIZ_KEY, JSON.stringify(wiz)); } catch (e) {}
+}
+// The COMPUTED plan is persisted verbatim too, so it stays exactly as last
+// computed until the user computes a new one (or resets) — not re-derived on
+// every load. `null` = no plan yet; `[]` = computed but nothing to move.
+const WIZPLAN_KEY = 'modgraph-wizplan::' + (DATA.root_path || '');
+function loadWizPlanLS() {
+  try { const v = JSON.parse(localStorage.getItem(WIZPLAN_KEY) || 'null');
+        if (Array.isArray(v)) return v; } catch (e) {}
+  return null;
+}
+function saveWizPlanLS() {
+  try {
+    if (wizPlan === null) localStorage.removeItem(WIZPLAN_KEY);
+    else localStorage.setItem(WIZPLAN_KEY, JSON.stringify(wizPlan));
+  } catch (e) {}
+}
+const wiz = loadWizLS() || { sourceId: null, targetIds: [], assign: {}, newPkgs: [] };
 let wizPlan = null;
+
+// The other two "plan" views are node-driven and ephemeral: 🎯 Plan-to-move
+// (migrationTarget) and 🗺 runway (runwaySeed). Persist whichever is active so
+// the Plan tab survives regeneration — the path itself is recomputed from the
+// seed id on load (cheap, deterministic). Stale ids (folder gone after a code
+// change) are dropped at restore time so they can't blank the view.
+const PLANVIEW_KEY = 'modgraph-planview::' + (DATA.root_path || '');
+function loadPlanViewLS() {
+  try { const v = JSON.parse(localStorage.getItem(PLANVIEW_KEY) || 'null');
+        if (v && typeof v === 'object') return v; } catch (e) {}
+  return null;
+}
+function savePlanViewLS() {
+  try {
+    if (runwaySeed == null && migrationTarget == null) localStorage.removeItem(PLANVIEW_KEY);
+    else localStorage.setItem(PLANVIEW_KEY, JSON.stringify({ runwaySeed, migrationTarget }));
+  } catch (e) {}
+}
 
 function wizSourceFolders() {
   if (!wiz.sourceId) return [];
@@ -3756,6 +3892,9 @@ function renderWizard() {
   // 1. Source
   const srcEl = document.getElementById('wizSource');
   if (!srcEl) return;
+  // Every wiz mutation re-renders the wizard — persist here so source/target/
+  // assignment/new-package edits all survive regeneration without per-handler saves.
+  saveWizLS();
   srcEl.innerHTML = '';
   if (!PACKAGES.length) {
     srcEl.innerHTML = '<div class="small">No packages detected.</div>';
@@ -4009,6 +4148,10 @@ function computeWizardPlan(folderSet) {
 }
 
 function renderWizardPlan() {
+  // Assignment edits from the preview/retarget modal land here — persist setup
+  // and the freshly-computed plan so both survive regeneration.
+  saveWizLS();
+  saveWizPlanLS();
   document.getElementById('targetBanner').style.display = 'none';
   document.getElementById('planFilter').style.display = 'none';
   document.getElementById('stuckDetails').style.display = 'none';
@@ -4026,13 +4169,33 @@ function renderWizardPlan() {
   const wrap = document.getElementById('planList');
   wrap.innerHTML = '';
   const wizStepIsDone = s => s.folders.every(f => migrated.has(f));
-  const firstUndoneIdx = wizPlan.findIndex(s => !wizStepIsDone(s));
-  wizPlan.forEach((s, idx) => {
+  // Reorder the plan around what you've actually migrated so the NEXT card is the
+  // thing you just unlocked — not a fixed list position. Buckets, then original
+  // rank within each: (0) done, (1) eligible AND unlocked by an already-migrated
+  // step = "just unlocked", (2) eligible from the start, (3) still blocked.
+  // Status is eligibility-driven: a step is actionable once every folder it
+  // depends on is migrated, so marking a step flips what it unlocks to "ready".
+  const stepKey = s => s.folders.join('');
+  const unlockedByDone = new Set();
+  wizPlan.forEach(s => { if (wizStepIsDone(s)) (s.unlocks || []).forEach(u => unlockedByDone.add(u.folders.join(''))); });
+  const stepBucket = s => {
+    if (wizStepIsDone(s)) return 0;
+    if (!isStepEligible(s)) return 3;
+    return unlockedByDone.has(stepKey(s)) ? 1 : 2;
+  };
+  const ordered = wizPlan
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => stepBucket(a.s) - stepBucket(b.s) || a.i - b.i);
+  const firstEligibleDisplay = ordered.findIndex(o => !wizStepIsDone(o.s) && isStepEligible(o.s));
+  ordered.forEach((o, displayIdx) => {
+    const s = o.s;
     const div = document.createElement('div');
     const isDone = wizStepIsDone(s);
-    const isNext = !isDone && idx === firstUndoneIdx;
-    const isLocked = !isDone && !isNext;
-    div.className = 'step' + (isDone ? ' done' : '') + (isNext ? ' next' : '');
+    const isEligible = !isDone && isStepEligible(s);
+    const isNext = isEligible && displayIdx === firstEligibleDisplay;
+    const isReady = isEligible && !isNext;
+    const isLocked = !isDone && !isEligible;
+    div.className = 'step' + (isDone ? ' done' : '') + (isNext || isReady ? ' next' : '');
     const lines = s.folders.map((f, i) =>
       '<div style="margin: 2px 0;" class="wiz-folder" data-folder="' + escapeHtml(f) + '">' +
       '<code style="cursor:pointer;text-decoration:underline;">' + escapeHtml(f) + '</code>' +
@@ -4059,9 +4222,11 @@ function renderWizardPlan() {
       ? '<span class="step-status done">✓ migrated</span>'
       : isNext
         ? '<span class="step-status next">▶ next</span>'
-        : '<span class="step-status locked">⏳ pending</span>';
+        : isReady
+          ? '<span class="step-status next">▶ ready</span>'
+          : '<span class="step-status locked">🔒 blocked</span>';
     const headerHtml = '<div class="wiz-step-header">' +
-      '<span class="stepNum">' + s.step + '.</span>' +
+      '<span class="stepNum">' + (displayIdx + 1) + '.</span>' +
       '<span class="grow"><b>' + (s.is_cycle ? '⚠ Bundle of ' + s.size + ' (cyclically coupled)' : 'Move folder') + '</b></span>' +
       statusBadge +
       '</div>';
@@ -4153,11 +4318,13 @@ function mpModuleOptions(pid, curSeg) {
   return html;
 }
 function mpApplyAndRefresh() {
-  // Recompute the plan from current assignments, keeping the modal open.
+  // Recompute the wizard plan from current assignments, keeping the modal open.
   const moving = Object.keys(wiz.assign).filter(f => wiz.assign[f] !== 'stay');
   wizPlan = moving.length ? computeWizardPlan(moving) : [];
   _invalidateBlockedCache();
-  renderWizardPlan();
+  // Re-render whichever plan is active (runway/target/wizard) so retargeting from
+  // a runway step doesn't yank the panel over to the wizard plan.
+  renderPlan();
   render();
   renderMigPreview();
 }
@@ -4491,6 +4658,7 @@ document.getElementById('wizAddTarget').onclick = () => {
 document.getElementById('wizReset').onclick = () => {
   wiz.sourceId = null; wiz.targetIds = []; wiz.assign = {}; wiz.newPkgs = [];
   wizPlan = null;
+  saveWizPlanLS();
   renderWizard();
 };
 document.getElementById('wizCompute').onclick = () => {
@@ -4499,6 +4667,9 @@ document.getElementById('wizCompute').onclick = () => {
   const moving = Object.keys(wiz.assign).filter(f => wiz.assign[f] !== 'stay');
   if (!moving.length) { alert('Every folder is set to stay — nothing to move.'); return; }
   wizPlan = computeWizardPlan(moving);
+  // A wizard compute is now the active plan view — drop any node-driven runway/
+  // target so it (not a stale seed) is what renders here and after reload.
+  runwaySeed = null; migrationTarget = null; savePlanViewLS();
   switchTab('plan');
   renderWizardPlan();
 };
@@ -4748,14 +4919,45 @@ function renderRunway() {
     const usageHtml = (s.inbound_weight && s.inbound_weight > 0)
       ? '<div class="wiz-usage">📈 ' + s.inbound_weight + ' incoming ref' + (s.inbound_weight === 1 ? '' : 's') + '</div>'
       : '';
+    // Same per-step actions as the wizard plan: preview/retarget the move and
+    // mark/unmark the step migrated. Marking re-renders the runway so the cascade
+    // recomputes against the new migrated set.
+    const isDone = s.folders.every(f => migrated.has(f));
+    const actionHtml = '<div class="step-actions">' +
+      '<button class="ghost" data-act="preview">🔍 Preview &amp; retarget</button>' +
+      (isDone
+        ? '<button class="ghost" data-act="unmark">↩ Unmark migrated</button>'
+        : '<button data-act="mark">✓ Mark migrated</button>') +
+      '</div>';
     const div = document.createElement('div');
-    div.className = cls;
+    div.className = cls + (isDone ? ' done' : '');
     div.innerHTML = '<div class="wiz-step-header">' +
       '<span class="stepNum">' + escapeHtml(opts.label) + '</span>' +
       '<span class="grow"><b>' + titleHtml + '</b></span>' +
-      badge + '</div>' + folderList + usageHtml + unlocksHtml;
-    div.querySelectorAll('[data-folder]').forEach(el => {
-      el.onclick = (ev) => { ev.stopPropagation(); focusToFolder(el.dataset.folder); };
+      (isDone ? '<span class="step-status done">✓ migrated</span>' : badge) + '</div>' +
+      folderList + usageHtml + unlocksHtml + actionHtml;
+    div.querySelectorAll('.wiz-folder code, .unlock-chip[data-folder]').forEach(el => {
+      el.onclick = (ev) => {
+        ev.stopPropagation();
+        const f = (el.closest('[data-folder]') || el).dataset.folder;
+        if (f) focusToFolder(f);
+      };
+    });
+    div.querySelectorAll('.step-actions button').forEach(b => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        if (b.dataset.act === 'preview') { openMigPreview(s.folders, opts.label); return; }
+        if (b.dataset.act === 'mark') {
+          s.folders.forEach(f => migrated.add(f));
+        } else {
+          s.folders.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
+        }
+        _invalidateBlockedCache();
+        updateMigratedSidebar();
+        updateBlockedSidebar();
+        renderPlan();   // routes back to renderRunway — cascade recomputes
+        render();
+      };
     });
     return div;
   };
@@ -4833,6 +5035,24 @@ renderPlan = function() {
   renderEmptyPlan();
 };
 
+// Restore the plan exactly as last computed. Prefer the persisted plan verbatim
+// so it survives regeneration untouched until the user computes a new one; only
+// recompute as a fallback (e.g. an older blob that saved the setup but no plan).
+// Guarded: a stale setup referencing folders that no longer exist must not abort boot.
+wizPlan = loadWizPlanLS();
+if (wizPlan === null && wiz.sourceId && wiz.targetIds.length) {
+  const moving = Object.keys(wiz.assign).filter(f => wiz.assign[f] !== 'stay');
+  if (moving.length) { try { wizPlan = computeWizardPlan(moving); } catch (e) { wizPlan = null; } }
+}
+// Restore the active node-driven plan view (🎯 target / 🗺 runway). Drop ids that
+// no longer exist in the tree so a stale seed can't blank the Plan tab.
+{
+  const pv = loadPlanViewLS();
+  if (pv) {
+    if (pv.runwaySeed && tree[pv.runwaySeed]) runwaySeed = pv.runwaySeed;
+    if (pv.migrationTarget && tree[pv.migrationTarget]) migrationTarget = pv.migrationTarget;
+  }
+}
 renderPlan();
 renderWizard();
 applyMode('explore');
