@@ -3,6 +3,7 @@
 #   just tree             interactive HTML dependency graph
 #   just list             migration task list (markdown)
 #   just all              both
+#   just test             run the Python test suite (stdlib unittest)
 #   just clean            wipe generated files (forces a full rebuild next run)
 #
 # tree/list/all reuse the index_graph.json Swift produced last time, so editing
@@ -95,6 +96,15 @@ all:
     just _prep
     python3 find_leaf_modules.py "{{project_dir}}" --from-index "{{graph_json}}" --graph "{{html}}" --list "{{md}}"
     echo "✓ {{html}}  {{md}}"
+
+# Run the Python test suite (stdlib unittest — no pip deps, no index build).
+alias tests := test
+test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The cli tests invoke main(), which prints progress to stdout; the unittest
+    # report itself goes to stderr, so drop stdout for a clean, readable run.
+    python3 -m unittest discover -s "{{justfile_directory()}}/tests" -t "{{justfile_directory()}}" -v 2>&1 >/dev/null
 
 # Python outputs (HTML/markdown/__pycache__) + swift reader output and build
 # artifacts. Leaves the target project's own build untouched.

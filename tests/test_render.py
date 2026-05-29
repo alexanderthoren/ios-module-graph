@@ -1,0 +1,229 @@
+"""Tests for modgraph.render: template loading + HTML payload injection.
+
+Follows the exemplar (tests/test_graph.py): build inputs from fixtures and
+modgraph.graph, call render_html into a temp path, and assert concrete facts
+about the produced HTML — placeholders are gone, the root label lands in the
+<title>, and the embedded ``const DATA = {...};`` parses back to the expected
+payload.
+"""
+from __future__ import annotations
+
+import json
+import re
+import tempfile
+import unittest
+from pathlib import Path
+
+from modgraph import graph, render
+from tests import fixtures
+
+
+def _extract_data_json(html: str) -> dict:
+    """Pull the ``const DATA = {...};`` line out of the rendered HTML and parse
+    its JSON object (strip the ``const DATA = `` prefix and trailing ``;``)."""
+    line = None
+    for raw in html.splitlines():
+        if raw.startswith("const DATA = "):
+            line = raw
+            break
+    if line is None:
+        raise AssertionError("no `const DATA = ...;` line found in rendered HTML")
+    body = line[len("const DATA = "):]
+    assert body.endswith(";"), f"DATA line not terminated by ';': {line!r}"
+    return json.loads(body[:-1])
+
+
+def _toy_inputs(root_label="ToyProj", out_path=None):
+    """Assemble a full, realistic render_html kwargs dict from the toy fixture."""
+    leaf_edges = fixtures.leaf_edges()
+    folders = fixtures.source_folders()
+    decls = {k: set(v) for k, v in fixtures.FOLDER_DECLS.items()}
+    tree = graph.build_tree(folders, decls, root_label=root_label)
+    plan, stuck = graph.compute_migration_plan(leaf_edges, folders)
+    return {
+        "tree": tree,
+        "leaf_edges": leaf_edges,
+        "multi_decl_types": {"Shared"},
+        "file_records": [dict(f) for f in fixtures.FILES],
+        "type_owners": dict(fixtures.TYPE_OWNERS),
+        "plan": plan,
+        "stuck": stuck,
+        "root_label": root_label,
+        "root_path": "/tmp/toy",
+        "initial_migrated": [],
+        "migrated_prefixes": [],
+        "out_path": out_path,
+        "type_kinds": dict(fixtures.TYPE_KINDS),
+        "packages": [{"name": "CorePkg", "folders": ["Core", "Util"]}],
+        "file_edges": [dict(e) for e in fixtures.FILE_EDGES],
+        "type_edges": [dict(e) for e in fixtures.TYPE_EDGES],
+    }
+
+
+class LoadTemplateTest(unittest.TestCase):
+    def test_returns_non_empty_string(self):
+        tmpl = render._load_template()
+        self.assertIsInstance(tmpl, str)
+        self.assertGreater(len(tmpl), 0)
+
+    def test_still_contains_payload_placeholder(self):
+        # The on-disk template is the un-rendered source; the placeholder must
+        # survive a bare load (it is only replaced inside render_html).
+        self.assertIn("__PAYLOAD__", render._load_template())
+
+    def test_contains_root_label_placeholder(self):
+        self.assertIn("__ROOT_LABEL__", render._load_template())
+
+
+class RenderHtmlOutputTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self._tmp.name)
+        self.out_path = self.tmpdir / "dependency_graph.html"
+        self.inputs = _toy_inputs(root_label="ToyProj", out_path=self.out_path)
+        render.render_html(**self.inputs)
+        self.html = self.out_path.read_text(encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_output_file_created(self):
+        self.assertTrue(self.out_path.exists())
+        self.assertGreater(self.out_path.stat().st_size, 0)
+
+    def test_payload_placeholder_replaced(self):
+        self.assertNotIn("__PAYLOAD__", self.html)
+
+    def test_root_label_placeholder_replaced(self):
+        self.assertNotIn("__ROOT_LABEL__", self.html)
+
+    def test_root_label_appears_in_title(self):
+        m = re.search(r"<title>(.*?)</title>", self.html, re.IGNORECASE | re.DOTALL)
+        self.assertIsNotNone(m, "no <title> in rendered HTML")
+        self.assertIn("ToyProj", m.group(1))
+
+    def test_data_line_parses_as_json(self):
+        data = _extract_data_json(self.html)
+        self.assertIsInstance(data, dict)
+
+    def test_data_has_expected_top_level_keys(self):
+        data = _extract_data_json(self.html)
+        for key in ("tree", "edges", "plan", "packages", "files", "type_owners"):
+            self.assertIn(key, data)
+
+
+class RenderHtmlPayloadContentTest(unittest.TestCase):
+    """The parsed DATA object should faithfully reflect the render inputs."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self._tmp.name)
+        self.out_path = self.tmpdir / "g.html"
+        self.inputs = _toy_inputs(root_label="ToyProj", out_path=self.out_path)
+        render.render_html(**self.inputs)
+        self.data = _extract_data_json(self.out_path.read_text(encoding="utf-8"))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_edges_serialised_as_src_dst_w_dicts(self):
+        # leaf_edges is a {(src,dst): w} map; render_html flattens it to dicts.
+        edges = self.data["edges"]
+        self.assertEqual(len(edges), len(self.inputs["leaf_edges"]))
+        for e in edges:
+            self.assertEqual(set(e), {"src", "dst", "w"})
+        as_map = {(e["src"], e["dst"]): e["w"] for e in edges}
+        self.assertEqual(as_map, self.inputs["leaf_edges"])
+
+    def test_multi_decl_is_count_not_collection(self):
+        # render_html stores len(multi_decl_types) under key "multi_decl".
+        self.assertEqual(self.data["multi_decl"], 1)
+
+    def test_root_label_and_path_passthrough(self):
+        self.assertEqual(self.data["root_label"], "ToyProj")
+        self.assertEqual(self.data["root_path"], "/tmp/toy")
+
+    def test_plan_matches_compute_migration_plan(self):
+        self.assertEqual(self.data["plan"], self.inputs["plan"])
+
+    def test_tree_root_uses_root_label(self):
+        self.assertEqual(self.data["tree"][""]["name"], "ToyProj")
+
+    def test_type_owners_passthrough(self):
+        self.assertEqual(self.data["type_owners"], self.inputs["type_owners"])
+
+    def test_packages_passthrough(self):
+        self.assertEqual(self.data["packages"], self.inputs["packages"])
+
+
+class RenderHtmlDefaultsTest(unittest.TestCase):
+    """The many optional kwargs default to empty containers in the payload."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self._tmp.name)
+        self.out_path = self.tmpdir / "min.html"
+        render.render_html(
+            tree={"": {"id": "", "name": "Mini", "parent": None,
+                       "children": [], "types": 0}},
+            leaf_edges={},
+            multi_decl_types=set(),
+            file_records=[],
+            type_owners={},
+            plan=[],
+            stuck=[],
+            root_label="Mini",
+            root_path="/x",
+            initial_migrated=[],
+            migrated_prefixes=[],
+            out_path=self.out_path,
+        )
+        self.data = _extract_data_json(self.out_path.read_text(encoding="utf-8"))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_optional_collections_default_empty(self):
+        self.assertEqual(self.data["type_kinds"], {})
+        self.assertEqual(self.data["initial_excluded"], [])
+        self.assertEqual(self.data["folder_package"], {})
+        self.assertEqual(self.data["packages"], [])
+        self.assertEqual(self.data["file_edges"], [])
+        self.assertEqual(self.data["type_edges"], [])
+
+    def test_excluded_file_name_default(self):
+        # When excluded_file is None, the basename defaults to the dotfile name.
+        self.assertEqual(self.data["excluded_file_name"],
+                         ".modularization_excluded.json")
+        self.assertEqual(self.data["excluded_file_path"], "")
+
+
+class RenderHtmlExcludedFileTest(unittest.TestCase):
+    """When an excluded_file path is given, name = basename, path = full str."""
+
+    def test_excluded_file_name_is_basename(self):
+        with tempfile.TemporaryDirectory() as d:
+            out_path = Path(d) / "e.html"
+            excluded = "/some/dir/.my_excluded.json"
+            render.render_html(
+                tree={},
+                leaf_edges={},
+                multi_decl_types=set(),
+                file_records=[],
+                type_owners={},
+                plan=[],
+                stuck=[],
+                root_label="E",
+                root_path="/x",
+                initial_migrated=[],
+                migrated_prefixes=[],
+                out_path=out_path,
+                excluded_file=excluded,
+            )
+            data = _extract_data_json(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["excluded_file_name"], ".my_excluded.json")
+            self.assertEqual(data["excluded_file_path"], excluded)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -65,6 +65,7 @@ The first run builds your project, indexes it, and opens
 | `just list` | migration task list → `migration_plan.md` |
 | `just all` | both |
 | `just serve` | live mode — serve the HTML, hot-reload on rebuild, `cmd`+click → Xcode |
+| `just test` | run the Python test suite (stdlib unittest) |
 | `just clean` | wipe generated files (forces a full rebuild next run) |
 
 `tree`/`list`/`all` reuse the resolved graph (`index_graph.json`) from the last
@@ -80,23 +81,6 @@ just clean && just tree
 ```sh
 just tree project_dir=/other/App workspace=Other.xcworkspace scheme=Other
 ```
-
----
-
-## 🖼️ Reading the graph
-
-Each circle is a **folder**; size scales with how much it contains. Click to
-drill in, or jump to the **Plan** tab to generate an extraction path.
-
-| | Node | Meaning |
-|---|------|---------|
-| 🟢 | **Green** | migratable leaf — no first-party deps, no sub-folders. **Start here.** |
-| 🟠 | **Orange** | newly unlocked by the last migration |
-| 🔵 | **Blue** | still has dependencies — drill in |
-| ⚪ | **Gray** | already migrated / external |
-
-Edge **thickness** = number of references. **Red** = outbound, **blue** = inbound.
-A **dashed red** edge marks a folder you've flagged *won't be modularized*.
 
 ---
 
@@ -187,7 +171,7 @@ first build. If it fails to resolve, match the branch to your toolchain in
    │ 2. index_graph (Swift)  reads the store, resolves every    │
    │    reference by USR → index_graph.json                     │
    ├───────────────────────────────────────────────────────────┤
-   │ 3. find_leaf_modules.py  builds the folder graph, computes │
+   │ 3. modgraph (Python)  builds the folder graph, computes    │
    │    an SCC-aware topological migration order →              │
    │    dependency_graph.html / migration_plan.md               │
    └───────────────────────────────────────────────────────────┘
@@ -195,4 +179,77 @@ first build. If it fails to resolve, match the branch to your toolchain in
 
 The migration plan is **SCC-aware**: folders that are cyclically coupled are
 bundled into a single step (you can't extract them independently). It shows
-"start here → next → next" guidance and which prerequisites must move first.
+"start here → next → next" guidance and which prerequisites must move first. The
+plan, graph, and package map are **deterministic** — identical inputs always
+produce byte-identical outputs, so regenerating after a change yields a clean diff.
+
+---
+
+## 🗂️ Project layout
+
+```
+index_graph/            Stage 1 — Swift index-store reader (SwiftPM)
+  Sources/index_graph/main.swift   resolves refs by USR → index_graph.json
+modgraph/               Stage 2 — Python package (stdlib only)
+  config.py             constants, regexes, default paths
+  models.py             GraphData — the typed graph container
+  scanner.py            regex-scan fallback (no index store)
+  index_loader.py       load the USR-resolved index_graph.json
+  graph.py              Tarjan SCC, SCC-aware migration plan, folder tree
+  cycles.py             feedback-arc-set + per-folder extraction targets
+  spm.py                SPM package map + migrated-prefix auto-detection
+  exclusions.py         "won't modularize" set + transitive blocked-by
+  tasks.py              flatten the plan into PR-sized tasks; md / json writers
+  render.py             inject the payload into template.html
+  template.html         the interactive HTML+JS UI
+  cli.py                argument parsing + main orchestration
+find_leaf_modules.py    thin entry-point shim → modgraph.cli:main
+serve.py                companion HTTP server for `just serve` (live mode)
+justfile                the glue: build → index → resolve → render
+tests/                  stdlib-unittest suite for the modgraph package
+```
+
+---
+
+## 🧑‍💻 Direct CLI
+
+`just` is the easy path, but the Python stage is a normal CLI you can drive
+directly (this is what the recipes call). Equivalent: `python3 -m modgraph …`.
+
+```sh
+python3 find_leaf_modules.py <project_root> [options]
+```
+
+| Option | Effect |
+|--------|--------|
+| `--from-index JSON` | load the USR-resolved graph from `index_graph.json` (the accurate path) instead of regex-scanning |
+| `--graph [PATH]` | write the interactive HTML graph (default `dependency_graph.html`; implied if neither `--graph` nor `--list` is given) |
+| `--list [PATH]` | write the migration task list (default `migration_plan.md`) |
+| `--list-format markdown\|json` | task-list format (default `markdown`) |
+| `--migrated-prefix PREFIX` | mark a path prefix as already-in-SPM (repeatable; auto-detected from `Package.swift` subtrees) |
+| `--no-auto-detect-spm` | disable `Package.swift` auto-detection |
+| `--excluded-file JSON` | folders flagged *won't be modularized* (the graph's Exclude button writes this) |
+| `--include-tests` | include `Tests`/`UITests`/`SnapshotTests` folders (skipped by default) |
+| `--ignore PATTERN` | glob to skip, matched against dir name **or** relative path (repeatable) |
+| `--label NAME` | display label for the root (default: directory basename) |
+| `--ext .swift` | file extension to scan (only Swift is fully supported) |
+
+Without `--from-index` the tool falls back to a pure regex scan — fast, but it
+fabricates edges when two folders declare a same-named type. Prefer the index
+path; that's the reason stage 1 exists.
+
+---
+
+## 🧪 Development
+
+The Python package has a stdlib-`unittest` suite — **no pip dependencies**:
+
+```sh
+just test                                    # whole suite (alias: just tests)
+python3 -m unittest discover -s tests -v     # whole suite (from repo root)
+python3 -m unittest tests.test_graph -v      # a single module
+```
+
+`tests/fixtures.py` defines one shared toy project the tests assert against;
+`tests/test_graph.py` is the style exemplar. There is no linter — verification is
+a green test run plus a clean `just tree` regeneration.
