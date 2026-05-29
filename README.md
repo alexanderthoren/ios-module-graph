@@ -9,7 +9,8 @@
 [![just](https://img.shields.io/badge/built%20with-just-1abc9c)](https://github.com/casey/just)
 [![platform](https://img.shields.io/badge/platform-macOS%20%7C%20iOS-lightgrey)](#requirements)
 
-<img src="docs/graph.png" alt="Interactive module dependency graph with a step-by-step SPM migration plan" width="100%">
+<img src="docs/explore.png" alt="Explore mode — interactive folder-level dependency graph" width="100%">
+<img src="docs/migrate.png" alt="Migration mode — SPM migration planner with progress tracking" width="100%">
 
 </div>
 
