@@ -16,7 +16,8 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 plan, stuck, root_label, root_path, initial_migrated,
                 migrated_prefixes, out_path, type_kinds=None,
                 initial_excluded=None, excluded_file=None,
-                folder_package=None, packages=None, file_edges=None, type_edges=None):
+                folder_package=None, packages=None, file_edges=None, type_edges=None,
+                divisions=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -40,6 +41,9 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         "packages": packages or [],
         "file_edges": file_edges or [],
         "type_edges": type_edges or [],
+        # folder id -> precomputed division plan (how to split that folder into
+        # smaller SPM modules). Only populated on the USR-resolved index path.
+        "divisions": divisions or {},
     }
     html = _load_template().replace("__PAYLOAD__", json.dumps(payload)).replace(
         "__ROOT_LABEL__", root_label

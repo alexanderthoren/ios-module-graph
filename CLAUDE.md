@@ -104,6 +104,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `graph.py` | `_tarjan_sccs`, `compute_migration_plan` (SCC-aware, deterministic), `build_tree` |
 | `cycles.py` | `_feedback_arc_set`, `compute_cycle_breakers`, `compute_extraction_targets` |
 | `spm.py` | `_build_package_map`, `auto_detect_migrated_prefixes`, `is_migrated`, `_package_label` |
+| `divide.py` | split ONE module into smaller modules: `aggregate_module` (subfolders→units), `public_surface`, `compute_division_plan` (reuses `graph`/`cycles`), `dividable_modules` |
 | `exclusions.py` | `load_exclusions`, `compute_blocked_by_excluded` |
 | `tasks.py` | `build_task_list`, `write_task_list_markdown`, `write_task_list_json` |
 | `render.py` | `render_html` — inject the JSON payload into `template.html` |
@@ -116,6 +117,32 @@ Both `scan()` and `load_index_graph()` return a **`GraphData`** (see
 defaults. When you add a field to the Swift `Graph` contract, add it to
 `GraphData`, set it in `load_index_graph`, and (if the UI needs it) ship it in
 `render.py`'s payload.
+
+### Dividing one module (the inverse of whole-project migration)
+
+The migration plan extracts **whole folders** of the app into SPM in dependency
+order. The **divide** feature does the *inverse-scale* job: take one already-large
+module (any folder) and plan how to split **it** into smaller modules. It is
+**app-only** — there is no CLI flag; it lives entirely in the HTML graph (the user
+hits "Divide" on a folder node). The units are the module's **immediate
+subfolders** (a spike showed unsupervised clustering over-fragments, ignores edge
+direction → cyclic/illegal modules, and loses to the folder structure on
+public-API cost). `divide.aggregate_module` collapses the folder graph inside the
+prefix to subfolder→subfolder edges by mapping each endpoint through `unit_of`,
+then reuses `compute_migration_plan` +
+`compute_cycle_breakers`/`compute_extraction_targets` unchanged — the only new
+metric is **public surface** (`public_surface`): per candidate sub-module, the
+count of its types referenced from another unit, which must flip
+`internal`→`public`. Needs the index path: `pair_types` is empty on the
+regex-scan fallback, so `cli.main` only precomputes divisions when it's present.
+
+`cli.main` precomputes a division for every `dividable_modules` folder and ships
+them as `payload["divisions"]` (folder id → plan, including `unit_edges` for the
+per-step graph); the UI renders everything client-side (the "Divide" modal, the
+per-step before/after preview, and the per-step Claude prompts) — no recompute in
+the browser, all graph logic stays in Python. `compute_division_plan`'s output is
+deterministic for the same reasons the migration plan is (it reuses that code and
+sorts the unit rows / `unit_edges`); keep it that way.
 
 ### Why resolution-by-USR matters
 

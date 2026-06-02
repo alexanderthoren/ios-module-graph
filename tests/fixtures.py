@@ -125,6 +125,53 @@ def pair_types() -> dict[tuple[str, str], set[str]]:
     return {(p["src"], p["dst"]): set(p["types"]) for p in PAIR_TYPES}
 
 
+# --- divide fixture: one module "Lib" to be split into smaller modules -------
+#
+# Module "Lib" with five subfolder units. Exercises every branch of the divide
+# analysis: a depended-on leaf, an unused leaf, a root-level unit, a nested
+# folder that collapses into its immediate-subfolder unit, and a 2-unit cycle.
+#
+#     Lib            (root)  : declares LibFacade — referenced by nobody
+#     Lib/Models             : ModelA (used by Core+Net), ModelB (unused)
+#     Lib/Models/DTO         : ModelC — collapses into the "Models" unit
+#     Lib/Core   ⇄ Lib/Net   : CoreService ⇄ NetClient (a 2-unit cycle)
+#     Lib/Util               : UtilHelper — referenced by nobody (clean leaf)
+#
+# Public surface (types referenced from another unit): ModelA, CoreService,
+# NetClient = 3. Models extracts before the {Core, Net} cycle bundle; Util and
+# the root unit are clean leaves.
+DIVIDE_PREFIX = "Lib"
+DIVIDE_DECLS: dict[str, list[str]] = {
+    "Lib": ["LibFacade"],
+    "Lib/Models": ["ModelA", "ModelB"],
+    "Lib/Models/DTO": ["ModelC"],
+    "Lib/Core": ["CoreService"],
+    "Lib/Net": ["NetClient"],
+    "Lib/Util": ["UtilHelper"],
+}
+# (src_folder, dst_folder, weight)
+DIVIDE_EDGES: list[tuple[str, str, int]] = [
+    ("Lib/Core", "Lib/Net", 1),
+    ("Lib/Net", "Lib/Core", 2),
+    ("Lib/Core", "Lib/Models", 1),
+    ("Lib/Net", "Lib/Models", 1),
+]
+DIVIDE_PAIR_TYPES: dict[tuple[str, str], list[str]] = {
+    ("Lib/Core", "Lib/Net"): ["NetClient"],
+    ("Lib/Net", "Lib/Core"): ["CoreService"],
+    ("Lib/Core", "Lib/Models"): ["ModelA"],
+    ("Lib/Net", "Lib/Models"): ["ModelA"],
+}
+
+
+def divide_inputs():
+    """Return ``(prefix, leaf_edges, pair_types, decls)`` for the Lib module."""
+    decls = {f: set(t) for f, t in DIVIDE_DECLS.items()}
+    leaf_edges = {(a, b): w for a, b, w in DIVIDE_EDGES}
+    pair_types = {k: set(v) for k, v in DIVIDE_PAIR_TYPES.items()}
+    return DIVIDE_PREFIX, leaf_edges, pair_types, decls
+
+
 def make_swift_tree(base: Path) -> Path:
     """Create a small on-disk Swift project under *base* for scanner tests.
 

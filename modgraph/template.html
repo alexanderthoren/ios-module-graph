@@ -154,6 +154,50 @@
     .mp-files code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
     .mp-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex;
       justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+    /* divide-module plan */
+    .dv-modal { width: min(820px, 95vw); }
+    .dv-sum { font-size: 12px; color: var(--text-dim); margin-bottom: 14px; }
+    .dv-sum b { color: var(--text); }
+    .dv-sec-h { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--text-faint); margin: 16px 0 8px; }
+    .dv-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .dv-tbl th { text-align: left; color: var(--text-faint); font-weight: 600;
+      font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em;
+      padding: 4px 8px; border-bottom: 1px solid var(--border); }
+    .dv-tbl td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .dv-tbl td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .dv-tbl code { font-size: 11.5px; }
+    .dv-bar { position: relative; height: 14px; min-width: 90px; background: var(--surface-2);
+      border-radius: 7px; overflow: hidden; }
+    .dv-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 7px; }
+    .dv-bar.lo > span { background: #22c55e; }
+    .dv-bar.mid > span { background: #f59e0b; }
+    .dv-bar.hi > span { background: #ef4444; }
+    .dv-sample { color: var(--text-faint); font-size: 11px; }
+    .dv-step { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+      margin-bottom: 8px; background: var(--surface); }
+    .dv-step.cycle { border-color: var(--red, #ef4444); }
+    .dv-step-h { font-weight: 700; font-size: 12.5px; margin-bottom: 4px; }
+    .dv-step-h .tag { font-weight: 600; font-size: 10px; color: #ef4444; margin-right: 6px; }
+    .dv-step p { margin: 4px 0; font-size: 11.5px; color: var(--text-dim); }
+    .dv-cut { font-size: 11.5px; color: var(--text-dim); padding: 2px 0; }
+    .dv-cut code { color: var(--text); }
+    .dv-step-h { display: flex; align-items: center; gap: 8px; }
+    .dv-step-h .dv-step-ttl { flex: 1; }
+    .dv-viz { font-size: 10.5px; padding: 3px 9px; flex-shrink: 0; }
+    /* per-step before/after preview overlay — stacks above the divide modal */
+    .dv-step-overlay { z-index: 210; }
+    .dv-step-overlay .ct-modal { width: min(880px, 95vw); height: min(680px, 90vh); }
+    .ds-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px;
+      overflow: hidden; margin-right: 6px; }
+    .ds-toggle button { background: transparent; color: var(--text-dim); border: none;
+      padding: 5px 12px; font-size: 11.5px; cursor: pointer; }
+    .ds-toggle button.active { background: var(--accent); color: #fff; }
+    .ds-legend { padding: 8px 18px; border-top: 1px solid var(--border); display: flex;
+      flex-wrap: wrap; gap: 14px; font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+    .ds-legend .k { display: inline-flex; align-items: center; gap: 5px; }
+    .ds-legend .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+    .ds-legend .ln { width: 16px; height: 0; border-top-width: 2px; border-top-style: solid; display: inline-block; }
     /* before → after diff */
     .mp-ba { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center;
       border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
@@ -653,6 +697,42 @@
         <div class="mp-foot">
           <button class="ghost" id="mpDone">Done</button>
         </div>
+      </div>
+    </div>
+
+    <div id="divideOverlay" class="ct-overlay hidden">
+      <div class="ct-modal mp-modal dv-modal">
+        <div class="ct-head">
+          <span class="ttl" id="dvTitle"></span>
+          <button class="ct-close" id="dvClose" aria-label="Close division plan" title="Close (Esc)">
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+              <path d="M5 5 L15 15 M15 5 L5 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="mp-body" id="dvBody"></div>
+        <div class="mp-foot">
+          <button class="ghost" id="dvDone">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="divideStepOverlay" class="ct-overlay dv-step-overlay hidden">
+      <div class="ct-modal">
+        <div class="ct-head">
+          <span class="ttl" id="dsTitle"></span>
+          <div class="ds-toggle">
+            <button id="dsBefore" class="active">Before</button>
+            <button id="dsAfter">After</button>
+          </div>
+          <button class="ct-close" id="dsClose" aria-label="Close step preview" title="Close (Esc)">
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+              <path d="M5 5 L15 15 M15 5 L5 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="ct-canvas" id="dsNet"></div>
+        <div class="ds-legend" id="dsLegend"></div>
       </div>
     </div>
 
@@ -2383,6 +2463,14 @@ function render() {
         + '<button class="' + exclCls + '" data-act="excl">' + exclLabel + '</button>'
         + '</div>';
     }
+    // "Divide" is available in any mode for folders we precomputed a split plan
+    // for (≥2 type-bearing subfolders). It opens the division-plan modal.
+    const hasDivision = !!(DATA.divisions && DATA.divisions[nodeId]);
+    if (hasDivision) {
+      const divideBtn = '<button class="ghost" data-act="divide">✂️ Divide into modules</button>';
+      if (actions) actions = actions.replace('</div>', divideBtn + '</div>');
+      else actions = '<div class="np-actions">' + divideBtn + '</div>';
+    }
     pop.innerHTML =
       '<div class="np-header"><span class="np-swatch" style="background:' + swatch + ';"></span>'
         + '<span class="np-name">' + escapeHtml(n.name || nodeId) + '</span></div>'
@@ -2401,6 +2489,7 @@ function render() {
         if (act === 'mig') (isMigrated ? unmigrate(nodeId) : migrate(nodeId));
         else if (act === 'excl') toggleExclude(nodeId);
         else if (act === 'planmig') setRunway(nodeId);
+        else if (act === 'divide') openDivide(nodeId);
         else if (act === 'calltree') showCallTree({ kind: 'folder', key: nodeId, label: nodeId });
         pop.style.display = 'none'; popNodeId = null;
       };
@@ -3909,6 +3998,357 @@ document.getElementById('migPreviewOverlay').addEventListener('click', (ev) => {
 });
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && !document.getElementById('migPreviewOverlay').classList.contains('hidden')) closeMigPreview();
+});
+
+// ── Divide-into-modules plan ────────────────────────────────────────────────
+// Renders the server-precomputed division plan for a folder: a public-API cost
+// table per candidate sub-module + the SCC-aware extraction order with the
+// feedback-arc-set cuts needed to break any cyclic bundle.
+let dvCurrent = null;
+function _dvBarClass(pct) { return pct >= 50 ? 'hi' : (pct >= 20 ? 'mid' : 'lo'); }
+function renderDivide(div) {
+  document.getElementById('dvTitle').textContent = '✂️ Divide — ' + div.module;
+  let h = '';
+  h += '<div class="dv-sum">'
+    + '<b>' + div.unit_count + '</b> candidate sub-modules · '
+    + '<b>' + div.type_total + '</b> types · '
+    + '<b>' + div.edge_count + '</b> inter-module edges · '
+    + '<b>' + div.total_public + '</b> type(s) forced <code>internal→public</code> by the split'
+    + '</div>';
+
+  h += '<div class="dv-sec-h">Public-API cost per candidate sub-module</div>';
+  h += '<table class="dv-tbl"><thead><tr>'
+    + '<th>Sub-module</th><th>Types</th><th>Public</th><th>%</th>'
+    + '<th>Cost</th><th>Sample</th></tr></thead><tbody>';
+  div.units.forEach(u => {
+    const sample = (u.public_sample || []).map(n => '<code>' + escapeHtml(n) + '</code>').join(', ') || '—';
+    h += '<tr>'
+      + '<td><code>' + escapeHtml(u.unit) + '</code></td>'
+      + '<td class="num">' + u.types + '</td>'
+      + '<td class="num">' + u.public + '</td>'
+      + '<td class="num">' + u.public_pct + '%</td>'
+      + '<td><div class="dv-bar ' + _dvBarClass(u.public_pct) + '"><span style="width:'
+        + Math.min(100, u.public_pct) + '%"></span></div></td>'
+      + '<td class="dv-sample">' + sample + '</td>'
+      + '</tr>';
+  });
+  h += '</tbody></table>';
+
+  h += '<div class="dv-sec-h">Extraction order (SCC-aware)</div>';
+  div.plan.forEach((step, si) => {
+    const folders = step.folders.map(f => '<code>' + escapeHtml(f) + '</code>').join(', ');
+    const promptLabel = step.is_cycle ? '📋 Copy refactor prompt' : '📋 Copy extract prompt';
+    const stepBtns = '<button class="ghost dv-viz" data-step="' + si + '">📊 Visualize</button>'
+      + '<button class="ghost dv-prompt" data-step="' + si + '">' + promptLabel + '</button>';
+    if (step.is_cycle) {
+      h += '<div class="dv-step cycle"><div class="dv-step-h">'
+        + '<span class="dv-step-ttl"><span class="tag">⟲ CYCLE</span>'
+        + 'Step ' + step.step + ' — ' + folders + '</span>' + stepBtns + '</div>';
+      h += '<p>These ' + step.size + ' sub-modules mutually reference each other. '
+        + 'Feedback-arc-set: <b>' + step.fas_estimate + '</b> edge(s) to cut before they '
+        + 'can become separate modules. Lightest cuts first:</p>';
+      (step.breakers || []).forEach(b => {
+        const types = (b.types || []).map(t => '<code>' + escapeHtml(t) + '</code>').join(', ') || '(no types)';
+        h += '<div class="dv-cut">✂️ cut <code>' + escapeHtml(b.src) + '</code> → <code>'
+          + escapeHtml(b.dst) + '</code> (' + b.refs + ' ref' + (b.refs === 1 ? '' : 's')
+          + ' via ' + types + ') — after: ' + b.remaining_cycles + ' cycle(s) left</div>';
+      });
+      h += '</div>';
+    } else {
+      const unlocks = (step.unlocks || []).map(u =>
+        u.folders.map(f => '<code>' + escapeHtml(f) + '</code>').join('+')).join(', ') || '—';
+      h += '<div class="dv-step"><div class="dv-step-h">'
+        + '<span class="dv-step-ttl">Step ' + step.step + ' — extract ' + folders + '</span>'
+        + stepBtns + '</div>'
+        + '<p>No outgoing refs to other not-yet-extracted sub-modules. Extract directly. '
+        + 'Unlocks: ' + unlocks + '.</p></div>';
+    }
+  });
+  document.getElementById('dvBody').innerHTML = h;
+  document.getElementById('dvBody').querySelectorAll('.dv-viz').forEach(b => {
+    b.onclick = () => openStepViz(parseInt(b.dataset.step, 10));
+  });
+  document.getElementById('dvBody').querySelectorAll('.dv-prompt').forEach(b => {
+    b.onclick = () => dvCopyStepPrompt(parseInt(b.dataset.step, 10), b);
+  });
+}
+// ── Per-step Claude prompts ─────────────────────────────────────────────────
+// Leaf step -> an extraction prompt (move + raise access + import). Cycle step
+// -> a refactor prompt (sever these specific edges first; a cyclic bundle can't
+// be moved). All inputs come from the precomputed division + DATA.files.
+function _dvUnitOf(folder, prefix) {
+  if (folder === prefix) return '(root)';
+  if (!folder.startsWith(prefix + '/')) return null;
+  return folder.slice(prefix.length + 1).split('/')[0];
+}
+function _dvUnitInfo(div) {
+  const prefix = div.module, info = {};
+  (DATA.files || []).forEach(f => {
+    const u = _dvUnitOf(f.folder, prefix);
+    if (u === null) return;
+    if (!info[u]) info[u] = { files: [], types: new Set() };
+    info[u].files.push((f.folder === '.' ? '' : f.folder + '/') + f.name);
+    (f.decls || []).forEach(t => info[u].types.add(t));
+  });
+  return info;
+}
+function _dvPublicByUnit(div) {
+  const pub = {};
+  (div.unit_edges || []).forEach(e => {
+    (pub[e.dst] = pub[e.dst] || new Set());
+    (e.types || []).forEach(t => pub[e.dst].add(t));
+  });
+  return pub;
+}
+function _dvLeafPrompt(div, step) {
+  const prefix = div.module, unit = step.folders[0];
+  const info = _dvUnitInfo(div)[unit] || { files: [], types: new Set() };
+  const pub = [...(_dvPublicByUnit(div)[unit] || new Set())].sort();
+  const consumers = (div.unit_edges || []).filter(e => e.dst === unit);
+  const src = prefix + '/' + unit, L = [];
+  L.push('# Extract `' + unit + '` from the `' + prefix + '` module into its own SPM module');
+  L.push('');
+  L.push('Split the sub-folder `' + src + '` out of `' + prefix + '` into a new SPM module named');
+  L.push('`' + unit + '`. This is a move + access-level change only — do NOT change behavior.');
+  L.push('');
+  L.push('## Why this is safe now');
+  L.push('`' + unit + '` has NO outgoing dependencies on the rest of `' + prefix + '` (it is a leaf in');
+  L.push('the sub-module dependency graph), so it can be extracted without refactoring first.');
+  L.push('');
+  L.push('## What to move');
+  L.push('- Source folder: `' + src + '/` (' + info.files.length + ' file(s))');
+  info.files.slice(0, 80).forEach(p => L.push('  - `' + p + '`'));
+  if (info.files.length > 80) L.push('  - …+' + (info.files.length - 80) + ' more');
+  L.push('');
+  L.push('## Public API surface');
+  if (pub.length) {
+    L.push('These ' + pub.length + ' type(s) are referenced from other parts of `' + prefix + '` and MUST');
+    L.push('become `public` (everything else stays `internal`):');
+    pub.forEach(t => L.push('  - `' + t + '`'));
+  } else {
+    L.push('Nothing elsewhere in `' + prefix + '` references it — keep all types `internal`.');
+  }
+  L.push('');
+  L.push('## Consumers to update');
+  if (consumers.length) {
+    L.push('Add `import ' + unit + '` and fix references in these sibling sub-modules:');
+    consumers.forEach(e => {
+      const t = (e.types || []).slice(0, 8).map(x => '`' + x + '`').join(', ');
+      L.push('  - `' + e.src + '` (' + e.w + ' ref(s)' + (t ? ' via ' + t : '') + ')');
+    });
+    L.push('Also update any code OUTSIDE `' + prefix + '` that used these types — it imports');
+    L.push('`' + prefix + '` today and must now also `import ' + unit + '`.');
+  } else {
+    L.push('Nothing inside `' + prefix + '` consumes it; update any external consumers of these types.');
+  }
+  L.push('');
+  L.push('## Steps');
+  L.push('1. Create a new SPM target `' + unit + '` (+ a matching `' + unit + 'Tests` test target); wire products/dependencies.');
+  L.push('2. `git mv` the listed `.swift` files into `Sources/' + unit + '/` (preserve history).');
+  L.push('3. `git mv` the matching test files into `Tests/' + unit + 'Tests/`. Do not orphan tests.');
+  L.push('4. Raise access levels: make the public types above (and any cross-boundary members) `public` (`open` only where subclassed).');
+  L.push('5. Add `import ' + unit + '` wherever the moved types are referenced and fix all references.');
+  L.push('6. Remove the moved files from the old target membership so nothing compiles twice.');
+  L.push('7. Build the package and the app, run the moved tests — everything must compile and pass.');
+  L.push('');
+  L.push('## Constraints');
+  L.push('- Behavior-preserving: no logic changes.');
+  L.push('- Move tests alongside the code they cover (mandatory).');
+  L.push('- If the move would create a circular module dependency, stop and report it.');
+  return L.join('\n');
+}
+function _dvCyclePrompt(div, step) {
+  const prefix = div.module, units = step.folders, info = _dvUnitInfo(div), L = [];
+  L.push('# Break the dependency cycle in `' + prefix + '` (extraction step ' + step.step + ')');
+  L.push('');
+  L.push('These ' + units.length + ' sub-folders of `' + prefix + '` cyclically depend on each other, so they');
+  L.push('CANNOT be split into separate SPM modules yet:');
+  units.forEach(u => L.push('  - `' + prefix + '/' + u + '`'));
+  L.push('');
+  L.push('This step is a REFACTOR, not a move: sever the references below so the bundle becomes');
+  L.push('acyclic, cutting the lightest edges first. Afterwards, re-run the divide analysis — the');
+  L.push('sub-modules will then extract cleanly in dependency order.');
+  L.push('');
+  L.push('## References to sever (feedback-arc-set, lightest first — ' + step.fas_estimate + ' edge(s))');
+  (step.breakers || []).forEach((b, i) => {
+    const t = (b.types || []).map(x => '`' + x + '`').join(', ') || '(no specific types resolved)';
+    L.push('');
+    L.push((i + 1) + '. `' + b.src + '` → `' + b.dst + '`  (' + b.refs + ' ref(s))');
+    L.push('   - Types crossing this edge: ' + t);
+    L.push('   - Break by one of: move the shared type(s) into a lower-level sub-module both depend on; '
+      + 'OR define a protocol owned by `' + b.src + '` that `' + b.dst + '` conforms to (dependency inversion); '
+      + 'OR inject the dependency from a coordinator above.');
+  });
+  L.push('');
+  L.push('## Sub-module sizes (context)');
+  units.forEach(u => {
+    const it = info[u] || { files: [], types: new Set() };
+    L.push('  - `' + u + '`: ' + it.files.length + ' file(s), ' + it.types.size + ' type(s)');
+  });
+  L.push('');
+  L.push('## What I need from you');
+  L.push('1. For each edge above, read the actual references and refactor so the source no longer depends on the destination. Prefer the lightest mechanism that fits the code.');
+  L.push('2. Keep behavior identical; move any tests alongside code you relocate.');
+  L.push('3. After the cuts, verify the bundle is acyclic and the project still builds and tests pass.');
+  L.push('4. Do NOT create new SPM modules in this step — only break the cycle. Report which edges you cut and how.');
+  return L.join('\n');
+}
+function dvStepPrompt(stepIdx) {
+  const div = dvCurrent;
+  if (!div || !div.plan[stepIdx]) return '';
+  const step = div.plan[stepIdx];
+  return step.is_cycle ? _dvCyclePrompt(div, step) : _dvLeafPrompt(div, step);
+}
+function _dvCopy(text) {
+  let ok = false;
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  if (navigator.clipboard) { navigator.clipboard.writeText(text).catch(() => {}); ok = true; }
+  ta.remove();
+  return ok;
+}
+function dvCopyStepPrompt(stepIdx, btn) {
+  _dvCopy(dvStepPrompt(stepIdx));
+  if (btn) { const old = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = old; }, 1400); }
+}
+
+function openDivide(folderId) {
+  const div = DATA.divisions && DATA.divisions[folderId];
+  if (!div) return;
+  dvCurrent = div;
+  renderDivide(div);
+  document.getElementById('divideOverlay').classList.remove('hidden');
+}
+function closeDivide() {
+  document.getElementById('divideOverlay').classList.add('hidden');
+  dvCurrent = null;
+}
+document.getElementById('dvClose').onclick = closeDivide;
+document.getElementById('dvDone').onclick = closeDivide;
+document.getElementById('divideOverlay').addEventListener('click', (ev) => {
+  if (ev.target.id === 'divideOverlay') closeDivide();
+});
+document.addEventListener('keydown', (ev) => {
+  // Only close the divide modal when the per-step preview (which stacks above
+  // it) is not open — otherwise Esc would dismiss both at once.
+  if (ev.key === 'Escape'
+      && !document.getElementById('divideOverlay').classList.contains('hidden')
+      && document.getElementById('divideStepOverlay').classList.contains('hidden')) closeDivide();
+});
+
+// ── Per-step before/after preview ───────────────────────────────────────────
+// Draws the module's sub-module unit graph for one step. "Before" shows the
+// current coupling (with the edges this step must cut highlighted red); "After"
+// shows this step's units extracted (green), the cut edges removed, and surviving
+// references into them redrawn as cross-module imports (blue). All data is in the
+// precomputed division (units + unit_edges + per-step breakers) — nothing is
+// recomputed in the browser.
+let dsNetwork = null;
+let dsStepIdx = null;
+let dsMode = 'before';
+function _dsLogW(w) { return Math.min(5, 1 + Math.log2(w + 1)); }
+function renderStepViz() {
+  const div = dvCurrent;
+  if (!div || dsStepIdx == null) return;
+  const step = div.plan[dsStepIdx];
+  const focus = new Set(step.folders);
+  const extracted = new Set();
+  for (let i = 0; i < dsStepIdx; i++) div.plan[i].folders.forEach(f => extracted.add(f));
+  const cut = new Set((step.breakers || []).map(b => b.src + ' ' + b.dst));
+  const after = dsMode === 'after';
+
+  const nodes = div.units.map(u => {
+    const isFocus = focus.has(u.unit);
+    const isDone = extracted.has(u.unit);
+    let bg, border, fg;
+    if (isFocus && after) { bg = '#16a34a'; border = '#15803d'; fg = '#fff'; }
+    else if (isFocus)     { bg = '#f59e0b'; border = '#d97706'; fg = '#1c2333'; }
+    else if (isDone)      { bg = '#374151'; border = '#4b5563'; fg = '#cbd5e1'; }
+    else                  { bg = '#1e2a3a'; border = '#3b82f6'; fg = '#bfdbfe'; }
+    return {
+      id: u.unit,
+      label: u.unit + '\n' + u.types + ' types · ' + u.public + ' public',
+      shape: 'box', color: { background: bg, border: border },
+      font: { color: fg, size: 12 }, margin: { top: 8, bottom: 8, left: 12, right: 12 },
+      title: u.unit + '\n' + u.types + ' declared type(s)\n' + u.public + ' would be public',
+    };
+  });
+
+  const edgesOut = [];
+  (div.unit_edges || []).forEach(e => {
+    const isCut = cut.has(e.src + ' ' + e.dst);
+    const typesTxt = (e.types || []).slice(0, 6).join(', ');
+    const title = e.src + ' → ' + e.dst + '\n' + e.w + ' ref(s)' + (typesTxt ? '\nvia ' + typesTxt : '');
+    if (after && isCut) {
+      edgesOut.push({ from: e.src, to: e.dst, arrows: 'to', dashes: true,
+        color: { color: '#ef4444', opacity: 0.3 }, width: 1,
+        label: '✂ cut', font: { size: 9, color: '#ef4444', strokeWidth: 0 }, title });
+      return;
+    }
+    let color;
+    if (isCut)                                                  color = { color: '#ef4444', opacity: 0.95 };
+    else if (after && focus.has(e.dst) && !focus.has(e.src))    color = { color: '#60a5fa', opacity: 0.9 };
+    else                                                        color = { color: '#64748b', opacity: 0.55 };
+    edgesOut.push({ from: e.src, to: e.dst, arrows: 'to', color, width: _dsLogW(e.w),
+      label: isCut ? '✂ cut' : '', font: { size: 9, color: '#ef4444', strokeWidth: 0 }, title,
+      smooth: { type: 'cubicBezier', roundness: 0.35 } });
+  });
+
+  if (dsNetwork) { try { dsNetwork.destroy(); } catch (e) {} dsNetwork = null; }
+  dsNetwork = new vis.Network(document.getElementById('dsNet'),
+    { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edgesOut) },
+    {
+      physics: { stabilization: true, barnesHut: { gravitationalConstant: -3500, springLength: 130 } },
+      interaction: { hover: true, tooltipDelay: 80, dragView: true, zoomView: true, selectConnectedEdges: false },
+      edges: { smooth: { type: 'cubicBezier', roundness: 0.35 } },
+    }
+  );
+}
+function _dsLegendHtml() {
+  return ''
+    + '<span class="k"><span class="sw" style="background:#f59e0b"></span>this step</span>'
+    + '<span class="k"><span class="sw" style="background:#16a34a"></span>extracted (after)</span>'
+    + '<span class="k"><span class="sw" style="background:#374151"></span>already a module</span>'
+    + '<span class="k"><span class="sw" style="background:#1e2a3a;border:1px solid #3b82f6"></span>stays in parent</span>'
+    + '<span class="k"><span class="ln" style="border-color:#ef4444"></span>edge to cut</span>'
+    + '<span class="k"><span class="ln" style="border-color:#60a5fa"></span>becomes import</span>';
+}
+function openStepViz(stepIdx) {
+  if (!dvCurrent || !dvCurrent.plan[stepIdx]) return;
+  dsStepIdx = stepIdx;
+  dsMode = 'before';
+  const step = dvCurrent.plan[stepIdx];
+  const desc = step.is_cycle
+    ? 'Step ' + step.step + ' — break cycle: ' + step.folders.join(', ')
+    : 'Step ' + step.step + ' — extract ' + step.folders.join(', ');
+  document.getElementById('dsTitle').textContent = '📊 ' + desc;
+  document.getElementById('dsBefore').classList.add('active');
+  document.getElementById('dsAfter').classList.remove('active');
+  document.getElementById('dsLegend').innerHTML = _dsLegendHtml();
+  document.getElementById('divideStepOverlay').classList.remove('hidden');
+  renderStepViz();
+}
+function closeStepViz() {
+  document.getElementById('divideStepOverlay').classList.add('hidden');
+  if (dsNetwork) { try { dsNetwork.destroy(); } catch (e) {} dsNetwork = null; }
+  dsStepIdx = null;
+}
+function _dsSetMode(m) {
+  dsMode = m;
+  document.getElementById('dsBefore').classList.toggle('active', m === 'before');
+  document.getElementById('dsAfter').classList.toggle('active', m === 'after');
+  renderStepViz();
+}
+document.getElementById('dsBefore').onclick = () => _dsSetMode('before');
+document.getElementById('dsAfter').onclick = () => _dsSetMode('after');
+document.getElementById('dsClose').onclick = closeStepViz;
+document.getElementById('divideStepOverlay').addEventListener('click', (ev) => {
+  if (ev.target.id === 'divideStepOverlay') closeStepViz();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !document.getElementById('divideStepOverlay').classList.contains('hidden')) closeStepViz();
 });
 
 document.getElementById('wizAddTarget').onclick = () => {

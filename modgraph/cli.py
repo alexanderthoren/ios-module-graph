@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import DEFAULT_EXCLUDED, DEFAULT_OUT, REPO_ROOT
 from .cycles import compute_cycle_breakers, compute_extraction_targets
+from .divide import compute_division_plan
 from .exclusions import compute_blocked_by_excluded, load_exclusions
 from .graph import build_tree, compute_migration_plan
 from .index_loader import load_index_graph
@@ -207,6 +208,18 @@ def main() -> int:
     if graph_path is None and list_path is None:
         graph_path = DEFAULT_OUT
 
+    # Precompute a division plan for every dividable folder so the HTML's
+    # "Divide" action can render instantly client-side. Only the USR-resolved
+    # index path has accurate pair_types (the regex-scan path can't price the
+    # public-API cost), so divisions stay empty there.
+    divisions: dict[str, dict] = {}
+    if resolved_pair_types is not None:
+        from .divide import dividable_modules
+        for prefix in dividable_modules(decls):
+            divisions[prefix] = compute_division_plan(
+                prefix, leaf_edges, resolved_pair_types, decls
+            )
+
     if graph_path is not None:
         graph_path = graph_path.expanduser().resolve()
         graph_path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,6 +230,7 @@ def main() -> int:
             initial_excluded=sorted(excluded), excluded_file=excluded_file,
             folder_package=folder_package, packages=packages,
             file_edges=file_edges, type_edges=type_edges,
+            divisions=divisions,
         )
         print(f"\nWrote graph: {graph_path}")
 

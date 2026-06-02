@@ -99,6 +99,38 @@ Tools available while exploring or planning:
 - **🤖 Prompt generators** — once a step is scoped, generate a ready-to-paste **Claude prompt**:
   - *migration prompt* — describes every move in the step (including relocating tests into the new module's test target).
   - *investigation prompt* — when you don't yet know the destination, asks Claude to inspect the repo (with dependency context attached) and recommend the package, module name, and approach first.
+- **✂️ Divide into modules** — hover any folder big enough to split and hit **Divide**. It treats the folder's immediate subfolders as candidate sub-modules and shows a **public-API cost** table (how many types each sub-module would expose as `public`) and an **SCC-aware extraction order**. Each step has a **📊 Visualize** before/after graph and a **📋 Copy prompt** button that builds a ready-to-paste Claude prompt for that step. See *Divide a module* below.
+
+---
+
+## ✂️ Divide a module
+
+The migration plan extracts whole folders of the app into SPM. **Divide** does the
+inverse-scale job: you already have a module that grew too big — how do you split
+*it* into smaller modules? It lives entirely in the HTML graph — hover a folder
+node and hit **Divide**.
+
+Candidate sub-modules are the module's **immediate subfolders**. For each it
+computes the **public-API surface** — the types referenced from another
+sub-module, which must flip `internal`→`public` once the boundary is a module
+boundary. A near-zero percentage is a clean extraction; a high one means the
+folder is glue that leaks most of its types and splitting it buys little. The
+extraction order bundles cyclically-coupled sub-modules into one step and lists
+the feedback-arc-set edges to sever before they can become separate modules.
+
+Per extraction step you get:
+
+- **📊 Visualize** — a before/after graph of the sub-module units. *Before* shows
+  the current coupling with the edges this step must cut in red; *after* shows the
+  step's units extracted (green), those edges removed, and surviving references
+  redrawn as cross-module imports (blue).
+- **📋 Copy prompt** — a ready-to-paste Claude prompt for that step. Leaf steps get
+  an **extraction** prompt (which files to move, which types become `public`, which
+  consumers to update). Cycle bundles get a **refactor** prompt (the exact
+  references to sever to break the cycle — a cyclic bundle can't be moved as-is).
+
+Requires the index path (the public-API cost needs the USR-resolved references),
+so the Divide action only appears when the graph was built from the index store.
 
 ---
 

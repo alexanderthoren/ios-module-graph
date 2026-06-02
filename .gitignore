@@ -2,6 +2,8 @@ dependency_graph.html
 index_graph.json
 dependency_graph_index.html
 migration_plan.md
+spike_divide.py
+spike_plan.py
 __pycache__
 .build
 .env
