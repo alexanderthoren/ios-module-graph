@@ -86,9 +86,9 @@ one step), and renders both outputs. A regex-scanner fallback exists (no
 `--from-index`) but produces phantom edges on name collisions — the whole point
 of stage 1 is to avoid it; prefer the index path.
 
-`find_leaf_modules.py` at the repo root is now a **thin shim** (`from
-modgraph.cli import main`) kept so the documented invocation and the justfile
-recipes keep working. `python3 -m modgraph …` is equivalent.
+The package is invoked as `python3 -m modgraph …` (via `modgraph/__main__.py` →
+`modgraph.cli:main`); the justfile recipes call exactly that. There is no
+root-level entry script — keep the repo root free of loose Python.
 
 **The justfile is the glue.** It detects build mode, builds the project to
 populate the store, builds the reader, runs the reader, then runs the renderer.
@@ -107,9 +107,11 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `divide.py` | split ONE module into smaller modules: `aggregate_module` (subfolders→units), `public_surface`, `compute_division_plan` (reuses `graph`/`cycles`), `dividable_modules` |
 | `exclusions.py` | `load_exclusions`, `compute_blocked_by_excluded` |
 | `tasks.py` | `build_task_list`, `write_task_list_markdown`, `write_task_list_json` |
-| `render.py` | `render_html` — inject the JSON payload into `template.html` |
+| `render.py` | `render_html` — inject the JSON payload into `templates/template.html` |
 | `cli.py` | `parse_args` + `main` orchestration |
-| `template.html` | the entire HTML+JS UI (extracted from the old embedded literal) |
+| `__main__.py` | `python3 -m modgraph` entry point → `cli.main` |
+| `serve.py` | live-mode HTTP server for `just serve` (`python3 -m modgraph.serve`); SSE hot-reload + `xed` bridge |
+| `templates/template.html` | the entire HTML+JS UI (extracted from the old embedded literal) |
 
 Both `scan()` and `load_index_graph()` return a **`GraphData`** (see
 `models.py`); `cli.main` unpacks it. The scan path leaves the index-only fields
@@ -153,7 +155,7 @@ exist — do not "simplify" stage 1 back into pure text scanning.
 
 ## Things that will bite you
 
-- **The UI lives in `modgraph/template.html`** (~4.5k lines of HTML+JS). It is
+- **The UI lives in `modgraph/templates/template.html`** (~4.5k lines of HTML+JS). It is
   read at runtime by `render.py` (`_load_template()`) and the graph data is
   injected by string-replacing `__PAYLOAD__` (a JSON blob) and `__ROOT_LABEL__`.
   Editing the UI = editing that file directly now (no more

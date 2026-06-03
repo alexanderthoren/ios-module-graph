@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_TEMPLATE_PATH = Path(__file__).resolve().parent / "template.html"
+_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "template.html"
 
 
 def _load_template() -> str:

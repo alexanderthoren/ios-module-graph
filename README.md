@@ -232,11 +232,12 @@ modgraph/               Stage 2 — Python package (stdlib only)
   spm.py                SPM package map + migrated-prefix auto-detection
   exclusions.py         "won't modularize" set + transitive blocked-by
   tasks.py              flatten the plan into PR-sized tasks; md / json writers
-  render.py             inject the payload into template.html
-  template.html         the interactive HTML+JS UI
+  render.py             inject the payload into templates/template.html
   cli.py                argument parsing + main orchestration
-find_leaf_modules.py    thin entry-point shim → modgraph.cli:main
-serve.py                companion HTTP server for `just serve` (live mode)
+  __main__.py           `python3 -m modgraph` entry point
+  serve.py              companion HTTP server for `just serve` (live mode)
+  templates/
+    template.html       the interactive HTML+JS UI
 justfile                the glue: build → index → resolve → render
 tests/                  stdlib-unittest suite for the modgraph package
 ```
@@ -246,10 +247,10 @@ tests/                  stdlib-unittest suite for the modgraph package
 ## 🧑‍💻 Direct CLI
 
 `just` is the easy path, but the Python stage is a normal CLI you can drive
-directly (this is what the recipes call). Equivalent: `python3 -m modgraph …`.
+directly (this is what the recipes call).
 
 ```sh
-python3 find_leaf_modules.py <project_root> [options]
+python3 -m modgraph <project_root> [options]
 ```
 
 | Option | Effect |

@@ -7,7 +7,7 @@
 #   just clean            wipe generated files (forces a full rebuild next run)
 #
 # tree/list/all reuse the index_graph.json Swift produced last time, so editing
-# find_leaf_modules.py and re-rendering is instant. If it's missing — first run,
+# the modgraph package and re-rendering is instant. If it's missing — first run,
 # or after `just clean` — they rebuild it from a fresh build of the target
 # project automatically. To force a rebuild from zero: `just clean` then run.
 #
@@ -69,7 +69,7 @@ tree:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 find_leaf_modules.py "{{project_dir}}" --from-index "{{graph_json}}" --graph "{{html}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --graph "{{html}}"
     echo "✓ {{html}}"
 
 # Migration task list, markdown. Rebuilds the index if missing.
@@ -77,7 +77,7 @@ list:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 find_leaf_modules.py "{{project_dir}}" --from-index "{{graph_json}}" --list "{{md}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --list "{{md}}"
     echo "✓ {{md}}"
 
 # Live mode: serve the HTML on localhost, hot-reload it whenever `just tree`
@@ -87,14 +87,14 @@ serve port="8765":
     #!/usr/bin/env bash
     set -euo pipefail
     [[ -f "{{html}}" ]] || just tree
-    python3 serve.py --port "{{port}}" --html "{{html}}" --root "{{project_dir}}"
+    python3 -m modgraph.serve --port "{{port}}" --html "{{html}}" --root "{{project_dir}}"
 
 # Both deliverables. Rebuilds the index if missing.
 all:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 find_leaf_modules.py "{{project_dir}}" --from-index "{{graph_json}}" --graph "{{html}}" --list "{{md}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --graph "{{html}}" --list "{{md}}"
     echo "✓ {{html}}  {{md}}"
 
 # Run the Python test suite (stdlib unittest — no pip deps, no index build).

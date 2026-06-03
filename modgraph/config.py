@@ -1,8 +1,8 @@
 """Shared constants: default paths, skip-lists, and the regex-scanner patterns.
 
 Paths resolve relative to the repository root (the package's parent dir) so the
-defaults land next to the tool exactly as they did when everything lived in the
-single ``find_leaf_modules.py`` script.
+defaults land next to the tool exactly as they did when everything lived in a
+single monolithic script.
 """
 from __future__ import annotations
 

@@ -115,7 +115,7 @@ def write_task_list_markdown(tasks: list[dict], meta: dict, out_path: Path) -> N
         "Each task is one PR. Tasks are ordered: complete them sequentially. "
         "Within a single task, do **not** combine refactor + move + import update "
         "for multiple folders — one folder, one PR. After each task ships, "
-        "regenerate this plan (`./find_leaf_modules.py <root> --list`) so the "
+        "regenerate this plan (`python3 -m modgraph <root> --list`) so the "
         "remaining plan reflects the new state."
     )
     lines.append("")

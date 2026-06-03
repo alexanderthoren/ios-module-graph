@@ -93,6 +93,13 @@
     .np-actions { display: flex; flex-direction: column; gap: 4px; }
     .np-actions button { width: 100%; padding: 6px 10px; font-size: 11.5px; }
     .np-hint { font-size: 10.5px; color: var(--text-faint); margin-top: 6px; }
+    /* Row-anchored variant: popover sits to the RIGHT of a sidebar hierarchy
+       row (fixed-positioned to escape #side's overflow), arrow points left. */
+    .node-popover.row-anchored { transform: translate(0, -50%); }
+    .node-popover.row-anchored::after { left: -7px; top: 50%; bottom: auto;
+      transform: translateY(-50%); rotate: 45deg;
+      border-right: none; border-bottom: none;
+      border-left: 1px solid var(--border); border-top: 1px solid var(--border); }
     /* Settings popover — anchored to gear button, appears below the floating nav. */
     .settings-popover { position: absolute; top: 60px; right: 14px; z-index: 6;
       width: 340px; max-height: calc(100% - 80px); overflow-y: auto;
@@ -249,6 +256,13 @@
     .gsr-empty { padding: 14px; text-align: center; color: var(--text-faint); font-size: 11px; }
     .gsr-section { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-faint);
       font-weight: 700; padding: 8px 10px 4px; }
+
+    /* ── hierarchy filter (sidebar, above the kids list) ───────────────────── */
+    .hier-filter { width: 100%; box-sizing: border-box; margin: 4px 0 8px; padding: 7px 10px;
+      border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--surface-2);
+      color: var(--text); font-size: 12.5px; outline: none; transition: border-color .12s, background .12s; }
+    .hier-filter::placeholder { color: var(--text-faint); }
+    .hier-filter:focus { border-color: var(--accent-strong); background: var(--surface); }
 
     /* ── top-level mode toggle ────────────────────────────────────────────── */
     .modes { display: flex; gap: 6px; padding: 10px 12px 0; }
@@ -550,11 +564,12 @@
       <div class="panel active" id="panel-explore">
         <div class="small migrationOnly">Click a circle to drill in. Use <b>✓ migrate</b> to mark a folder migrated, or <b>🎯 plan</b> to generate the path to extract it. Clicking never migrates.</div>
         <div class="small exploreOnly">Click a circle to drill in. Clicking never mutates state.</div>
-        <!-- Hidden no-op filter input: the visible global search lives in the
-             appbar now, but `render()` still reads `#filter.value`. Keeping the
-             element (empty value) preserves the call-site contract. -->
-        <input id="filter" type="hidden" value="" />
         <h2>Hierarchy</h2>
+        <!-- Filters the kids list below by folder/file/type name. `render()`
+             reads `#filter.value`; the appbar global search is a separate
+             jump-to dropdown. -->
+        <input id="filter" type="text" class="hier-filter" value=""
+               placeholder="Filter this hierarchy…" autocomplete="off" />
         <span id="leafCount" style="display:none;"></span>
         <ul id="kids"></ul>
         <div class="migrationOnly">
@@ -2382,38 +2397,63 @@ function render() {
     try { network.fit({ animation: false }); } catch (e) {}
   });
   // Hover-reveal: temporarily show labels of the hovered node + its neighbours
-  // that were hidden by the smart-label filter, then restore on blur.
+  // that were hidden by the smart-label filter, restore on blur. Both the graph
+  // hoverNode/blurNode AND the sidebar hierarchy rows funnel through the same
+  // _hoverEnter/_hoverLeave so a list-row hover mirrors a node hover exactly
+  // (dim non-neighbours, reveal labels, show the action popover on the node).
   let hoverShown = [];
-  network.on('hoverNode', p => {
-    const ids = network.getConnectedNodes(p.node).concat([p.node]);
+  // anchorEl (optional): a sidebar hierarchy row. When given, the popover is
+  // pinned beside that row instead of over the canvas node — the graph node
+  // still highlights, but the popup tracks the element the pointer is on.
+  function _hoverEnter(nodeId, anchorEl) {
+    if (nodeId === '__ext__' || nodeId.startsWith('self::') || nodeId.startsWith('file::')) {
+      pop.style.display = 'none'; popNodeId = null; return;
+    }
+    if (!nodesDS.get(nodeId)) return;
+    const ids = network.getConnectedNodes(nodeId).concat([nodeId]);
     const upd = [];
     ids.forEach(nid => {
       const n = nodesDS.get(nid);
       if (n && n._full && !n.label) { upd.push({ id: nid, label: n._full }); hoverShown.push(nid); }
     });
     if (upd.length) nodesDS.update(upd);
-    applyHoverHighlight(nodesDS, edgesDS, p.node);
-  });
-  network.on('blurNode', () => {
+    applyHoverHighlight(nodesDS, edgesDS, nodeId);
+    cancelPopoverHide();
+    popNodeId = nodeId;
+    popAnchorEl = anchorEl || null;
+    renderPopover(nodeId);
+    if (popAnchorEl) positionPopoverAtRow(popAnchorEl);
+    else positionPopover(nodeId);
+    pop.style.display = 'block';
+  }
+  function _hoverLeave() {
     clearHoverHighlight(nodesDS, edgesDS);
-    if (!hoverShown.length) { schedulePopoverHide(); return; }
-    nodesDS.update(hoverShown.map(id => ({ id, label: '' })));
-    hoverShown = [];
+    if (hoverShown.length) { nodesDS.update(hoverShown.map(id => ({ id, label: '' }))); hoverShown = []; }
     schedulePopoverHide();
-  });
+  }
+  // Exposed so renderKids() rows can replay graph-hover behaviour on the
+  // matching node. Reset by the type-view path so a stale closure is never used.
+  window._graphHover = { enter: _hoverEnter, leave: _hoverLeave, has: (id) => !!nodesDS.get(id) };
+  network.on('hoverNode', p => _hoverEnter(p.node));
+  network.on('blurNode', () => _hoverLeave());
   // Custom popover: stats + action buttons (mark/unmark migrated/excluded).
   // Appears on hover, sticks while pointer is over it so buttons are clickable.
   const pop = document.getElementById('nodePopover');
   let popHideTimer = null;
   let popNodeId = null;
+  let popAnchorEl = null;   // sidebar row the popover is pinned to (null = canvas node)
   function schedulePopoverHide() {
     clearTimeout(popHideTimer);
-    popHideTimer = setTimeout(() => { pop.style.display = 'none'; popNodeId = null; }, 220);
+    popHideTimer = setTimeout(() => {
+      pop.style.display = 'none'; popNodeId = null;
+      popAnchorEl = null; pop.classList.remove('row-anchored'); pop.style.position = '';
+    }, 220);
   }
   function cancelPopoverHide() { clearTimeout(popHideTimer); }
   pop.onmouseenter = cancelPopoverHide;
   pop.onmouseleave = schedulePopoverHide;
   function positionPopover(nodeId) {
+    pop.classList.remove('row-anchored'); pop.style.position = '';
     const canvasPos = network.getPositions([nodeId])[nodeId];
     if (!canvasPos) return;
     const dom = network.canvasToDOM(canvasPos);
@@ -2421,6 +2461,15 @@ function render() {
     const net = document.getElementById('net').getBoundingClientRect();
     pop.style.left = (net.left - wrap.left + dom.x) + 'px';
     pop.style.top = (net.top - wrap.top + dom.y) + 'px';
+  }
+  // Pin the popover beside a sidebar row. Uses fixed/viewport coords so #side's
+  // overflow:hidden never clips it; flips to the row's left if it'd overflow.
+  function positionPopoverAtRow(el) {
+    const r = el.getBoundingClientRect();
+    pop.classList.add('row-anchored');
+    pop.style.position = 'fixed';
+    pop.style.left = (r.right + 10) + 'px';
+    pop.style.top = (r.top + r.height / 2) + 'px';
   }
   function renderPopover(nodeId) {
     if (!tree[nodeId]) { pop.style.display = 'none'; return; }
@@ -2495,19 +2544,9 @@ function render() {
       };
     });
   }
-  network.on('hoverNode', p => {
-    const id = p.node;
-    if (id === '__ext__' || id.startsWith('self::') || id.startsWith('file::')) {
-      pop.style.display = 'none'; popNodeId = null; return;
-    }
-    cancelPopoverHide();
-    popNodeId = id;
-    renderPopover(id);
-    positionPopover(id);
-    pop.style.display = 'block';
-  });
+  // (hoverNode → popover is handled by _hoverEnter, registered above.)
   // Reposition popover while network animates (drag, zoom, stabilization).
-  network.on('afterDrawing', () => { if (popNodeId && pop.style.display === 'block') positionPopover(popNodeId); });
+  network.on('afterDrawing', () => { if (popNodeId && !popAnchorEl && pop.style.display === 'block') positionPopover(popNodeId); });
   network.on('doubleClick', params => {
     if (!params.nodes.length) return;
     const id = params.nodes[0];
@@ -2797,6 +2836,8 @@ function renderTypeView(focus) {
     interaction: { hover: true, tooltipDelay: 100, hoverConnectedEdges: false, selectConnectedEdges: false },
     groups: typeGroups(),
   });
+  // Type-view: no folder-kids sidebar, so disarm the hierarchy→graph hover hook.
+  window._graphHover = null;
   network.on('click', params => {
     if (!params.nodes.length) return;
     const id = params.nodes[0];
@@ -3050,13 +3091,8 @@ function renderKids(kids, outDeg) {
   document.getElementById('leafCount').textContent = leaves.length + ' leaf';
   kids
     .slice()
-    .sort((a, b) => {
-      const ma = isAllMigrated(a), mb = isAllMigrated(b);
-      if (ma !== mb) return ma ? 1 : -1;
-      const la = !(outDeg.get(a) > 0), lb = !(outDeg.get(b) > 0);
-      if (la !== lb) return la ? -1 : 1;
-      return a.localeCompare(b);
-    })
+    // Pure alphabetical by folder name — no leaf-first / migrated-last grouping.
+    .sort((a, b) => tree[a].name.localeCompare(tree[b].name))
     .filter(id => !filter || tree[id].name.toLowerCase().includes(filter))
     .forEach(id => {
       const li = document.createElement('li');
@@ -3087,6 +3123,10 @@ function renderKids(kids, outDeg) {
       label.style.cursor = 'pointer';
       // Click only navigates — never mutates migration/exclude state.
       label.onclick = () => { go(id); };
+      // Hovering a row mirrors hovering its graph node: highlight node +
+      // connections, reveal labels, and surface the same action popover.
+      li.onmouseenter = () => { if (window._graphHover && window._graphHover.has(id)) window._graphHover.enter(id, li); };
+      li.onmouseleave = () => { if (window._graphHover) window._graphHover.leave(); };
       if (!exploreMode) {
         if (isExcl) label.style.color = '#b91c1c';
         else if (isMig) label.style.color = '#7f8c8d';
@@ -4016,6 +4056,9 @@ function renderDivide(div) {
     + '<b>' + div.total_public + '</b> type(s) forced <code>internal→public</code> by the split'
     + '</div>';
 
+  h += '<div class="dv-overall" style="margin:4px 0 12px;">'
+    + '<button class="ghost dv-viz-all">📊 Visualize before → after (overall)</button></div>';
+
   h += '<div class="dv-sec-h">Public-API cost per candidate sub-module</div>';
   h += '<table class="dv-tbl"><thead><tr>'
     + '<th>Sub-module</th><th>Types</th><th>Public</th><th>%</th>'
@@ -4071,6 +4114,8 @@ function renderDivide(div) {
   document.getElementById('dvBody').querySelectorAll('.dv-prompt').forEach(b => {
     b.onclick = () => dvCopyStepPrompt(parseInt(b.dataset.step, 10), b);
   });
+  const dvAll = document.getElementById('dvBody').querySelector('.dv-viz-all');
+  if (dvAll) dvAll.onclick = () => openOverallViz();
 }
 // ── Per-step Claude prompts ─────────────────────────────────────────────────
 // Leaf step -> an extraction prompt (move + raise access + import). Cycle step
@@ -4247,23 +4292,40 @@ document.addEventListener('keydown', (ev) => {
 // recomputed in the browser.
 let dsNetwork = null;
 let dsStepIdx = null;
+let dsScope = 'step';   // 'step' = one extraction step; 'all' = overall before/after
 let dsMode = 'before';
 function _dsLogW(w) { return Math.min(5, 1 + Math.log2(w + 1)); }
 function renderStepViz() {
   const div = dvCurrent;
-  if (!div || dsStepIdx == null) return;
-  const step = div.plan[dsStepIdx];
-  const focus = new Set(step.folders);
-  const extracted = new Set();
-  for (let i = 0; i < dsStepIdx; i++) div.plan[i].folders.forEach(f => extracted.add(f));
-  const cut = new Set((step.breakers || []).map(b => b.src + ' ' + b.dst));
+  if (!div) return;
   const after = dsMode === 'after';
+  const overall = dsScope === 'all';
+  // Scope decides which units are "this step", what's already extracted, and
+  // which edges are cut. Overall = the whole split at once: every unit is a
+  // target, nothing pre-extracted, cut set = union of every step's breakers.
+  let focus, extracted, cut;
+  if (overall) {
+    focus = new Set(div.units.map(u => u.unit));
+    extracted = new Set();
+    cut = new Set();
+    (div.plan || []).forEach(s => (s.breakers || []).forEach(b => cut.add(b.src + ' ' + b.dst)));
+  } else {
+    const step = div.plan[dsStepIdx];
+    if (dsStepIdx == null || !step) return;
+    focus = new Set(step.folders);
+    extracted = new Set();
+    for (let i = 0; i < dsStepIdx; i++) div.plan[i].folders.forEach(f => extracted.add(f));
+    cut = new Set((step.breakers || []).map(b => b.src + ' ' + b.dst));
+  }
 
   const nodes = div.units.map(u => {
     const isFocus = focus.has(u.unit);
     const isDone = extracted.has(u.unit);
     let bg, border, fg;
-    if (isFocus && after) { bg = '#16a34a'; border = '#15803d'; fg = '#fff'; }
+    // Overall: before = all one module (blue), after = all separate (green).
+    if (overall && after) { bg = '#16a34a'; border = '#15803d'; fg = '#fff'; }
+    else if (overall)     { bg = '#1e2a3a'; border = '#3b82f6'; fg = '#bfdbfe'; }
+    else if (isFocus && after) { bg = '#16a34a'; border = '#15803d'; fg = '#fff'; }
     else if (isFocus)     { bg = '#f59e0b'; border = '#d97706'; fg = '#1c2333'; }
     else if (isDone)      { bg = '#374151'; border = '#4b5563'; fg = '#cbd5e1'; }
     else                  { bg = '#1e2a3a'; border = '#3b82f6'; fg = '#bfdbfe'; }
@@ -4289,6 +4351,8 @@ function renderStepViz() {
     }
     let color;
     if (isCut)                                                  color = { color: '#ef4444', opacity: 0.95 };
+    // Overall after: every surviving inter-unit edge crosses a module boundary.
+    else if (after && overall)    color = { color: '#60a5fa', opacity: 0.9 };
     else if (after && focus.has(e.dst) && !focus.has(e.src))    color = { color: '#60a5fa', opacity: 0.9 };
     else                                                        color = { color: '#64748b', opacity: 0.55 };
     edgesOut.push({ from: e.src, to: e.dst, arrows: 'to', color, width: _dsLogW(e.w),
@@ -4306,7 +4370,12 @@ function renderStepViz() {
     }
   );
 }
-function _dsLegendHtml() {
+function _dsLegendHtml(overall) {
+  if (overall) return ''
+    + '<span class="k"><span class="sw" style="background:#1e2a3a;border:1px solid #3b82f6"></span>one module today</span>'
+    + '<span class="k"><span class="sw" style="background:#16a34a"></span>separate module (after)</span>'
+    + '<span class="k"><span class="ln" style="border-color:#ef4444"></span>cycle edge to cut</span>'
+    + '<span class="k"><span class="ln" style="border-color:#60a5fa"></span>becomes import</span>';
   return ''
     + '<span class="k"><span class="sw" style="background:#f59e0b"></span>this step</span>'
     + '<span class="k"><span class="sw" style="background:#16a34a"></span>extracted (after)</span>'
@@ -4318,6 +4387,7 @@ function _dsLegendHtml() {
 function openStepViz(stepIdx) {
   if (!dvCurrent || !dvCurrent.plan[stepIdx]) return;
   dsStepIdx = stepIdx;
+  dsScope = 'step';
   dsMode = 'before';
   const step = dvCurrent.plan[stepIdx];
   const desc = step.is_cycle
@@ -4326,12 +4396,28 @@ function openStepViz(stepIdx) {
   document.getElementById('dsTitle').textContent = '📊 ' + desc;
   document.getElementById('dsBefore').classList.add('active');
   document.getElementById('dsAfter').classList.remove('active');
-  document.getElementById('dsLegend').innerHTML = _dsLegendHtml();
+  document.getElementById('dsLegend').innerHTML = _dsLegendHtml(false);
+  document.getElementById('divideStepOverlay').classList.remove('hidden');
+  renderStepViz();
+}
+// Overall before/after: the entire module today (one box per subfolder unit,
+// current coupling) vs every unit extracted into its own module at once.
+function openOverallViz() {
+  if (!dvCurrent) return;
+  dsScope = 'all';
+  dsStepIdx = null;
+  dsMode = 'before';
+  document.getElementById('dsTitle').textContent =
+    '📊 Overall — split ' + dvCurrent.module + ' into ' + dvCurrent.unit_count + ' modules';
+  document.getElementById('dsBefore').classList.add('active');
+  document.getElementById('dsAfter').classList.remove('active');
+  document.getElementById('dsLegend').innerHTML = _dsLegendHtml(true);
   document.getElementById('divideStepOverlay').classList.remove('hidden');
   renderStepViz();
 }
 function closeStepViz() {
   document.getElementById('divideStepOverlay').classList.add('hidden');
+  dsScope = 'step';
   if (dsNetwork) { try { dsNetwork.destroy(); } catch (e) {} dsNetwork = null; }
   dsStepIdx = null;
 }
