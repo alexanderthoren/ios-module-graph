@@ -57,6 +57,12 @@ reader     := justfile_directory() / "index_graph/.build/release/index_graph"
 graph_json := justfile_directory() / "index_graph.json"
 html       := justfile_directory() / "dependency_graph.html"
 md         := justfile_directory() / "migration_plan.md"
+# Real per-module compile times captured from the cold build via the Swift
+# compiler's -stats-output-dir. Build mode uses them as module cost when present,
+# else a type-count proxy. stats_dir holds the raw per-file frontend stats;
+# times_json is the aggregated {module: seconds} map modgraph reads.
+stats_dir  := justfile_directory() / ".swiftstats"
+times_json := justfile_directory() / "build_times.json"
 
 # Show the three commands.
 _default:
@@ -69,7 +75,7 @@ tree:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --graph "{{html}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --graph "{{html}}"
     echo "✓ {{html}}"
 
 # Migration task list, markdown. Rebuilds the index if missing.
@@ -77,7 +83,7 @@ list:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --list "{{md}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --list "{{md}}"
     echo "✓ {{md}}"
 
 # Live mode: serve the HTML on localhost, hot-reload it whenever `just tree`
@@ -94,7 +100,7 @@ all:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --graph "{{html}}" --list "{{md}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --graph "{{html}}" --list "{{md}}"
     echo "✓ {{html}}  {{md}}"
 
 # Run the Python test suite (stdlib unittest — no pip deps, no index build).
@@ -112,7 +118,8 @@ test:
 # Remove all generated files.
 clean:
     @echo "→ removing generated files"
-    rm -f "{{html}}" "{{md}}" "{{graph_json}}"
+    rm -f "{{html}}" "{{md}}" "{{graph_json}}" "{{times_json}}"
+    rm -rf "{{stats_dir}}"
     rm -rf "{{justfile_directory()}}/__pycache__"
     rm -rf "{{justfile_directory()}}/index_graph/.build"
     @echo "✓ cleaned"
@@ -157,6 +164,8 @@ _index: _build_reader
     # Wipe the scratch build/index dir so indexing starts clean.
     echo "→ removing {{derived}}"
     rm -rf "{{derived}}"
+    # Fresh stats dir for the Swift compiler's -stats-output-dir (per-module times).
+    rm -rf "{{stats_dir}}"; mkdir -p "{{stats_dir}}"
 
     if [[ "$mode" == "xcode" ]]; then
         # Auto-detect workspace/project + scheme if not provided.
@@ -196,6 +205,7 @@ _index: _build_reader
             "${proj_flag[@]}" -scheme "$sc" -configuration "{{config}}" \
             -destination '{{dest}}' -derivedDataPath "{{derived}}" \
             SWIFT_ENABLE_EXPLICIT_MODULES=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            "OTHER_SWIFT_FLAGS=\$(inherited) -stats-output-dir {{stats_dir}}" \
             {{xcode_flags}} 2>&1 | xcsift ) || echo "⚠ xcodebuild non-zero — verifying index store…"
 
         store="{{derived}}/Index.noindex/DataStore"
@@ -205,7 +215,8 @@ _index: _build_reader
         # package can't build for the host (e.g. UIKit-only code).
         cfg=$(echo "{{config}}" | tr '[:upper:]' '[:lower:]')
         echo "→ swift build -c $cfg"
-        ( cd "$proj" && swift build -c "$cfg" --build-path "{{derived}}" {{swift_flags}} ) \
+        ( cd "$proj" && swift build -c "$cfg" --build-path "{{derived}}" \
+            -Xswiftc -stats-output-dir -Xswiftc "{{stats_dir}}" {{swift_flags}} ) \
             || echo "⚠ swift build non-zero — verifying index store…"
 
         store=$(find "{{derived}}" -type d -path '*/index/store' 2>/dev/null | head -1)
@@ -214,6 +225,17 @@ _index: _build_reader
 
     test -d "$store/v5/units" || { echo "✗ index store not populated — build failed before indexing" >&2; exit 1; }
     echo "✓ index store populated: $store"
+
+    # Aggregate the Swift compiler's per-file frontend stats into real per-module
+    # compile times. The cold build above already wrote them, so this is free;
+    # best-effort, never fatal (Build mode falls back to a type-count proxy).
+    rm -f "{{times_json}}"
+    if python3 -m modgraph.build_times "{{stats_dir}}" "{{times_json}}"; then
+        echo "✓ build times: {{times_json}}"
+    else
+        rm -f "{{times_json}}"
+        echo "ℹ no compile stats captured — Build mode uses the type-count proxy"
+    fi
 
     "{{reader}}" "$store" "$proj" "{{graph_json}}"
 

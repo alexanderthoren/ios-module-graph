@@ -108,6 +108,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `build_impact.py` | `compute_build_impact` — generic **warm-rebuild blast radius** (transitive reverse-dependents) + **cold-build cohort/critical path** (SCC-condensed, reuses `_tarjan_sccs`) scorer over any node/edge set; consumed by `module_graph` |
 | `module_graph.py` | `module_of`, `compute_module_graph` — collapse the folder graph to real **compile units** (SPM targets + one app target), score via `build_impact`; powers "Build" mode |
 | `build_recommendations.py` | `compute_split_recommendations` — rank modules by the build-time **payoff of separating** them (warm cascade + cold critical-path contribution), link dividable ones to `divisions`; powers Build mode's "Split plan" tab |
+| `build_times.py` | `aggregate_stats_dir`, `load_build_times` (+ CLI) — sum real per-module compile times from the Swift compiler's `-stats-output-dir` output captured during the cold build; feeds Build mode's module cost |
 | `exclusions.py` | `load_exclusions`, `compute_blocked_by_excluded` |
 | `tasks.py` | `build_task_list`, `write_task_list_markdown`, `write_task_list_json` |
 | `render.py` | `render_html` — inject the JSON payload into `templates/template.html` |
@@ -190,6 +191,29 @@ Divide** button reuses `openDivide(moduleId)`); flat modules get "Stabilize publ
 API"; the app target gets "Extract features into SPM" (pointing at Migration mode,
 since it's one compile unit topping the critical path). Hovering a row highlights
 that module's rebuild set on the live graph (`buildHoverModule`).
+
+**Real compile times (optional).** Module *cost* defaults to a type-count proxy, but
+`just _index` captures real per-module compile times for free off the cold build it
+already runs: it builds with the Swift compiler's `-stats-output-dir` (via
+`OTHER_SWIFT_FLAGS`/`-Xswiftc`), so swift-frontend writes one stats JSON per source
+file (each with `time.swift-frontend.*.wall`, module name in the filename) into
+`.swiftstats/`. After the build, `python3 -m modgraph.build_times <stats-dir>
+build_times.json` sums wall-time per module → `{module: seconds}`.
+`compute_module_graph` matches SPM targets by label and folds any non-SPM module
+(the app's own sources) into the `app` node, attaching `build_ms`/`measured`. When
+present, module node size, the warm `downstream_cost`, and the split-payoff ranking
+are all in **measured seconds** (UI labels "measured" vs "estimated"). `just clean`
+drops both `build_times.json` and `.swiftstats/`.
+
+Why not the `.xcactivitylog`? On this project xcodebuild delegates to the build
+service and its log records no per-target compile steps (and the log isn't finalized
+through the `xcsift` pipe) — so **xclogparser** finds nothing, and **xcsift
+`--build-info`** only recovers durations from the *legacy* build system (always null
+here). `-stats-output-dir` is written by the compiler itself, independent of the log.
+Caveats: wall time is summed across a module's files (work, not wall-clock — they
+compile in parallel); a target with no Swift sources gets no time (proxy fallback);
+a module whose Swift module name differs from its SPM target/label would mis-fold
+into `app`.
 
 ### Why resolution-by-USR matters
 

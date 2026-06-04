@@ -93,6 +93,8 @@
     #buildRank .br-bar { height: 8px; border-radius: 4px; flex-shrink: 0; }
     #buildRank .br-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #buildRank .br-val { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 11px; }
+    #buildRank .br-time { font-variant-numeric: tabular-nums; color: var(--text-faint); font-size: 10.5px; flex-shrink: 0; min-width: 44px; text-align: right; }
+    #buildRank .br-time.estimated { font-style: italic; }
     #buildRank .br-crit { color: #f59e0b; font-size: 9px; }
     /* Split-plan recommendation rows. */
     #recoList { list-style: none; padding: 0; margin: 8px 0 0; }
@@ -2239,6 +2241,14 @@ function applyUpTo(step) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+// Human-friendly duration from seconds: "0.4s", "42s", "3m 2s", "1h 4m".
+function fmtDur(secs) {
+  const s = Math.max(0, +secs || 0);
+  if (s < 1) return s.toFixed(1) + 's';
+  if (s < 60) return Math.round(s) + 's';
+  if (s < 3600) { const m = Math.floor(s / 60); return m + 'm ' + Math.round(s - m * 60) + 's'; }
+  const h = Math.floor(s / 3600); return h + 'h ' + Math.round((s - h * 3600) / 60) + 'm';
+}
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
@@ -2285,6 +2295,7 @@ function moduleVisNode(n, cohorts) {
   const title = n.id
     + '\n' + (n.kind === 'app' ? '📱 xcodeproj app target' : '📦 SPM module')
     + '\n' + n.folders + ' folder(s) · ' + n.types + ' type(s)'
+    + (n.measured ? '\n⏱ build time: ' + (n.build_ms / 1000).toFixed(1) + 's (measured)' : '')
     + (buildView === 'warm'
         ? '\n🔥 warm blast radius: ' + n.warm + ' module(s) — ' + n.warm_pct + '%  (' + n.fan_in + ' direct dependents)'
         : '\n🧊 cohort level ' + n.level + ' / ' + ((cohorts || 1) - 1) + (n.crit ? '  • on the critical path' : ''))
@@ -2294,7 +2305,7 @@ function moduleVisNode(n, cohorts) {
     label: n.label,
     title,
     shape: n.kind === 'app' ? 'diamond' : 'dot',
-    value: Math.max(1, n.types),
+    value: n.measured ? Math.max(1, n.build_ms) : Math.max(1, n.types),
     color: col,
     borderWidth: critRing ? 4 : 2,
     shapeProperties: { borderDashes: n.scc > 1 ? [4, 3] : false },
@@ -2367,6 +2378,18 @@ function setBuildView(v) {
 function renderBuild() {
   const sum = moduleGraph.summary || {};
   const nMod = moduleGraph.nodes.length;
+  let srcNote;
+  if (sum.measured) {
+    const work = sum.total_build_s || 0;
+    const cores = sum.cores || 1;
+    const wall = sum.est_wall_s || 0;
+    srcNote = '⏱ node size = <b>measured</b> compile time. '
+      + '<b>~' + fmtDur(wall) + '</b> estimated real build '
+      + '<span style="color:var(--text-faint)" title="Total compiler work ÷ cores. Files compile in parallel, so this is a best-case floor; the actual wait also depends on the ' + (sum.crit_len || 0) + '-cohort-deep dependency chain.">'
+      + '(≈ ' + fmtDur(work) + ' of CPU work ÷ ' + cores + ' cores)</span>';
+  } else {
+    srcNote = '📐 node size = type count <span style="color:var(--text-faint)">(estimated — run <code>just clean &amp;&amp; just tree</code> for measured times)</span>';
+  }
   document.querySelectorAll('.build-toggle button').forEach(b =>
     b.classList.toggle('active', b.dataset.bv === buildView));
   const blurb = document.getElementById('buildBlurb');
@@ -2391,11 +2414,13 @@ function renderBuild() {
     summ.innerHTML = '<div>Critical path: <b>' + (sum.crit_len || 0) + '</b> cohorts deep</div>'
       + '<div>Max parallel width: <b>' + (sum.max_width || 0) + '</b> modules</div>';
   }
+  summ.innerHTML += '<div class="small" style="margin-top:5px;color:var(--text-dim)">' + srcNote + '</div>';
   renderBuildRank();
 }
 function renderBuildRank() {
   const sum = moduleGraph.summary || {};
   const cohorts = sum.cohorts || 1;
+  const cores = sum.cores || 1;
   const ul = document.getElementById('buildRank');
   if (!ul) return;
   const q = (document.getElementById('buildFilter').value || '').toLowerCase();
@@ -2418,9 +2443,16 @@ function renderBuildRank() {
     }
     const crit = (buildView === 'cold' && n.crit) ? ' <span class="br-crit" title="on critical path">●</span>' : '';
     const app = n.kind === 'app' ? ' <span title="xcodeproj app target">📱</span>' : '';
+    // Per-module cost as its SHARE of the parallel build (compile work ÷ cores),
+    // so rows sum to the headline est. real build — not raw summed work, which
+    // would dwarf the wall-clock and confuse. Estimated path shows a type proxy.
+    const time = n.measured
+      ? '<span class="br-time" title="≈ this module\'s share of the build: ' + fmtDur(n.build_ms / 1000) + ' of compile work ÷ ' + cores + ' cores">' + fmtDur(n.build_ms / 1000 / cores) + '</span>'
+      : '<span class="br-time estimated" title="estimated — type count (run a cold build for measured times)">' + (n.types || 0) + 't</span>';
     return '<li data-id="' + escapeHtml(n.id) + '" title="' + escapeHtml(n.id) + '">'
       + '<span class="br-bar" style="width:' + Math.max(4, barPct * 0.6).toFixed(0) + 'px;background:' + col + '"></span>'
       + '<span class="br-name">' + escapeHtml(n.label) + app + crit + '</span>'
+      + time
       + '<span class="br-val">' + val + '</span></li>';
   }).join('');
   // Row hover replays the graph node hover (highlight rebuild set + edges).
@@ -2451,7 +2483,11 @@ function renderRecommend() {
   const sum = recommendations.summary || {};
   document.getElementById('recoSummary').innerHTML =
     '<div><b>' + (sum.actionable || 0) + '</b> module(s) worth separating'
-    + ' · <b>' + (sum.dividable || 0) + '</b> have an auto-split plan</div>';
+    + ' · <b>' + (sum.dividable || 0) + '</b> have an auto-split plan</div>'
+    + '<div class="small" style="margin-top:4px;color:var(--text-dim)">'
+    + (sum.measured ? '⏱ payoff in <b>measured</b> build seconds'
+                    : '📐 payoff estimated from type counts (run a cold build for real seconds)')
+    + '</div>';
   const q = (document.getElementById('recoFilter').value || '').toLowerCase();
   let rows = items;
   if (q) rows = rows.filter(r => r.id.toLowerCase().includes(q) || r.label.toLowerCase().includes(q));

@@ -11,6 +11,7 @@ from .divide import compute_division_plan
 from .exclusions import compute_blocked_by_excluded, load_exclusions
 from .graph import build_tree, compute_migration_plan
 from .build_recommendations import compute_split_recommendations
+from .build_times import load_build_times
 from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
 from .render import render_html
@@ -65,6 +66,11 @@ def parse_args() -> argparse.Namespace:
                         "Only Swift is fully supported by the current regex.")
     p.add_argument("--label", default=None,
                    help="Display label for the project root (default: directory basename).")
+    p.add_argument("--build-times", type=Path, default=None, metavar="JSON",
+                   help="Optional xcsift --build-info JSON capturing real per-target "
+                        "compile times from the cold build. When present, Build mode "
+                        "uses measured seconds as module cost instead of the type-count "
+                        "proxy. Missing/malformed file is ignored (falls back to proxy).")
     p.add_argument("--from-index", type=Path, default=None, metavar="JSON",
                    help="Load a resolved dependency graph produced by the index_graph "
                         "Swift tool (reads the compiler index store) instead of "
@@ -225,10 +231,17 @@ def main() -> int:
     # Build mode operates at real compile-unit granularity: the folder graph is
     # collapsed to SPM targets + the single xcodeproj app target, and scored for
     # warm-rebuild blast radius + cold-build critical path. Structural (no churn).
+    # Real per-target compile times (xcsift --build-info JSON) become module cost
+    # when available; otherwise the type-count proxy is used.
+    build_times = load_build_times(args.build_times) if args.build_times else {}
     module_graph = compute_module_graph(
-        all_source_folders, leaf_edges, migrated_prefixes, decls, root_label=root_label
+        all_source_folders, leaf_edges, migrated_prefixes, decls,
+        root_label=root_label, build_times=build_times,
     )
     msum = module_graph["summary"]
+    if build_times:
+        print(f"Build times:       measured for {len(build_times)} target(s) "
+              f"(~{msum['total_build_s']}s total compile work)")
     n_app = sum(1 for n in module_graph["nodes"] if n["kind"] == "app")
     print(f"Build graph:       {len(module_graph['nodes'])} module(s) "
           f"({len(module_graph['nodes']) - n_app} SPM + {n_app} app), "
