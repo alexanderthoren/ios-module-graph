@@ -67,6 +67,50 @@
        explore-only UI in Migration mode without clobbering inline display. */
     html[data-app-mode="explore"] .migrationOnly { display: none !important; }
     html[data-app-mode="migration"] .exploreOnly { display: none !important; }
+    html[data-app-mode="build"] .migrationOnly { display: none !important; }
+    /* Build mode uses vis-network's native tooltip (folder modes use a custom
+       popover). Re-enable + style it only in build mode. */
+    html[data-app-mode="build"] .vis-tooltip { display: block !important;
+      background: var(--surface); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; font-size: 11.5px; line-height: 1.5;
+      box-shadow: var(--shadow-sm); white-space: pre; font-family: 'Inter', sans-serif; }
+    /* Build mode widgets (warm/cold heatmap controls + ranked offenders). */
+    .build-toggle { display: flex; gap: 6px; margin: 10px 0 8px; }
+    .build-toggle button { flex: 1; padding: 7px 10px; font-weight: 600; }
+    .build-toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent-strong); }
+    /* Build-mode legend lives in the floating legend dock (bottom-right), not the
+       sidebar: show its section only in build mode, hide the folder-mode legend. */
+    .buildOnly { display: none; }
+    html[data-app-mode="build"] .buildOnly { display: flex; flex-direction: column; gap: 8px; }
+    html[data-app-mode="build"] #legendFolderModes { display: none; }
+    .build-legend-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
+    .build-blurb { color: var(--text-dim); margin-bottom: 8px; line-height: 1.5; font-size: 12px; }
+    .build-legend { height: 12px; border-radius: 6px; margin: 8px 0 2px; }
+    .build-legend-labels { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-faint); margin-bottom: 10px; }
+    #buildRank { list-style: none; padding: 0; margin: 6px 0 0; }
+    #buildRank li { cursor: pointer; padding: 4px 6px; border-radius: 6px; display: flex; align-items: center; gap: 8px; }
+    #buildRank li:hover { background: var(--surface-2); }
+    #buildRank .br-bar { height: 8px; border-radius: 4px; flex-shrink: 0; }
+    #buildRank .br-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #buildRank .br-val { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 11px; }
+    #buildRank .br-crit { color: #f59e0b; font-size: 9px; }
+    /* Split-plan recommendation rows. */
+    #recoList { list-style: none; padding: 0; margin: 8px 0 0; }
+    .reco-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r);
+      margin-bottom: 8px; cursor: pointer; background: var(--surface); }
+    .reco-row:hover { border-color: var(--accent); }
+    .reco-head { display: flex; align-items: center; gap: 8px; }
+    .reco-rank { font-size: 11px; color: var(--text-faint); min-width: 16px; }
+    .reco-name { flex: 1; font-weight: 600; font-size: 12.5px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .reco-score { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 13px; }
+    .reco-bars { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; }
+    .reco-bar-lbl { font-size: 9.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .5px; }
+    .reco-bar { height: 7px; border-radius: 4px; display: inline-block; min-width: 2px; }
+    .reco-action { font-size: 11.5px; font-weight: 600; margin-top: 5px; display: flex;
+      align-items: center; gap: 8px; flex-wrap: wrap; }
+    .reco-action .reco-div { padding: 2px 9px; font-size: 11px; }
+    .reco-reason { font-size: 11px; color: var(--text-dim); line-height: 1.45; margin-top: 4px; }
     /* Custom node popover: stats + action buttons, follows hovered/selected node. */
     .node-popover { position: absolute; z-index: 7; min-width: 230px; max-width: 280px;
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
@@ -550,12 +594,15 @@
       </div>
     </div>
     <div class="modes">
-      <div class="mode active" data-mode="explore">🔍 Explore mode</div>
-      <div class="mode" data-mode="migration">🧭 Migration mode</div>
+      <div class="mode active" data-mode="explore">🔍 Explore</div>
+      <div class="mode" data-mode="migration">🧭 Migration</div>
+      <div class="mode" data-mode="build">🏗️ Build</div>
     </div>
     <div class="tabs">
       <div class="tab" data-tab="wizard" data-mode="migration">🧭 Setup</div>
       <div class="tab" data-tab="plan" data-mode="migration">🎯 Plan</div>
+      <div class="tab" data-tab="build" data-mode="build">🏗️ Build impact</div>
+      <div class="tab" data-tab="recommend" data-mode="build">🪓 Split plan</div>
       <div class="tab active" data-tab="explore" data-mode="both">🌳 Hierarchy</div>
     </div>
 
@@ -582,6 +629,34 @@
           <div class="small" style="color:var(--text-faint);margin:-4px 0 4px;">Transitively depend on a won't-modularize folder. Unmark the blocker (or sever the dep) to free them.</div>
           <ul id="blockedList" style="font-size:12px;"></ul>
         </div>
+      </div>
+
+      <!-- BUILD IMPACT TAB -->
+      <div class="panel" id="panel-build">
+        <div class="small">Every node is a real <b>build unit</b> — an SPM module or
+          the xcodeproj app target (folders collapsed away). Pick a lens; hover a node
+          to see its rebuild set. Numbers are structural worst-case (no git churn yet).</div>
+        <div class="build-toggle">
+          <button id="bvWarm" class="active" data-bv="warm">🔥 Warm rebuild</button>
+          <button id="bvCold" data-bv="cold">🧊 Cold build</button>
+        </div>
+        <div class="small" style="color:var(--text-faint);margin:-2px 0 8px;">Lens explained in the <b>Legend</b> (bottom-right).</div>
+        <div id="buildSummary" class="info"></div>
+        <h2 style="margin-top:14px;">Top offenders <span class="pill gray" id="buildRankCount">0</span></h2>
+        <input id="buildFilter" type="text" class="hier-filter" value="" placeholder="Filter folders…" autocomplete="off" />
+        <ul id="buildRank"></ul>
+      </div>
+
+      <!-- BUILD SPLIT-PLAN TAB -->
+      <div class="panel" id="panel-recommend">
+        <div class="small">Modules ranked by the <b>build-time payoff</b> of separating
+          them — splitting a top module shrinks warm rebuild cascades and/or shortens
+          the cold critical path. Score 0–100 blends both. Hover a row to highlight it
+          on the graph; <b>✂️ Divide</b> opens its split plan. Structural worst-case
+          (no git churn yet).</div>
+        <div id="recoSummary" class="info"></div>
+        <input id="recoFilter" type="text" class="hier-filter" value="" placeholder="Filter modules…" autocomplete="off" />
+        <ul id="recoList"></ul>
       </div>
 
       <!-- MIGRATION WIZARD TAB -->
@@ -784,6 +859,7 @@
       <span id="legendCaret">▾</span>
     </div>
     <div class="legend-dock-body" id="legendBody">
+      <div id="legendFolderModes">
       <div class="legend-section exploreOnly">
         <div class="legend-group-title">Nodes</div>
         <div class="legend">
@@ -830,6 +906,13 @@
           <div><span class="legend-edge-line" style="background:#3b82f6"></span><span class="legend-row-label">Inbound <span class="dim">— other → this</span></span></div>
           <div><span class="legend-edge-line" style="background:#9ca3af"></span><span class="legend-row-label">Thickness = reference count</span></div>
         </div>
+      </div>
+      </div><!-- /legendFolderModes -->
+      <div class="legend-section buildOnly">
+        <div id="buildLegendTitle" class="build-legend-title"></div>
+        <div id="buildBlurb" class="build-blurb"></div>
+        <div id="buildLegend" class="build-legend"></div>
+        <div class="build-legend-labels"><span id="buildLegLo"></span><span id="buildLegHi"></span></div>
       </div>
     </div>
   </div>
@@ -881,6 +964,15 @@ const fileEdges = DATA.file_edges || [];
 // where src/dst are "<name>\t<owner_folder>" keys. The type-view consumes these
 // directly so a class can connect to a struct without going through a file box.
 const typeEdges = DATA.type_edges || [];
+// Module-level build graph for "Build" mode: real compile units (SPM targets +
+// the app target). {nodes:[{id,label,kind,folders,types,warm,warm_pct,fan_in,level,crit,scc}], edges:[{from,to,w}], summary:{…}}.
+const moduleGraph = DATA.module_graph || { nodes: [], edges: [], summary: {} };
+const moduleById = {};
+moduleGraph.nodes.forEach(n => { moduleById[n.id] = n; });
+let buildView = 'warm';   // 'warm' (blast radius) | 'cold' (critical path)
+let moduleNodesDS = null, moduleEdgesDS = null;
+// Modules ranked by split payoff (Build mode → Split plan tab). {items:[…], summary:{…}}.
+const recommendations = DATA.recommendations || { items: [], summary: {} };
 
 // ── Reverse-lookup indexes for the call-tree view ─────────────────────────
 //   fileEdgesByDst[absRelPath]   → [{src, w, symbols}, …]  (file-level callers)
@@ -1251,7 +1343,10 @@ function applyMode(mode) {
   let firstVisible = null;
   document.querySelectorAll('.tab').forEach(t => {
     const dm = t.dataset.mode || 'both';
-    const visible = dm === mode || dm === 'both';
+    let visible = dm === mode || dm === 'both';
+    // Build mode drills in via the graph canvas + ranked panel — the Hierarchy
+    // sidebar tab is redundant there, so hide it (it stays in Explore/Migration).
+    if (mode === 'build' && t.dataset.tab === 'explore') visible = false;
     t.dataset.hidden = visible ? '0' : '1';
     if (visible && firstVisible === null && t.dataset.tab !== 'settings') firstVisible = t;
   });
@@ -1273,7 +1368,10 @@ function applyMode(mode) {
   // Explore mode only has one tab (Graph) — hide the whole tab bar.
   const tabsBar = document.querySelector('.tabs');
   if (tabsBar) tabsBar.style.display = (mode === 'explore') ? 'none' : '';
-  // Re-render the graph so node grouping (spm vs migrated) refreshes.
+  // Entering Build mode: open the Build-impact panel (legend + ranking) so the
+  // lens is obvious, while the Hierarchy tab still drives drill-in.
+  if (mode === 'build') switchTab('build');
+  // Re-render the graph so node grouping (spm vs migrated / build heatmap) refreshes.
   if (typeof network !== 'undefined' && network) { try { render(); } catch (e) {} }
 }
 document.querySelectorAll('.mode').forEach(m => {
@@ -1345,6 +1443,7 @@ let network = null;
 // tearing the whole vis-network down — which would re-stabilize the layout
 // and feel like a full re-render every time the user clicks a button.
 let lastRenderedFocusId = undefined;
+let lastRenderedMode = null;   // force a clean network rebuild when the app mode changes
 let folderNodesDS = null;
 let folderEdgesDS = null;
 // Same idea for the type-view network: persist its DataSets so a state toggle
@@ -1362,6 +1461,7 @@ const HOVER_DIM_NODE_OPACITY = 0.15;
 const HOVER_DIM_EDGE_OPACITY = 0.04;
 const _hoverOrigNodeFont = new WeakMap(); // nodesDS -> Map(id -> origFont)
 const _hoverOrigEdgeColor = new WeakMap(); // edgesDS -> Map(id -> origColor)
+const _hoverOrigNodeColor = new WeakMap(); // nodesDS -> Map(id -> origColor) — build mode
 function _ensureOrig(weakMap, ds, getField) {
   let m = weakMap.get(ds);
   if (!m) {
@@ -1375,6 +1475,74 @@ function _ensureOrig(weakMap, ds, getField) {
     weakMap.set(ds, m);
   }
   return m;
+}
+// Build mode: light up the hovered folder's *rebuild set* — every folder that
+// transitively depends on it (and so recompiles when it changes), with the
+// propagation edges drawn red. Reverse-BFS over the displayed dependency edges
+// (edge from→to means from depends on to, so rebuilds flow to→from).
+function buildRebuildClosure(edgesDS, focusId) {
+  const radj = new Map();
+  edgesDS.get().forEach(e => {
+    if (e.from == null || e.to == null) return;
+    if (e.from === '__ext__' || e.to === '__ext__') return;
+    if (!radj.has(e.to)) radj.set(e.to, []);
+    radj.get(e.to).push(e.from);
+  });
+  const closure = new Set([focusId]);
+  const stack = [focusId];
+  while (stack.length) {
+    const x = stack.pop();
+    (radj.get(x) || []).forEach(a => { if (!closure.has(a)) { closure.add(a); stack.push(a); } });
+  }
+  return closure;
+}
+// Dim color used for nodes/edges outside the hovered module's rebuild set. We
+// fade the node *color* (low-alpha gray) rather than the vis `opacity` property,
+// which the bundled vis build doesn't honor on nodes — so the body fades too,
+// not just the label/edges.
+const BUILD_DIM_NODE = { background: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.18)' };
+function applyBuildHoverHighlight(nodesDS, edgesDS, focusId) {
+  const origFont = _ensureOrig(_hoverOrigNodeFont, nodesDS, n => n.font);
+  const origColor = _ensureOrig(_hoverOrigNodeColor, nodesDS, n => n.color);
+  _ensureOrig(_hoverOrigEdgeColor, edgesDS, e => e.color);   // snapshot so clear can restore
+  const closure = buildRebuildClosure(edgesDS, focusId);
+  const defaultTextColor = themeText();
+  nodesDS.update(nodesDS.get().map(n => {
+    const inSet = closure.has(n.id);
+    const fbase = origFont.get(n.id) || {};
+    const cbase = origColor.get(n.id);
+    return {
+      id: n.id,
+      opacity: inSet ? 1.0 : HOVER_DIM_NODE_OPACITY,
+      color: inSet ? (cbase || undefined) : BUILD_DIM_NODE,
+      font: Object.assign({}, fbase,
+        { color: inSet ? ((fbase.color != null) ? fbase.color : defaultTextColor) : 'rgba(148,163,184,0.25)' }),
+    };
+  }));
+  edgesDS.update(edgesDS.get().map(e => {
+    const onPath = closure.has(e.from) && closure.has(e.to);
+    return { id: e.id, color: onPath
+      ? { color: '#ef4444', opacity: 0.9 }
+      : { color: '#c3c8d6', opacity: HOVER_DIM_EDGE_OPACITY } };
+  }));
+}
+function clearBuildHoverHighlight(nodesDS, edgesDS) {
+  if (!nodesDS || !edgesDS) return;
+  const origFont = _hoverOrigNodeFont.get(nodesDS);
+  const origColor = _hoverOrigNodeColor.get(nodesDS);
+  const origEdge = _hoverOrigEdgeColor.get(edgesDS);
+  const defaultTextColor = themeText();
+  nodesDS.update(nodesDS.get().map(n => {
+    const fbase = origFont ? origFont.get(n.id) : null;
+    const cbase = origColor ? origColor.get(n.id) : null;
+    return { id: n.id, opacity: 1.0,
+             color: cbase || undefined,
+             font: Object.assign({}, fbase || {},
+               { color: (fbase && fbase.color != null) ? fbase.color : defaultTextColor }) };
+  }));
+  edgesDS.update(edgesDS.get().map(e => ({
+    id: e.id, color: (origEdge && origEdge.get(e.id)) || e.color,
+  })));
 }
 function applyHoverHighlight(nodesDS, edgesDS, focusId) {
   if (!nodesDS || !edgesDS) return;
@@ -2082,7 +2250,243 @@ function switchTab(name) {
   // it must be re-rendered or a fresh load shows stale/empty content.
   if (name === 'plan') renderPlan();
   else if (name === 'wizard') renderWizard();
+  else if (name === 'build') renderBuild();
+  else if (name === 'recommend') renderRecommend();
 }
+
+// ── Build mode: module-level build graph (real compile units) ────────────────
+// Nodes are SPM targets + the single xcodeproj app target; colors come straight
+// from the precomputed moduleGraph payload — no graph algorithms in the browser.
+// Build a full vis color object. vis derives hover/select (highlight) colors from
+// its global defaults unless we pin them — without this, hovering/selecting a
+// build node flips it to the default blue and it sticks. Pin all four states.
+function _heatColorObj(bg, border) {
+  return { background: bg, border: border,
+           highlight: { background: bg, border: border },
+           hover: { background: bg, border: border } };
+}
+function buildHeatWarm(pct) {
+  const t = Math.max(0, Math.min(1, pct / 100));
+  const hue = (1 - t) * 130;            // 130 green (cheap to touch) → 0 red (rebuilds the world)
+  const light = 58 - t * 8;
+  return _heatColorObj('hsl(' + (hue | 0) + ',72%,' + (light | 0) + '%)',
+                       'hsl(' + (hue | 0) + ',72%,' + ((light - 15) | 0) + '%)');
+}
+function buildHeatCold(level, cohorts) {
+  const t = cohorts > 1 ? level / (cohorts - 1) : 0;
+  const hue = 220 - t * 160;            // level 0 (foundational) blue → leaf apps green/yellow
+  return _heatColorObj('hsl(' + (hue | 0) + ',65%,55%)', 'hsl(' + (hue | 0) + ',65%,40%)');
+}
+// One vis node object for a module, colored by the active lens.
+function moduleVisNode(n, cohorts) {
+  const col = (buildView === 'warm') ? buildHeatWarm(n.warm_pct) : buildHeatCold(n.level, cohorts);
+  const critRing = (buildView === 'cold' && n.crit);
+  if (critRing) { col.border = '#f59e0b'; col.highlight.border = '#f59e0b'; col.hover.border = '#f59e0b'; }
+  const title = n.id
+    + '\n' + (n.kind === 'app' ? '📱 xcodeproj app target' : '📦 SPM module')
+    + '\n' + n.folders + ' folder(s) · ' + n.types + ' type(s)'
+    + (buildView === 'warm'
+        ? '\n🔥 warm blast radius: ' + n.warm + ' module(s) — ' + n.warm_pct + '%  (' + n.fan_in + ' direct dependents)'
+        : '\n🧊 cohort level ' + n.level + ' / ' + ((cohorts || 1) - 1) + (n.crit ? '  • on the critical path' : ''))
+    + '\nhover: light up its rebuild set';
+  return {
+    id: n.id,
+    label: n.label,
+    title,
+    shape: n.kind === 'app' ? 'diamond' : 'dot',
+    value: Math.max(1, n.types),
+    color: col,
+    borderWidth: critRing ? 4 : 2,
+    shapeProperties: { borderDashes: n.scc > 1 ? [4, 3] : false },
+    font: { size: n.kind === 'app' ? 16 : 14 },
+  };
+}
+function renderModuleGraph() {
+  const cohorts = (moduleGraph.summary && moduleGraph.summary.cohorts) || 1;
+  const nodes = moduleGraph.nodes.map(n => moduleVisNode(n, cohorts));
+  const edgeData = moduleGraph.edges.map(e => ({
+    from: e.from, to: e.to, value: e.w,
+    title: e.from + '  →depends on→  ' + e.to + '  (' + e.w + ' refs)',
+  }));
+  if (network) network.destroy();
+  // Drop folder/type DataSets so leaving build mode forces a clean rebuild.
+  tvNodesDS = null; tvEdgesDS = null; lastRenderedTypeFocusId = undefined;
+  folderNodesDS = null; folderEdgesDS = null; lastRenderedFocusId = undefined;
+  const nodesDS = new vis.DataSet(nodes);
+  const edgesDS = new vis.DataSet(edgeData);
+  moduleNodesDS = nodesDS; moduleEdgesDS = edgesDS;
+  lastRenderedMode = currentMode;
+  const spread = 1 + Math.min(1.5, Math.max(0, (nodes.length - 12) / 24));
+  network = new vis.Network(document.getElementById('net'),
+    { nodes: nodesDS, edges: edgesDS }, {
+    nodes: { shape: 'dot', scaling: { min: 12, max: 60 }, borderWidth: 2,
+      shadow: { enabled: true, color: 'rgba(20,28,55,0.12)', size: 10, x: 0, y: 3 },
+      font: { color: themeText(), face: 'Inter, sans-serif', size: 14 } },
+    edges: { arrows: { to: { scaleFactor: 0.6 } }, smooth: { type: 'continuous' },
+      color: { color: '#c3c8d6', highlight: '#6366f1', opacity: 0.55 } },
+    physics: { stabilization: { iterations: 320 },
+      barnesHut: { gravitationalConstant: -12000 * spread, springLength: 180 * spread,
+        springConstant: 0.04, centralGravity: 0.1, damping: 0.5, avoidOverlap: 0.6 } },
+    interaction: { hover: true, tooltipDelay: 90, hoverConnectedEdges: false, selectConnectedEdges: false },
+  });
+  network.once('stabilizationIterationsDone', () => { try { network.fit({ animation: false }); } catch (e) {} });
+  network.on('hoverNode', p => applyBuildHoverHighlight(moduleNodesDS, moduleEdgesDS, p.node));
+  network.on('blurNode', () => clearBuildHoverHighlight(moduleNodesDS, moduleEdgesDS));
+}
+// Toggle warm/cold without re-laying-out: just repaint node colors/titles.
+function recolorModules() {
+  if (!moduleNodesDS) return;
+  const cohorts = (moduleGraph.summary && moduleGraph.summary.cohorts) || 1;
+  moduleNodesDS.update(moduleGraph.nodes.map(n => moduleVisNode(n, cohorts)));
+  _hoverOrigNodeColor.delete(moduleNodesDS);   // colors changed — drop stale hover snapshot
+}
+function focusModule(id) {
+  if (network && moduleNodesDS && moduleNodesDS.get(id)) {
+    try {
+      network.focus(id, { scale: 1.2, animation: true });
+      network.selectNodes([id]);
+      applyBuildHoverHighlight(moduleNodesDS, moduleEdgesDS, id);
+    } catch (e) {}
+  }
+}
+// Sidebar offender row ↔ graph node, mirroring _graphHover in the folder modes:
+// hovering a row lights up that module's rebuild set + connecting edges.
+function buildHoverModule(id, on) {
+  if (!network || !moduleNodesDS || !moduleNodesDS.get(id)) return;
+  try {
+    if (on) applyBuildHoverHighlight(moduleNodesDS, moduleEdgesDS, id);
+    else clearBuildHoverHighlight(moduleNodesDS, moduleEdgesDS);
+  } catch (e) {}
+}
+function setBuildView(v) {
+  buildView = v;
+  renderBuild();
+  if (moduleNodesDS) recolorModules();
+  else if (typeof network !== 'undefined' && network) { try { render(); } catch (e) {} }
+}
+function renderBuild() {
+  const sum = moduleGraph.summary || {};
+  const nMod = moduleGraph.nodes.length;
+  document.querySelectorAll('.build-toggle button').forEach(b =>
+    b.classList.toggle('active', b.dataset.bv === buildView));
+  const blurb = document.getElementById('buildBlurb');
+  if (!blurb) return;
+  const title = document.getElementById('buildLegendTitle');
+  const legend = document.getElementById('buildLegend');
+  const lo = document.getElementById('buildLegLo');
+  const hi = document.getElementById('buildLegHi');
+  const summ = document.getElementById('buildSummary');
+  title.textContent = buildView === 'warm' ? '🔥 Warm rebuild' : '🧊 Cold build';
+  if (buildView === 'warm') {
+    blurb.innerHTML = 'Each node is a <b>build unit</b> — an SPM module (●) or the app target (◆). Colored by <b>warm-rebuild blast radius</b>: how many modules recompile when you touch it. <b>Hover</b> to light up that rebuild set (red edges). Shrink it by splitting the module or putting a stable interface in front.';
+    legend.style.background = 'linear-gradient(90deg, hsl(130,72%,58%), hsl(60,72%,52%), hsl(0,72%,46%))';
+    lo.textContent = 'safe to touch'; hi.textContent = 'rebuilds everything';
+    summ.innerHTML = '<div>Build units: <b>' + nMod + '</b></div>'
+      + '<div>Module cycles: <b>' + (sum.n_cycles || 0) + '</b>'
+      + (sum.biggest_scc > 1 ? ' · biggest <b>' + sum.biggest_scc + '</b> modules' : ' (clean DAG)') + '</div>';
+  } else {
+    blurb.innerHTML = 'Each node is a <b>build unit</b>. Colored by <b>cold-build cohort</b> (level 0 compiles first; same level = parallelizable). Gold ring = on the <b>critical path</b> — the longest dependency chain, which sets the floor on a clean build. <b>Hover</b> to light up its rebuild set.';
+    legend.style.background = 'linear-gradient(90deg, hsl(220,65%,55%), hsl(140,65%,50%), hsl(60,65%,55%))';
+    lo.textContent = 'level 0 (foundational)'; hi.textContent = 'level ' + Math.max(0, (sum.cohorts || 1) - 1) + ' (app/leaf)';
+    summ.innerHTML = '<div>Critical path: <b>' + (sum.crit_len || 0) + '</b> cohorts deep</div>'
+      + '<div>Max parallel width: <b>' + (sum.max_width || 0) + '</b> modules</div>';
+  }
+  renderBuildRank();
+}
+function renderBuildRank() {
+  const sum = moduleGraph.summary || {};
+  const cohorts = sum.cohorts || 1;
+  const ul = document.getElementById('buildRank');
+  if (!ul) return;
+  const q = (document.getElementById('buildFilter').value || '').toLowerCase();
+  let rows = moduleGraph.nodes.slice();
+  if (q) rows = rows.filter(n => n.id.toLowerCase().includes(q) || n.label.toLowerCase().includes(q));
+  if (buildView === 'warm')
+    rows.sort((a, b) => b.warm - a.warm || a.label.localeCompare(b.label));
+  else
+    rows.sort((a, b) => b.level - a.level
+      || (b.crit ? 1 : 0) - (a.crit ? 1 : 0) || a.label.localeCompare(b.label));
+  document.getElementById('buildRankCount').textContent = rows.length;
+  ul.innerHTML = rows.map(n => {
+    let col, barPct, val;
+    if (buildView === 'warm') {
+      const t = Math.min(1, n.warm_pct / 100); col = 'hsl(' + (((1 - t) * 130) | 0) + ',72%,53%)';
+      barPct = n.warm_pct; val = n.warm_pct + '%';
+    } else {
+      const t = cohorts > 1 ? n.level / (cohorts - 1) : 0; col = 'hsl(' + ((220 - t * 160) | 0) + ',65%,50%)';
+      barPct = t * 100; val = 'L' + n.level;
+    }
+    const crit = (buildView === 'cold' && n.crit) ? ' <span class="br-crit" title="on critical path">●</span>' : '';
+    const app = n.kind === 'app' ? ' <span title="xcodeproj app target">📱</span>' : '';
+    return '<li data-id="' + escapeHtml(n.id) + '" title="' + escapeHtml(n.id) + '">'
+      + '<span class="br-bar" style="width:' + Math.max(4, barPct * 0.6).toFixed(0) + 'px;background:' + col + '"></span>'
+      + '<span class="br-name">' + escapeHtml(n.label) + app + crit + '</span>'
+      + '<span class="br-val">' + val + '</span></li>';
+  }).join('');
+  // Row hover replays the graph node hover (highlight rebuild set + edges).
+  ul.querySelectorAll('li[data-id]').forEach(li => {
+    const id = li.getAttribute('data-id');
+    li.onmouseenter = () => buildHoverModule(id, true);
+    li.onmouseleave = () => buildHoverModule(id, false);
+  });
+}
+document.querySelectorAll('.build-toggle button').forEach(b => {
+  b.onclick = () => setBuildView(b.dataset.bv);
+});
+(function () {
+  const bf = document.getElementById('buildFilter');
+  if (bf) bf.oninput = () => renderBuildRank();
+  const br = document.getElementById('buildRank');
+  if (br) br.addEventListener('click', (ev) => {
+    const li = ev.target.closest('li[data-id]');
+    if (li) focusModule(li.getAttribute('data-id'));
+  });
+})();
+
+// ── Build mode → Split plan: modules ranked by separation payoff ─────────────
+function renderRecommend() {
+  const ul = document.getElementById('recoList');
+  if (!ul) return;
+  const items = recommendations.items || [];
+  const sum = recommendations.summary || {};
+  document.getElementById('recoSummary').innerHTML =
+    '<div><b>' + (sum.actionable || 0) + '</b> module(s) worth separating'
+    + ' · <b>' + (sum.dividable || 0) + '</b> have an auto-split plan</div>';
+  const q = (document.getElementById('recoFilter').value || '').toLowerCase();
+  let rows = items;
+  if (q) rows = rows.filter(r => r.id.toLowerCase().includes(q) || r.label.toLowerCase().includes(q));
+  ul.innerHTML = rows.map((r, i) => {
+    const warmW = Math.max(2, Math.round(r.warm_norm * 2));   // 0..50 → up to 100px
+    const coldW = Math.max(2, Math.round(r.cold_norm * 2));
+    const icon = r.kind === 'app' ? '📱' : '📦';
+    const divBtn = r.dividable
+      ? '<button class="ghost reco-div" data-id="' + escapeHtml(r.id) + '">✂️ Divide</button>' : '';
+    return '<li class="reco-row" data-id="' + escapeHtml(r.id) + '" title="' + escapeHtml(r.id) + '">'
+      + '<div class="reco-head"><span class="reco-rank">' + (i + 1) + '</span>'
+      + '<span class="reco-name">' + icon + ' ' + escapeHtml(r.label) + '</span>'
+      + '<span class="reco-score">' + r.combined + '</span></div>'
+      + '<div class="reco-bars">'
+      +   '<span class="reco-bar-lbl">warm</span><span class="reco-bar" style="width:' + warmW + 'px;background:#ef4444"></span>'
+      +   '<span class="reco-bar-lbl">cold</span><span class="reco-bar" style="width:' + coldW + 'px;background:#3b82f6"></span>'
+      + '</div>'
+      + '<div class="reco-action">' + escapeHtml(r.action) + divBtn + '</div>'
+      + '<div class="reco-reason">' + escapeHtml(r.reason) + '</div>'
+      + '</li>';
+  }).join('');
+  ul.querySelectorAll('.reco-div').forEach(b => {
+    b.onclick = (ev) => { ev.stopPropagation(); openDivide(b.getAttribute('data-id')); };
+  });
+  ul.querySelectorAll('.reco-row').forEach(li => {
+    const id = li.getAttribute('data-id');
+    li.onclick = () => focusModule(id);
+    li.onmouseenter = () => buildHoverModule(id, true);
+    li.onmouseleave = () => buildHoverModule(id, false);
+  });
+}
+(function () {
+  const rf = document.getElementById('recoFilter');
+  if (rf) rf.oninput = () => renderRecommend();
+})();
 
 function focusToFolder(folder) {
   // Climb to nearest ancestor that has children, focus there, then highlight.
@@ -2148,6 +2552,9 @@ function updateBlockedSidebar() {
 }
 
 function render() {
+  // Build mode shows the flat module/target graph (real compile units), not the
+  // folder drill-down. Route there before any folder-tree work.
+  if (currentMode === 'build') { renderModuleGraph(); return; }
   _invalidatePartialCache();
   const panelsDock = document.getElementById('panelsDock');
   if (panelsDock) panelsDock.style.display = 'none';
@@ -2346,7 +2753,7 @@ function render() {
   // DataSet and touch ONLY the nodes that actually changed, and leave the edges
   // alone unless their structure differs. No full rebuild, no edge flash,
   // positions preserved.
-  if (network && lastRenderedFocusId === focusId && folderNodesDS && folderEdgesDS) {
+  if (network && lastRenderedFocusId === focusId && lastRenderedMode === currentMode && folderNodesDS && folderEdgesDS) {
     const existingIds = new Set(folderNodesDS.getIds());
     const newIds = new Set(nodes.map(n => n.id));
     const changed = nodes.filter(n => {
@@ -2380,6 +2787,7 @@ function render() {
   folderNodesDS = nodesDS;
   folderEdgesDS = edgesDS;
   lastRenderedFocusId = focusId;
+  lastRenderedMode = currentMode;
   // Spread scales with node count so 40 siblings don't pack into a hairball.
   const spread = 1 + Math.min(1.5, Math.max(0, (kids.length - 12) / 24));
   network = new vis.Network(document.getElementById('net'),

@@ -10,7 +10,9 @@ from .cycles import compute_cycle_breakers, compute_extraction_targets
 from .divide import compute_division_plan
 from .exclusions import compute_blocked_by_excluded, load_exclusions
 from .graph import build_tree, compute_migration_plan
+from .build_recommendations import compute_split_recommendations
 from .index_loader import load_index_graph
+from .module_graph import compute_module_graph
 from .render import render_html
 from .scanner import compute_pair_types, scan
 from .spm import _build_package_map, auto_detect_migrated_prefixes, is_migrated
@@ -220,6 +222,29 @@ def main() -> int:
                 prefix, leaf_edges, resolved_pair_types, decls
             )
 
+    # Build mode operates at real compile-unit granularity: the folder graph is
+    # collapsed to SPM targets + the single xcodeproj app target, and scored for
+    # warm-rebuild blast radius + cold-build critical path. Structural (no churn).
+    module_graph = compute_module_graph(
+        all_source_folders, leaf_edges, migrated_prefixes, decls, root_label=root_label
+    )
+    msum = module_graph["summary"]
+    n_app = sum(1 for n in module_graph["nodes"] if n["kind"] == "app")
+    print(f"Build graph:       {len(module_graph['nodes'])} module(s) "
+          f"({len(module_graph['nodes']) - n_app} SPM + {n_app} app), "
+          f"{len(module_graph['edges'])} edge(s); cold critical path "
+          f"{msum['crit_len']} deep, max parallel width {msum['max_width']}, "
+          f"{msum['n_cycles']} module cycle(s)")
+
+    # Rank modules by the build-time payoff of separating them (links dividable
+    # ones to the precomputed division plans). Computed after divisions so it can
+    # flag which modules have an auto-split plan.
+    recommendations = compute_split_recommendations(module_graph, divisions)
+    if recommendations["items"]:
+        top = recommendations["items"][0]
+        print(f"  → Top split candidate: {top['label']} "
+              f"(payoff {top['combined']}/100, {top['action'].lower()})")
+
     if graph_path is not None:
         graph_path = graph_path.expanduser().resolve()
         graph_path.parent.mkdir(parents=True, exist_ok=True)
@@ -230,7 +255,8 @@ def main() -> int:
             initial_excluded=sorted(excluded), excluded_file=excluded_file,
             folder_package=folder_package, packages=packages,
             file_edges=file_edges, type_edges=type_edges,
-            divisions=divisions,
+            divisions=divisions, module_graph=module_graph,
+            recommendations=recommendations,
         )
         print(f"\nWrote graph: {graph_path}")
 

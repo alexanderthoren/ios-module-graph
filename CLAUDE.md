@@ -105,6 +105,9 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `cycles.py` | `_feedback_arc_set`, `compute_cycle_breakers`, `compute_extraction_targets` |
 | `spm.py` | `_build_package_map`, `auto_detect_migrated_prefixes`, `is_migrated`, `_package_label` |
 | `divide.py` | split ONE module into smaller modules: `aggregate_module` (subfolders→units), `public_surface`, `compute_division_plan` (reuses `graph`/`cycles`), `dividable_modules` |
+| `build_impact.py` | `compute_build_impact` — generic **warm-rebuild blast radius** (transitive reverse-dependents) + **cold-build cohort/critical path** (SCC-condensed, reuses `_tarjan_sccs`) scorer over any node/edge set; consumed by `module_graph` |
+| `module_graph.py` | `module_of`, `compute_module_graph` — collapse the folder graph to real **compile units** (SPM targets + one app target), score via `build_impact`; powers "Build" mode |
+| `build_recommendations.py` | `compute_split_recommendations` — rank modules by the build-time **payoff of separating** them (warm cascade + cold critical-path contribution), link dividable ones to `divisions`; powers Build mode's "Split plan" tab |
 | `exclusions.py` | `load_exclusions`, `compute_blocked_by_excluded` |
 | `tasks.py` | `build_task_list`, `write_task_list_markdown`, `write_task_list_json` |
 | `render.py` | `render_html` — inject the JSON payload into `templates/template.html` |
@@ -145,6 +148,48 @@ per-step before/after preview, and the per-step Claude prompts) — no recompute
 the browser, all graph logic stays in Python. `compute_division_plan`'s output is
 deterministic for the same reasons the migration plan is (it reuses that code and
 sorts the unit rows / `unit_edges`); keep it that way.
+
+### Build mode (module-level warm/cold build-cost graph)
+
+A third app mode (alongside Explore/Migration) that visualizes **build cost at
+real compile-unit granularity**, to guide modularization for faster builds. The
+key idea: a *folder* is not a compile unit — only **SPM targets** (`…/Sources/<Target>`)
+and the single **xcodeproj app target** are. So Build mode forgets folders:
+`module_graph.compute_module_graph(...)` maps every folder to its build unit
+(`module_of`), collapses folder edges to module→module edges, and scores each
+module via `build_impact.compute_build_impact` (which is node/edge-agnostic). It
+ships `payload["module_graph"]` = `{"nodes": [{id,label,kind,folders,types,warm,
+warm_pct,fan_in,level,crit,scc}], "edges": [{from,to,w}], "summary": {…}}`.
+
+The UI renders this as a **flat module graph** (no folder drill-in — the Hierarchy
+tab is hidden in Build mode; `render()` routes straight to `renderModuleGraph()`).
+Two lenses (toggle, repaints in place via `recolorModules`): **warm** = transitive
+reverse-dependents (touch a module → this many recompile; a worst-case upper bound
+since Swift only cascades on public-interface change); **cold** = SCC-condensed
+build cohort (`level`, parallelizable within a level) + `crit` (on a globally-longest
+chain). Hovering a node lights up its **rebuild set** (transitive dependents) with
+red edges (`buildRebuildClosure` + `applyBuildHoverHighlight`, reverse-BFS over the
+displayed edges). Collapsing to modules is also *more correct*: folder-level cycles
+vanish (they're intra-module and irrelevant — a module compiles atomically), so the
+Fever graph drops from 28 folder cycles to **0 module cycles**.
+
+Deterministic (sorted nodes/edges; reuses `_tarjan_sccs`). **Structural only** — no
+git churn weighting yet (the obvious v2: rank by `blast_radius × commit-frequency`
+to separate "foundational" from "actually hurts").
+
+Build mode has a second tab, **Split plan** (`payload["recommendations"]`, from
+`build_recommendations.compute_split_recommendations`): modules ranked by the
+build-time payoff of **separating** them. Each module is scored on a **warm** lever
+(`downstream_cost` = Σ compile-cost of everything that recompiles when it changes —
+splitting localizes edits) and a **cold** lever (its own compile cost *iff on the
+critical path* — splitting a big serial module parallelizes its pieces, shortening
+the floor). `combined = 50·warm/maxWarm + 50·cold/maxCold` (0–100) is the sort key.
+Compile cost is proxied by declared-type count. Each row carries an action: SPM
+targets with a precomputed `divisions` plan get "Split into ~N" (the row's **✂️
+Divide** button reuses `openDivide(moduleId)`); flat modules get "Stabilize public
+API"; the app target gets "Extract features into SPM" (pointing at Migration mode,
+since it's one compile unit topping the critical path). Hovering a row highlights
+that module's rebuild set on the live graph (`buildHoverModule`).
 
 ### Why resolution-by-USR matters
 

@@ -17,7 +17,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 migrated_prefixes, out_path, type_kinds=None,
                 initial_excluded=None, excluded_file=None,
                 folder_package=None, packages=None, file_edges=None, type_edges=None,
-                divisions=None):
+                divisions=None, module_graph=None, recommendations=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -44,6 +44,13 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         # folder id -> precomputed division plan (how to split that folder into
         # smaller SPM modules). Only populated on the USR-resolved index path.
         "divisions": divisions or {},
+        # Module-level build graph (SPM targets + app target) scored for warm
+        # blast radius + cold critical path — powers "Build" mode.
+        # {"nodes": [...], "edges": [...], "summary": {...}}.
+        "module_graph": module_graph or {"nodes": [], "edges": [], "summary": {}},
+        # Modules ranked by the build-time payoff of separating them (Build mode's
+        # Recommendations tab). {"items": [...], "summary": {...}}.
+        "recommendations": recommendations or {"items": [], "summary": {}},
     }
     html = _load_template().replace("__PAYLOAD__", json.dumps(payload)).replace(
         "__ROOT_LABEL__", root_label
