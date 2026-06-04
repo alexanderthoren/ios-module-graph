@@ -50,17 +50,29 @@ def module_of(folder: str, migrated_prefixes: list[str]) -> str:
 
 
 def compute_module_graph(all_folders, leaf_edges, migrated_prefixes, decls,
-                         root_label: str = "App", build_times=None) -> dict:
+                         root_label: str = "App", build_times=None,
+                         build_floors=None) -> dict:
     """Return ``{"nodes": [...], "edges": [...], "summary": {...}}`` for Build mode.
 
     Each node: ``{id, label, kind: 'app'|'spm', folders, types, warm, warm_pct,
-    fan_in, level, crit, scc, build_ms, measured}``. Edges: ``{from, to, w}`` (from
-    depends on to). When ``build_times`` (``{target_name: seconds}``) is supplied,
-    each node gets its measured compile time (``build_ms``); SPM modules match by
-    label, and any target not matching an SPM label folds into the app node.
-    Deterministic — nodes sorted by id, edges by (from, to).
+    fan_in, level, crit, scc, build_ms, cold_wall_ms, measured}``. Edges:
+    ``{from, to, w}`` (from depends on to). When ``build_times``
+    (``{target_name: seconds}``) is supplied, each node gets its measured compile
+    *work* (``build_ms``); SPM modules match by label, and any target not matching
+    an SPM label folds into the app node.
+
+    ``cold_wall_ms`` = estimated **from-scratch wall-clock** to build that module
+    *and everything it depends on*, clean — the time-weighted longest path through
+    its dependency closure. Each module's own wall on that path is
+    ``max(work/cores, serial_floor)`` where ``serial_floor`` = its longest single
+    file (from ``build_floors``); this respects both within-module parallelism
+    (files split across cores) and its irreducible floor (can't beat the slowest
+    file). The app target, being the root, gets the whole-graph critical path —
+    i.e. the total clean-build wall. Without ``build_floors`` it degrades to a
+    cores-only estimate. Deterministic — nodes sorted by id, edges by (from, to).
     """
     build_times = build_times or {}
+    build_floors = build_floors or {}
     prefixes = list(migrated_prefixes)
 
     def mod(f: str) -> str:
@@ -98,14 +110,48 @@ def compute_module_graph(all_folders, leaf_edges, migrated_prefixes, decls,
     labels = {m: ("App (xcodeproj)" if m == APP_ID else _package_label(m)) for m in modules}
     spm_labels = {labels[m] for m in modules if m != APP_ID}
     secs: dict[str, float] = {}
+    floors: dict[str, float] = {}
     if build_times:
         for m in modules:
             if m == APP_ID:
                 continue
             secs[m] = build_times.get(labels[m], 0.0)
+            floors[m] = build_floors.get(labels[m], 0.0)
         app_secs = sum(v for name, v in build_times.items() if name not in spm_labels)
+        # App serial floor = its single longest file across all folded targets
+        # (a floor is a max, not a sum — unlike work).
+        app_floor = max((v for name, v in build_floors.items() if name not in spm_labels),
+                        default=0.0)
         if APP_ID in modules:
             secs[APP_ID] = app_secs
+            floors[APP_ID] = app_floor
+
+    cores = os.cpu_count() or 1
+
+    # Per-module own wall = within-module parallelism (work spread over cores),
+    # but never below its serial floor (longest single file).
+    def node_wall(m: str) -> float:
+        return max(secs.get(m, 0.0) / cores, floors.get(m, 0.0))
+
+    # cold_wall = time-weighted longest path through the depends-on closure:
+    # node's own wall + the slowest dependency's cold_wall (deps compile in
+    # parallel, so we wait only on the deepest chain). Memoized, cycle-guarded.
+    fwd: dict[str, set[str]] = defaultdict(set)
+    for (a, b) in module_edges:
+        fwd[a].add(b)
+    _cw: dict[str, float] = {}
+    _stack: set[str] = set()
+
+    def cold_wall(m: str) -> float:
+        if m in _cw:
+            return _cw[m]
+        if m in _stack:        # defensive: modules are acyclic, but never recurse forever
+            return node_wall(m)
+        _stack.add(m)
+        deepest_dep = max((cold_wall(d) for d in fwd.get(m, ())), default=0.0)
+        _stack.discard(m)
+        _cw[m] = node_wall(m) + deepest_dep
+        return _cw[m]
 
     nodes = []
     for m in sorted(modules):
@@ -124,6 +170,7 @@ def compute_module_graph(all_folders, leaf_edges, migrated_prefixes, decls,
             "crit": met["crit"],
             "scc": met["scc"],
             "build_ms": int(round(s * 1000)),
+            "cold_wall_ms": int(round(cold_wall(m) * 1000)) if secs else 0,
             "measured": s > 0,
         })
     edges = [{"from": a, "to": b, "w": w} for (a, b), w in sorted(module_edges.items())]
@@ -131,15 +178,20 @@ def compute_module_graph(all_folders, leaf_edges, migrated_prefixes, decls,
     summary["measured"] = bool(build_times)
     summary["total_build_s"] = round(sum(secs.values()), 1) if secs else 0.0
 
-    # Estimated real (wall-clock) build. The headline `total_build_s` is summed
-    # CPU *work* across every file (each module's `build_ms` is already a sum over
-    # its files, which compile in parallel), so it over-states the wait wildly. The
-    # binding floor is the **resource floor** — that work spread across the build
-    # machine's cores. (A work-weighted critical path can't help: chain-work ≤
-    # total-work always, so chain_work/cores ≤ total_work/cores. A *true*
-    # dependency floor would need per-module wall times, which the summed stats
-    # don't carry; cold-build dependency depth is exposed separately as `crit_len`
-    # cohorts.) Only meaningful with measured times.
-    summary["cores"] = os.cpu_count() or 1
-    summary["est_wall_s"] = round(summary["total_build_s"] / summary["cores"], 1) if secs else 0.0
+    # Estimated real (wall-clock) clean build. The headline `total_build_s` is
+    # summed CPU *work* across every file (each `build_ms` is itself a sum over a
+    # module's files, which compile in parallel), so it over-states the wait. Two
+    # honest floors bound the wall:
+    #   • resource floor — total work ÷ cores (can't use more cores than exist);
+    #   • dependency floor — the deepest cold_wall chain (== the app/root's, since
+    #     it depends on everything), which respects both inter-module ordering and
+    #     each module's own serial floor.
+    # The clean build can't beat either, so the estimate is their max.
+    summary["cores"] = cores
+    if secs:
+        resource_floor = summary["total_build_s"] / cores
+        dep_floor = max((cold_wall(m) for m in modules), default=0.0)
+        summary["est_wall_s"] = round(max(resource_floor, dep_floor), 1)
+    else:
+        summary["est_wall_s"] = 0.0
     return {"nodes": nodes, "edges": edges, "summary": summary}

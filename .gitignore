@@ -3,6 +3,7 @@ index_graph.json
 dependency_graph_index.html
 migration_plan.md
 build_times.json
+build_floors.json
 .swiftstats
 spike_divide.py
 spike_plan.py

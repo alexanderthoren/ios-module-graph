@@ -61,8 +61,9 @@ md         := justfile_directory() / "migration_plan.md"
 # compiler's -stats-output-dir. Build mode uses them as module cost when present,
 # else a type-count proxy. stats_dir holds the raw per-file frontend stats;
 # times_json is the aggregated {module: seconds} map modgraph reads.
-stats_dir  := justfile_directory() / ".swiftstats"
-times_json := justfile_directory() / "build_times.json"
+stats_dir   := justfile_directory() / ".swiftstats"
+times_json  := justfile_directory() / "build_times.json"
+floors_json := justfile_directory() / "build_floors.json"
 
 # Show the three commands.
 _default:
@@ -118,7 +119,7 @@ test:
 # Remove all generated files.
 clean:
     @echo "→ removing generated files"
-    rm -f "{{html}}" "{{md}}" "{{graph_json}}" "{{times_json}}"
+    rm -f "{{html}}" "{{md}}" "{{graph_json}}" "{{times_json}}" "{{floors_json}}"
     rm -rf "{{stats_dir}}"
     rm -rf "{{justfile_directory()}}/__pycache__"
     rm -rf "{{justfile_directory()}}/index_graph/.build"
@@ -227,13 +228,15 @@ _index: _build_reader
     echo "✓ index store populated: $store"
 
     # Aggregate the Swift compiler's per-file frontend stats into real per-module
-    # compile times. The cold build above already wrote them, so this is free;
-    # best-effort, never fatal (Build mode falls back to a type-count proxy).
-    rm -f "{{times_json}}"
-    if python3 -m modgraph.build_times "{{stats_dir}}" "{{times_json}}"; then
-        echo "✓ build times: {{times_json}}"
+    # compile times (+ a serial-floor sidecar = longest single file per module,
+    # for the from-scratch cold-build wall estimate). The cold build above already
+    # wrote them, so this is free; best-effort, never fatal (Build mode falls back
+    # to a type-count proxy).
+    rm -f "{{times_json}}" "{{floors_json}}"
+    if python3 -m modgraph.build_times "{{stats_dir}}" "{{times_json}}" "{{floors_json}}"; then
+        echo "✓ build times: {{times_json}} (+ {{floors_json}})"
     else
-        rm -f "{{times_json}}"
+        rm -f "{{times_json}}" "{{floors_json}}"
         echo "ℹ no compile stats captured — Build mode uses the type-count proxy"
     fi
 

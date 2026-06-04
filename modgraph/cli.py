@@ -11,7 +11,7 @@ from .divide import compute_division_plan
 from .exclusions import compute_blocked_by_excluded, load_exclusions
 from .graph import build_tree, compute_migration_plan
 from .build_recommendations import compute_split_recommendations
-from .build_times import load_build_times
+from .build_times import load_build_floors, load_build_times
 from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
 from .render import render_html
@@ -234,9 +234,13 @@ def main() -> int:
     # Real per-target compile times (xcsift --build-info JSON) become module cost
     # when available; otherwise the type-count proxy is used.
     build_times = load_build_times(args.build_times) if args.build_times else {}
+    # Serial-floor sidecar (longest single file per module) lives next to the
+    # build-times file; powers the from-scratch cold-build wall estimate.
+    build_floors = (load_build_floors(Path(args.build_times).with_name("build_floors.json"))
+                    if args.build_times else {})
     module_graph = compute_module_graph(
         all_source_folders, leaf_edges, migrated_prefixes, decls,
-        root_label=root_label, build_times=build_times,
+        root_label=root_label, build_times=build_times, build_floors=build_floors,
     )
     msum = module_graph["summary"]
     if build_times:

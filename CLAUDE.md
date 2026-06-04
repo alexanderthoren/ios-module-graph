@@ -108,7 +108,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `build_impact.py` | `compute_build_impact` — generic **warm-rebuild blast radius** (transitive reverse-dependents) + **cold-build cohort/critical path** (SCC-condensed, reuses `_tarjan_sccs`) scorer over any node/edge set; consumed by `module_graph` |
 | `module_graph.py` | `module_of`, `compute_module_graph` — collapse the folder graph to real **compile units** (SPM targets + one app target), score via `build_impact`; powers "Build" mode |
 | `build_recommendations.py` | `compute_split_recommendations` — rank modules by the build-time **payoff of separating** them (warm cascade + cold critical-path contribution), link dividable ones to `divisions`; powers Build mode's "Split plan" tab |
-| `build_times.py` | `aggregate_stats_dir`, `load_build_times` (+ CLI) — sum real per-module compile times from the Swift compiler's `-stats-output-dir` output captured during the cold build; feeds Build mode's module cost |
+| `build_times.py` | `aggregate_stats_dir`/`load_build_times` (per-module compile **work** = Σ wall) + `aggregate_floors_dir`/`load_build_floors` (per-module **serial floor** = longest single file) (+ CLI) — read from the Swift compiler's `-stats-output-dir`; feed Build mode's module cost + the from-scratch `cold_wall` |
 | `exclusions.py` | `load_exclusions`, `compute_blocked_by_excluded` |
 | `tasks.py` | `build_task_list`, `write_task_list_markdown`, `write_task_list_json` |
 | `render.py` | `render_html` — inject the JSON payload into `templates/template.html` |
@@ -198,12 +198,29 @@ already runs: it builds with the Swift compiler's `-stats-output-dir` (via
 `OTHER_SWIFT_FLAGS`/`-Xswiftc`), so swift-frontend writes one stats JSON per source
 file (each with `time.swift-frontend.*.wall`, module name in the filename) into
 `.swiftstats/`. After the build, `python3 -m modgraph.build_times <stats-dir>
-build_times.json` sums wall-time per module → `{module: seconds}`.
+build_times.json [build_floors.json]` sums wall-time per module → `{module: seconds}`
+(compile *work*) and, with the optional 3rd arg, also writes a serial-floor sidecar
+`build_floors.json` = `{module: longest_single_file_seconds}`.
 `compute_module_graph` matches SPM targets by label and folds any non-SPM module
 (the app's own sources) into the `app` node, attaching `build_ms`/`measured`. When
 present, module node size, the warm `downstream_cost`, and the split-payoff ranking
 are all in **measured seconds** (UI labels "measured" vs "estimated"). `just clean`
-drops both `build_times.json` and `.swiftstats/`.
+drops `build_times.json`, `build_floors.json`, and `.swiftstats/`.
+
+**Three distinct time numbers (don't conflate them).** `total_build_s` (and each
+node's `build_ms`) is summed CPU **work** — every file's wall added up — which
+parallelizes across cores, so it is *not* wall-clock (e.g. ~2546s of work ≈ 42 min
+reads as alarming but the real build is ~3 min). The UI never shows raw work as
+"build time": the headline `summary["est_wall_s"]` = the estimated **clean-build
+wall** = `max(total_work ÷ cores, longest dependency chain)` — the two honest floors
+(resource vs dependency). Per module, `cold_wall_ms` = the **from-scratch wall to
+build that module *and* its transitive deps** = the time-weighted longest path
+through its depends-on closure, where each module's own wall on the path is
+`max(work ÷ cores, serial_floor)` (within-module parallelism, but never below its
+longest single file). The app node, being the root, carries the whole-graph critical
+path. Without `build_floors.json` it degrades to a cores-only estimate. The sidebar
+shows, per row, `work · share` (work ÷ cores) **and** `→ cold_wall`; tooltips spell
+all three out. `os.cpu_count()` is captured into `summary["cores"]`.
 
 Why not the `.xcactivitylog`? On this project xcodebuild delegates to the build
 service and its log records no per-target compile steps (and the log isn't finalized

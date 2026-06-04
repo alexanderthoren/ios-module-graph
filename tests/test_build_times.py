@@ -58,7 +58,7 @@ class LoadBuildTimes(unittest.TestCase):
         self.assertEqual(load_build_times(p), {})
 
 
-def _graph(build_times):
+def _graph(build_times, build_floors=None):
     folders = {"App/Main", "Pkg/Sources/Core/Impl", "Pkg/Sources/Util"}
     leaf_edges = {
         ("App/Main", "Pkg/Sources/Core/Impl"): 2,
@@ -67,7 +67,7 @@ def _graph(build_times):
     decls = {"App/Main": {"AppDelegate"}, "Pkg/Sources/Core/Impl": {"CoreService"},
              "Pkg/Sources/Util": {"UtilA", "UtilB"}}
     return compute_module_graph(folders, leaf_edges, ["Pkg/Sources"], decls,
-                                build_times=build_times)
+                                build_times=build_times, build_floors=build_floors)
 
 
 class MeasuredCost(unittest.TestCase):
@@ -116,6 +116,64 @@ class MeasuredCost(unittest.TestCase):
         rec = compute_split_recommendations(mg)
         util = next(i for i in rec["items"] if i["id"] == "Pkg/Sources/Util")
         self.assertIn("types", util["downstream_human"])
+
+
+class ColdWall(unittest.TestCase):
+    """From-scratch cold_wall = time-weighted longest path through deps, with each
+    module's own wall floored by its longest single file (serial floor)."""
+
+    def setUp(self):
+        # Chain app(30s) → Core(5s) → Util(2s). Floors chosen high enough that the
+        # serial floor dominates work/cores on any CI machine (cores ≥ 2), so
+        # cold_wall is deterministic regardless of the host's core count.
+        self.mg = _graph({"Core": 5.0, "Util": 2.0, "MyApp": 30.0},
+                         build_floors={"Core": 3.0, "Util": 1.0, "MyApp": 20.0})
+        self.by_id = {n["id"]: n for n in self.mg["nodes"]}
+
+    def test_leaf_cold_wall_is_its_own_floor(self):
+        # Util has no deps → cold_wall = its serial floor (1s).
+        self.assertEqual(self.by_id["Pkg/Sources/Util"]["cold_wall_ms"], 1000)
+
+    def test_cold_wall_accumulates_down_the_chain(self):
+        # Core = floor(3) + Util(1) = 4s; app = floor(20) + Core(4) = 24s.
+        self.assertEqual(self.by_id["Pkg/Sources/Core"]["cold_wall_ms"], 4000)
+        self.assertEqual(self.by_id["app"]["cold_wall_ms"], 24000)
+
+    def test_est_wall_takes_dependency_floor_when_it_dominates(self):
+        # app cold_wall 24s > resource floor 37/cores → est = 24s.
+        self.assertEqual(self.mg["summary"]["est_wall_s"], 24.0)
+
+    def test_cold_wall_zero_without_measured_times(self):
+        self.assertTrue(all(n["cold_wall_ms"] == 0 for n in _graph({})["nodes"]))
+
+
+class AggregateStats(unittest.TestCase):
+    """aggregate_stats_dir sums per-module wall; aggregate_floors_dir takes the max."""
+
+    def _stats(self, files):
+        d = tempfile.mkdtemp()
+        for name, wall in files:
+            (Path(d) / name).write_text(
+                json.dumps({"time.swift-frontend.typecheck.wall": wall}), encoding="utf-8")
+        return d
+
+    def test_sum_and_floor_per_module(self):
+        from modgraph.build_times import aggregate_floors_dir, aggregate_stats_dir
+        d = self._stats([
+            ("stats-1-swift-frontend-Core-A.swift-arm64-o-Onone-1.json", 2.0),
+            ("stats-2-swift-frontend-Core-B.swift-arm64-o-Onone-2.json", 5.0),
+            ("stats-3-swift-frontend-Util-C.swift-arm64-o-Onone-3.json", 1.5),
+        ])
+        self.assertEqual(aggregate_stats_dir(d), {"Core": 7.0, "Util": 1.5})
+        self.assertEqual(aggregate_floors_dir(d), {"Core": 5.0, "Util": 1.5})
+
+    def test_load_build_floors_roundtrip(self):
+        from modgraph.build_times import load_build_floors
+        d = tempfile.mkdtemp()
+        p = Path(d) / "build_floors.json"
+        p.write_text(json.dumps({"Core": 5.0, "Zero": 0.0}), encoding="utf-8")
+        self.assertEqual(load_build_floors(p), {"Core": 5.0})  # 0 dropped
+        self.assertEqual(load_build_floors("/no/such.json"), {})
 
 
 if __name__ == "__main__":

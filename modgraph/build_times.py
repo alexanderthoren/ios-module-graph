@@ -35,12 +35,19 @@ from pathlib import Path
 _STATS_NAME = re.compile(r"^stats-\d+-swift-frontend-(.+?)-")
 
 
-def aggregate_stats_dir(dirpath) -> dict[str, float]:
-    """Sum swift-frontend wall seconds per module from a `-stats-output-dir`."""
+def _aggregate(dirpath) -> dict[str, dict[str, float]]:
+    """One pass over a `-stats-output-dir` → ``{module: {"sum": …, "max": …}}``.
+
+    Each ``stats-*-swift-frontend-<Module>-…json`` is one frontend invocation
+    (≈ one source file). ``sum`` totals a module's wall seconds (CPU *work*,
+    parallel across files); ``max`` is the single longest invocation — the
+    module's irreducible **serial floor** (it can't finish before its slowest
+    file, no matter how many cores).
+    """
     d = Path(dirpath)
     if not d.is_dir():
         return {}
-    agg: dict[str, float] = defaultdict(float)
+    agg: dict[str, dict[str, float]] = defaultdict(lambda: {"sum": 0.0, "max": 0.0})
     for f in d.glob("stats-*-swift-frontend-*.json"):
         m = _STATS_NAME.match(f.name)
         if not m:
@@ -53,8 +60,21 @@ def aggregate_stats_dir(dirpath) -> dict[str, float]:
         wall = sum(v for k, v in data.items()
                    if k.startswith("time.swift-frontend.") and k.endswith(".wall"))
         if wall > 0:
-            agg[m.group(1)] += wall
-    return {k: round(v, 3) for k, v in agg.items()}
+            e = agg[m.group(1)]
+            e["sum"] += wall
+            if wall > e["max"]:
+                e["max"] = wall
+    return agg
+
+
+def aggregate_stats_dir(dirpath) -> dict[str, float]:
+    """Sum swift-frontend wall seconds per module from a `-stats-output-dir`."""
+    return {k: round(v["sum"], 3) for k, v in _aggregate(dirpath).items()}
+
+
+def aggregate_floors_dir(dirpath) -> dict[str, float]:
+    """Per-module serial floor (longest single-file wall) from a `-stats-output-dir`."""
+    return {k: round(v["max"], 3) for k, v in _aggregate(dirpath).items()}
 
 # Legacy xcsift duration strings: "234ms", "12.4s", "1m2.3s", "1h3m" (ms before m/s).
 _DUR = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
@@ -128,17 +148,47 @@ def load_build_times(path) -> dict[str, float]:
     return {}
 
 
+def load_build_floors(path) -> dict[str, float]:
+    """Return ``{module: serial_floor_seconds}`` from a build-floors sidecar.
+
+    The floor = a module's longest single-file compile wall (see ``_aggregate``).
+    Missing/malformed → ``{}`` (callers degrade to a cores-only wall estimate).
+    Only the flat ``{module: seconds}`` shape is produced/read here.
+    """
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    if isinstance(data, dict):
+        return {k: float(v) for k, v in data.items()
+                if isinstance(v, (int, float)) and v > 0}
+    return {}
+
+
 def _main(argv) -> int:
-    """CLI: aggregate a -stats-output-dir into a {module: seconds} JSON file."""
-    if len(argv) != 2:
-        print("usage: python3 -m modgraph.build_times <stats-dir> <out.json>",
+    """CLI: aggregate a -stats-output-dir into a {module: seconds} JSON file.
+
+    With an optional 3rd arg, also writes a ``{module: serial_floor_seconds}``
+    sidecar (longest single-file wall per module) used for the from-scratch
+    cold-build wall estimate.
+    """
+    if len(argv) not in (2, 3):
+        print("usage: python3 -m modgraph.build_times <stats-dir> <out.json> [floors.json]",
               file=sys.stderr)
         return 2
-    stats_dir, out = argv
+    stats_dir, out = argv[0], argv[1]
     times = aggregate_stats_dir(stats_dir)
     if not times:
         return 1  # nothing captured — caller leaves no build_times.json
     Path(out).write_text(json.dumps(times, indent=0, sort_keys=True), encoding="utf-8")
+    if len(argv) == 3:
+        floors = aggregate_floors_dir(stats_dir)
+        Path(argv[2]).write_text(json.dumps(floors, indent=0, sort_keys=True), encoding="utf-8")
     print(f"aggregated {len(times)} module(s), "
           f"{round(sum(times.values()), 1)}s total compile work")
     return 0

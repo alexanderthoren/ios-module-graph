@@ -87,15 +87,36 @@
     .build-blurb { color: var(--text-dim); margin-bottom: 8px; line-height: 1.5; font-size: 12px; }
     .build-legend { height: 12px; border-radius: 6px; margin: 8px 0 2px; }
     .build-legend-labels { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-faint); margin-bottom: 10px; }
-    #buildRank { list-style: none; padding: 0; margin: 6px 0 0; }
-    #buildRank li { cursor: pointer; padding: 4px 6px; border-radius: 6px; display: flex; align-items: center; gap: 8px; }
+    #buildRank { list-style: none; padding: 0; margin: 0; }
+    #buildRank li { cursor: pointer; padding: 4px 6px; border-radius: 6px; display: flex; align-items: center; gap: 8px; background: var(--surface); }
     #buildRank li:hover { background: var(--surface-2); }
     #buildRank .br-bar { height: 8px; border-radius: 4px; flex-shrink: 0; }
     #buildRank .br-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #buildRank .br-val { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 11px; }
-    #buildRank .br-time { font-variant-numeric: tabular-nums; color: var(--text-faint); font-size: 10.5px; flex-shrink: 0; min-width: 44px; text-align: right; }
-    #buildRank .br-time.estimated { font-style: italic; }
+    /* Right-anchored, fixed-width columns so the header aligns with every row
+       regardless of the variable-width bar (the flex:1 name absorbs the slack). */
+    #buildRank .br-val { box-sizing: border-box; width: 38px; flex-shrink: 0; font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 11px; text-align: right; }
+    #buildRank .br-time { box-sizing: border-box; width: 82px; flex-shrink: 0; font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 10.5px; text-align: right; white-space: nowrap; }
+    #buildRank .br-time.estimated { font-style: italic; color: var(--text-faint); }
+    #buildRank .br-share { color: var(--text-faint); margin-left: 1px; }
+    #buildRank .br-cold { box-sizing: border-box; width: 54px; flex-shrink: 0; font-variant-numeric: tabular-nums; color: #60a5fa; font-size: 10.5px; text-align: right; white-space: nowrap; }
     #buildRank .br-crit { color: #f59e0b; font-size: 9px; }
+    /* Sticky column-header row above the scrollable offender list. Opaque bg +
+       high z-index + shadow so rows scroll cleanly underneath (the scroll
+       container is .tab-body). */
+    .br-head { display: flex; align-items: center; gap: 8px;
+               position: sticky; top: -4px; z-index: 6;
+               padding: 8px 6px 6px; margin: 0; background: var(--surface);
+               border-bottom: 1px solid var(--border-strong);
+               box-shadow: 0 2px 3px rgba(0,0,0,.4);
+               font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); }
+    /* Opaque mask extending above the header to hide any row peeking through the
+       scroll container's top padding while pinned. */
+    .br-head::before { content: ''; position: absolute; left: 0; right: 0; bottom: 100%;
+               height: 12px; background: var(--surface); }
+    .br-head .h-name { flex: 1; }
+    .br-head .h-time { box-sizing: border-box; width: 82px; text-align: right; }
+    .br-head .h-cold { box-sizing: border-box; width: 54px; text-align: right; color: #60a5fa; }
+    .br-head .h-val  { box-sizing: border-box; width: 38px; text-align: right; }
     /* Split-plan recommendation rows. */
     #recoList { list-style: none; padding: 0; margin: 8px 0 0; }
     .reco-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r);
@@ -646,6 +667,12 @@
         <div id="buildSummary" class="info"></div>
         <h2 style="margin-top:14px;">Top offenders <span class="pill gray" id="buildRankCount">0</span></h2>
         <input id="buildFilter" type="text" class="hier-filter" value="" placeholder="Filter folders…" autocomplete="off" />
+        <div class="br-head" id="buildRankHead">
+          <span class="h-name">Module</span>
+          <span class="h-time" title="Total compile work · its share of the parallel build (work ÷ cores)">work·share</span>
+          <span class="h-cold" title="From scratch: clean-build wall incl. dependencies">→scratch</span>
+          <span class="h-val" id="buildValHead" title="">Level</span>
+        </div>
         <ul id="buildRank"></ul>
       </div>
 
@@ -772,6 +799,20 @@
           </button>
         </div>
         <div class="ct-canvas" id="ctNet"></div>
+      </div>
+    </div>
+
+    <div id="buildChainOverlay" class="ct-overlay hidden">
+      <div class="ct-modal">
+        <div class="ct-head">
+          <span class="ttl" id="bcTitle"></span>
+          <button class="ct-close" id="bcClose" aria-label="Close build chain" title="Close (Esc)">
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+              <path d="M5 5 L15 15 M15 5 L5 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="ct-canvas" id="bcNet"></div>
       </div>
     </div>
 
@@ -1498,6 +1539,26 @@ function buildRebuildClosure(edgesDS, focusId) {
   }
   return closure;
 }
+// Build mode (cold lens): light up the hovered module's *dependency set* — every
+// module it transitively depends on, which must compile *before* it on a clean
+// build. Forward-BFS over the displayed edges (edge from→to means from depends on
+// to, so we follow from→to).
+function buildDependencyClosure(edgesDS, focusId) {
+  const adj = new Map();
+  edgesDS.get().forEach(e => {
+    if (e.from == null || e.to == null) return;
+    if (e.from === '__ext__' || e.to === '__ext__') return;
+    if (!adj.has(e.from)) adj.set(e.from, []);
+    adj.get(e.from).push(e.to);
+  });
+  const closure = new Set([focusId]);
+  const stack = [focusId];
+  while (stack.length) {
+    const x = stack.pop();
+    (adj.get(x) || []).forEach(b => { if (!closure.has(b)) { closure.add(b); stack.push(b); } });
+  }
+  return closure;
+}
 // Dim color used for nodes/edges outside the hovered module's rebuild set. We
 // fade the node *color* (low-alpha gray) rather than the vis `opacity` property,
 // which the bundled vis build doesn't honor on nodes — so the body fades too,
@@ -1507,7 +1568,12 @@ function applyBuildHoverHighlight(nodesDS, edgesDS, focusId) {
   const origFont = _ensureOrig(_hoverOrigNodeFont, nodesDS, n => n.font);
   const origColor = _ensureOrig(_hoverOrigNodeColor, nodesDS, n => n.color);
   _ensureOrig(_hoverOrigEdgeColor, edgesDS, e => e.color);   // snapshot so clear can restore
-  const closure = buildRebuildClosure(edgesDS, focusId);
+  // Warm lens: the rebuild set (transitive dependents — touch this, they recompile).
+  // Cold lens: the dependency set (what must compile *before* this on a clean build).
+  const cold = (typeof buildView !== 'undefined' && buildView === 'cold');
+  const closure = cold ? buildDependencyClosure(edgesDS, focusId)
+                       : buildRebuildClosure(edgesDS, focusId);
+  const hiEdge = cold ? '#60a5fa' : '#ef4444';
   const defaultTextColor = themeText();
   nodesDS.update(nodesDS.get().map(n => {
     const inSet = closure.has(n.id);
@@ -1524,7 +1590,7 @@ function applyBuildHoverHighlight(nodesDS, edgesDS, focusId) {
   edgesDS.update(edgesDS.get().map(e => {
     const onPath = closure.has(e.from) && closure.has(e.to);
     return { id: e.id, color: onPath
-      ? { color: '#ef4444', opacity: 0.9 }
+      ? { color: hiEdge, opacity: 0.9 }
       : { color: '#c3c8d6', opacity: HOVER_DIM_EDGE_OPACITY } };
   }));
 }
@@ -2292,14 +2358,19 @@ function moduleVisNode(n, cohorts) {
   const col = (buildView === 'warm') ? buildHeatWarm(n.warm_pct) : buildHeatCold(n.level, cohorts);
   const critRing = (buildView === 'cold' && n.crit);
   if (critRing) { col.border = '#f59e0b'; col.highlight.border = '#f59e0b'; col.hover.border = '#f59e0b'; }
+  const cores = (moduleGraph.summary && moduleGraph.summary.cores) || 1;
   const title = n.id
     + '\n' + (n.kind === 'app' ? '📱 xcodeproj app target' : '📦 SPM module')
     + '\n' + n.folders + ' folder(s) · ' + n.types + ' type(s)'
-    + (n.measured ? '\n⏱ build time: ' + (n.build_ms / 1000).toFixed(1) + 's (measured)' : '')
+    + (n.measured ? '\n⏱ compile work: ' + fmtDur(n.build_ms / 1000)
+        + '  ·  ' + fmtDur(n.build_ms / 1000 / cores) + ' share of the ' + cores + '-core build' : '')
+    + (n.measured ? '\n🧱 from scratch (incl deps): ~' + fmtDur(n.cold_wall_ms / 1000) + ' wall' : '')
     + (buildView === 'warm'
         ? '\n🔥 warm blast radius: ' + n.warm + ' module(s) — ' + n.warm_pct + '%  (' + n.fan_in + ' direct dependents)'
         : '\n🧊 cohort level ' + n.level + ' / ' + ((cohorts || 1) - 1) + (n.crit ? '  • on the critical path' : ''))
-    + '\nhover: light up its rebuild set';
+    + (buildView === 'warm'
+        ? '\nhover: light up its rebuild set (dependents)'
+        : '\nhover: light up its dependency set (builds before it)');
   return {
     id: n.id,
     label: n.label,
@@ -2343,7 +2414,153 @@ function renderModuleGraph() {
   network.once('stabilizationIterationsDone', () => { try { network.fit({ animation: false }); } catch (e) {} });
   network.on('hoverNode', p => applyBuildHoverHighlight(moduleNodesDS, moduleEdgesDS, p.node));
   network.on('blurNode', () => clearBuildHoverHighlight(moduleNodesDS, moduleEdgesDS));
+  network.on('click', p => { if (p.nodes && p.nodes.length) showBuildChain(p.nodes[0]); });
 }
+// ── Build chain popup ────────────────────────────────────────────────────────
+// Click a module (graph node or sidebar row) to open a left→right chain of its
+// build relationships in its own vis-network (the underlying graph stays put).
+// Direction follows the active lens:
+//   cold → its transitive *dependency set*: leaves (build first) on the left,
+//          the selected module on the right; the longest weighted chain — the
+//          one that sets this module's from-scratch wall (cold_wall) — is amber.
+//   warm → its transitive *rebuild set*: the selected module on the left, every
+//          module that recompiles when it changes fanning out to the right.
+// Arrows always point in build/propagation order (the reverse of "depends on"),
+// so the hierarchical-LR layout drops the selected node on the right (cold) or
+// the left (warm) without any per-lens layout flag.
+let bcNetwork = null;
+const BUILD_CHAIN_MAX_NODES = 160;
+const BC_SEP = '';
+
+function showBuildChain(moduleId) {
+  if (!moduleGraph || !moduleGraph.nodes || !moduleEdgesDS) return;
+  const nodeById = {};
+  moduleGraph.nodes.forEach(n => { nodeById[n.id] = n; });
+  if (!nodeById[moduleId]) return;
+  const cold = (buildView === 'cold');
+  const measured = !!(moduleGraph.summary && moduleGraph.summary.measured);
+  const cores = (moduleGraph.summary && moduleGraph.summary.cores) || 1;
+
+  // Transitive closure via the same BFS the hover highlight uses.
+  const closure = cold ? buildDependencyClosure(moduleEdgesDS, moduleId)
+                       : buildRebuildClosure(moduleEdgesDS, moduleId);
+  closure.delete('__ext__');
+
+  // Per-module weight = parallel-build share of compile work (measured) or a
+  // type-count proxy (estimated) — sizes nodes and picks the cold critical chain.
+  const wOf = id => { const n = nodeById[id]; if (!n) return 1;
+    return measured ? Math.max(n.build_ms / 1000 / cores, 0.001) : Math.max(n.types || 1, 1); };
+
+  // Cap pathological closures (the app node's cold closure is the whole graph):
+  // keep the selected module + the heaviest nodes.
+  let keep = closure, capped = false;
+  if (closure.size > BUILD_CHAIN_MAX_NODES) {
+    const ranked = Array.from(closure).filter(id => id !== moduleId)
+      .sort((a, b) => wOf(b) - wOf(a)).slice(0, BUILD_CHAIN_MAX_NODES - 1);
+    keep = new Set(ranked); keep.add(moduleId); capped = true;
+  }
+
+  // Depends-on edges inside the kept set (e.from depends on e.to).
+  const depEdges = moduleGraph.edges.filter(e =>
+    keep.has(e.from) && keep.has(e.to) && e.from !== '__ext__' && e.to !== '__ext__');
+
+  // Cold critical chain: longest weighted path *ending at* the selected module
+  // in build order (a node's predecessors are its dependencies).
+  const critNodes = new Set(), critEdges = new Set();
+  if (cold) {
+    const preds = {};
+    depEdges.forEach(e => { (preds[e.from] = preds[e.from] || []).push(e.to); });
+    const best = {}, via = {}, seen = {};
+    const lp = x => {
+      if (seen[x]) return best[x];
+      seen[x] = 1; let b = wOf(x), p = null;
+      (preds[x] || []).forEach(dep => { const c = lp(dep) + wOf(x); if (c > b) { b = c; p = dep; } });
+      best[x] = b; via[x] = p; return b;
+    };
+    lp(moduleId);
+    let cur = moduleId;
+    while (cur != null) { critNodes.add(cur); const p = via[cur];
+      if (p != null) critEdges.add(p + BC_SEP + cur); cur = p; }
+  }
+
+  // vis node list.
+  const sel = nodeById[moduleId];
+  const nodeList = Array.from(keep).map(id => {
+    const n = nodeById[id]; if (!n) return null;
+    const isSel = id === moduleId, onCrit = critNodes.has(id);
+    const pal = isSel ? { bg: '#fef3c7', border: '#f59e0b', fg: '#78350f' }
+      : onCrit ? { bg: '#3b1d0b', border: '#f59e0b', fg: '#fde68a' }
+      : { bg: '#1e2a3a', border: '#60a5fa', fg: '#bfdbfe' };
+    const cost = measured
+      ? fmtDur(n.build_ms / 1000) + ' · ' + fmtDur(n.build_ms / 1000 / cores) + '/' + cores + 'c'
+        + '  → ' + fmtDur(n.cold_wall_ms / 1000) + ' wall'
+      : (n.types || 0) + ' types';
+    return {
+      id, label: (n.kind === 'app' ? '📱 ' : '') + n.label,
+      title: n.id + '\n' + cost + (n.kind === 'app' ? '\n(xcodeproj app target)' : ''),
+      color: { background: pal.bg, border: pal.border },
+      font: { color: pal.fg, size: isSel ? 14 : 11 },
+      shape: n.kind === 'app' ? 'diamond' : 'box',
+      borderWidth: (isSel || onCrit) ? 3 : 1,
+      value: Math.max(1, wOf(id)),
+    };
+  }).filter(Boolean);
+
+  // vis edge list — reversed to build/flow order (leaf→selected cold,
+  // selected→dependent warm); critEdges is keyed dep→x, so the reversed key is x→dep.
+  const edgeList = depEdges.map(e => {
+    const onCrit = critEdges.has(e.to + BC_SEP + e.from);
+    return { from: e.to, to: e.from,
+      color: onCrit ? { color: '#f59e0b', opacity: 0.95 }
+                    : { color: cold ? '#3b6ea5' : '#9a4040', opacity: 0.5 },
+      width: onCrit ? 3 : 1 };
+  });
+
+  // Header.
+  let ttl;
+  if (cold) {
+    const deps = keep.size - 1;
+    ttl = '🧊 Build chain — ' + sel.label
+      + (measured ? '  · ~' + fmtDur(sel.cold_wall_ms / 1000) + ' from scratch' : '')
+      + '  · ' + deps + ' dep' + (deps === 1 ? '' : 's');
+  } else {
+    const fan = keep.size - 1;
+    ttl = '🔥 Rebuild fan-out — ' + sel.label
+      + '  · ' + fan + ' module' + (fan === 1 ? '' : 's') + ' recompile'
+      + (sel.warm_pct != null ? ' (' + sel.warm_pct + '%)' : '');
+  }
+  if (capped) ttl += '  · capped at ' + BUILD_CHAIN_MAX_NODES + ' nodes';
+  document.getElementById('bcTitle').textContent = ttl;
+  document.getElementById('buildChainOverlay').classList.remove('hidden');
+
+  if (bcNetwork) { try { bcNetwork.destroy(); } catch (e) {} bcNetwork = null; }
+  bcNetwork = new vis.Network(document.getElementById('bcNet'),
+    { nodes: new vis.DataSet(nodeList), edges: new vis.DataSet(edgeList) },
+    {
+      layout: { hierarchical: { direction: 'LR', sortMethod: 'directed', nodeSpacing: 70, levelSeparation: 230 } },
+      physics: false,
+      nodes: { scaling: { min: 10, max: 46 } },
+      edges: { arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+               smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 } },
+      interaction: { hover: true, tooltipDelay: 80, navigationButtons: false,
+                     selectConnectedEdges: false, dragView: true, zoomView: true },
+    });
+  bcNetwork.on('click', params => {
+    if (params.nodes && params.nodes.length && params.nodes[0] !== moduleId) showBuildChain(params.nodes[0]);
+  });
+  try { bcNetwork.once('stabilizationIterationsDone', () => bcNetwork.fit({ animation: false })); } catch (e) {}
+}
+function exitBuildChain() {
+  document.getElementById('buildChainOverlay').classList.add('hidden');
+  if (bcNetwork) { try { bcNetwork.destroy(); } catch (e) {} bcNetwork = null; }
+}
+document.getElementById('bcClose').onclick = exitBuildChain;
+document.getElementById('buildChainOverlay').addEventListener('click', (ev) => {
+  if (ev.target.id === 'buildChainOverlay') exitBuildChain();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !document.getElementById('buildChainOverlay').classList.contains('hidden')) exitBuildChain();
+});
 // Toggle warm/cold without re-laying-out: just repaint node colors/titles.
 function recolorModules() {
   if (!moduleNodesDS) return;
@@ -2384,9 +2601,9 @@ function renderBuild() {
     const cores = sum.cores || 1;
     const wall = sum.est_wall_s || 0;
     srcNote = '⏱ node size = <b>measured</b> compile time. '
-      + '<b>~' + fmtDur(wall) + '</b> estimated real build '
-      + '<span style="color:var(--text-faint)" title="Total compiler work ÷ cores. Files compile in parallel, so this is a best-case floor; the actual wait also depends on the ' + (sum.crit_len || 0) + '-cohort-deep dependency chain.">'
-      + '(≈ ' + fmtDur(work) + ' of CPU work ÷ ' + cores + ' cores)</span>';
+      + '<b>~' + fmtDur(wall) + '</b> estimated clean build '
+      + '<span style="color:var(--text-faint)" title="The greater of two floors: total compiler work (' + fmtDur(work) + ') ÷ ' + cores + ' cores, and the longest dependency chain (the app node\'s from-scratch wall). Files compile in parallel, so summed work over-states the wait.">'
+      + '(max of ≈ ' + fmtDur(work) + ' work ÷ ' + cores + ' cores &amp; the dependency chain)</span>';
   } else {
     srcNote = '📐 node size = type count <span style="color:var(--text-faint)">(estimated — run <code>just clean &amp;&amp; just tree</code> for measured times)</span>';
   }
@@ -2408,7 +2625,7 @@ function renderBuild() {
       + '<div>Module cycles: <b>' + (sum.n_cycles || 0) + '</b>'
       + (sum.biggest_scc > 1 ? ' · biggest <b>' + sum.biggest_scc + '</b> modules' : ' (clean DAG)') + '</div>';
   } else {
-    blurb.innerHTML = 'Each node is a <b>build unit</b>. Colored by <b>cold-build cohort</b> (level 0 compiles first; same level = parallelizable). Gold ring = on the <b>critical path</b> — the longest dependency chain, which sets the floor on a clean build. <b>Hover</b> to light up its rebuild set.';
+    blurb.innerHTML = 'Each node is a <b>build unit</b>. Colored by <b>cold-build cohort</b> (level 0 compiles first; same level = parallelizable). Gold ring = on the <b>critical path</b> — the longest dependency chain, which sets the floor on a clean build. <b>Hover</b> to light up its <b>dependency set</b> (everything that must compile before it).';
     legend.style.background = 'linear-gradient(90deg, hsl(220,65%,55%), hsl(140,65%,50%), hsl(60,65%,55%))';
     lo.textContent = 'level 0 (foundational)'; hi.textContent = 'level ' + Math.max(0, (sum.cohorts || 1) - 1) + ' (app/leaf)';
     summ.innerHTML = '<div>Critical path: <b>' + (sum.crit_len || 0) + '</b> cohorts deep</div>'
@@ -2424,6 +2641,14 @@ function renderBuildRank() {
   const ul = document.getElementById('buildRank');
   if (!ul) return;
   const q = (document.getElementById('buildFilter').value || '').toLowerCase();
+  // Header label for the lens-metric column (the right-most value).
+  const valHead = document.getElementById('buildValHead');
+  if (valHead) {
+    valHead.textContent = buildView === 'warm' ? 'Blast' : 'Level';
+    valHead.title = buildView === 'warm'
+      ? 'Warm-rebuild blast radius — % of modules that recompile when you touch this'
+      : 'Cold-build cohort level — how many dependency layers compile before it';
+  }
   let rows = moduleGraph.nodes.slice();
   if (q) rows = rows.filter(n => n.id.toLowerCase().includes(q) || n.label.toLowerCase().includes(q));
   if (buildView === 'warm')
@@ -2443,12 +2668,16 @@ function renderBuildRank() {
     }
     const crit = (buildView === 'cold' && n.crit) ? ' <span class="br-crit" title="on critical path">●</span>' : '';
     const app = n.kind === 'app' ? ' <span title="xcodeproj app target">📱</span>' : '';
-    // Per-module cost as its SHARE of the parallel build (compile work ÷ cores),
-    // so rows sum to the headline est. real build — not raw summed work, which
-    // would dwarf the wall-clock and confuse. Estimated path shows a type proxy.
+    // Per-module cost. `work·share` = total compile work and its share of the
+    // parallel build (work ÷ cores); `→ wall` = from-scratch clean build incl
+    // dependencies (cold_wall). Estimated path shows a type-count proxy.
+    const c = s => fmtDur(s).replace(/ /g, '');   // compact (no space) to fit the column
     const time = n.measured
-      ? '<span class="br-time" title="≈ this module\'s share of the build: ' + fmtDur(n.build_ms / 1000) + ' of compile work ÷ ' + cores + ' cores">' + fmtDur(n.build_ms / 1000 / cores) + '</span>'
-      : '<span class="br-time estimated" title="estimated — type count (run a cold build for measured times)">' + (n.types || 0) + 't</span>';
+      ? '<span class="br-time" title="compile work ' + fmtDur(n.build_ms / 1000)
+          + ' · ' + fmtDur(n.build_ms / 1000 / cores) + ' share of the ' + cores + '-core build">'
+          + c(n.build_ms / 1000) + '<span class="br-share">·' + c(n.build_ms / 1000 / cores) + '</span></span>'
+        + '<span class="br-cold" title="from scratch, incl. dependencies (clean-build wall): ' + fmtDur(n.cold_wall_ms / 1000) + '">→' + c(n.cold_wall_ms / 1000) + '</span>'
+      : '<span class="br-time estimated" title="estimated — type count (run a cold build for measured times)">' + (n.types || 0) + 't</span><span class="br-cold"></span>';
     return '<li data-id="' + escapeHtml(n.id) + '" title="' + escapeHtml(n.id) + '">'
       + '<span class="br-bar" style="width:' + Math.max(4, barPct * 0.6).toFixed(0) + 'px;background:' + col + '"></span>'
       + '<span class="br-name">' + escapeHtml(n.label) + app + crit + '</span>'
@@ -2471,7 +2700,7 @@ document.querySelectorAll('.build-toggle button').forEach(b => {
   const br = document.getElementById('buildRank');
   if (br) br.addEventListener('click', (ev) => {
     const li = ev.target.closest('li[data-id]');
-    if (li) focusModule(li.getAttribute('data-id'));
+    if (li) showBuildChain(li.getAttribute('data-id'));
   });
 })();
 
