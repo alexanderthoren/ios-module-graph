@@ -117,7 +117,17 @@ class ParseArgsTest(unittest.TestCase):
 class MainTest(unittest.TestCase):
     """main reads sys.argv; outputs are always forced into a temp dir."""
 
+    def setUp(self):
+        # main() auto-appends a build-cost snapshot to --history (default lands in
+        # the repo root). Redirect it into a per-test temp file so the suite never
+        # writes under the repo, per the project's test rules.
+        self._hist_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._hist_dir.cleanup)
+        self._history = str(Path(self._hist_dir.name) / "build_history.jsonl")
+
     def _run(self, argv):
+        if "--history" not in argv:
+            argv = [*argv, "--history", self._history]
         with mock.patch.object(cli.sys, "argv", ["modgraph", *argv]):
             return cli.main()
 

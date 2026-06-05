@@ -341,12 +341,15 @@
       border-color: var(--accent-strong); box-shadow: var(--shadow-sm); }
 
     /* ── segmented tabs ────────────────────────────────────────────────────── */
-    .tabs { display: flex; gap: 3px; padding: 8px; background: var(--surface-2); margin: 12px; border-radius: var(--r); }
+    .tabs { display: flex; gap: 6px; padding: 8px 12px 0; margin: 4px 0 0; }
     .tab[data-hidden="1"] { display: none; }
-    .tab { flex: 1; text-align: center; padding: 8px 10px; font-size: 12.5px; font-weight: 600; cursor: pointer;
-      border-radius: var(--r-sm); color: var(--text-dim); transition: all .15s ease; user-select: none; }
-    .tab:hover { color: var(--text); }
-    .tab.active { background: var(--surface); color: var(--accent-strong); box-shadow: var(--shadow-sm); }
+    .tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+      line-height: 1; padding: 8px 10px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+      border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2);
+      color: var(--text-dim); transition: all .15s ease; user-select: none; }
+    .tab:hover { color: var(--text); border-color: var(--border-strong); }
+    .tab.active { background: var(--surface); color: var(--accent-strong);
+      border-color: var(--accent-strong); box-shadow: var(--shadow-sm); }
     .tab-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 14px 18px; }
     .panel { display: none; animation: fade .2s ease; }
     .panel.active { display: block; }
@@ -602,6 +605,44 @@
       :root[data-theme="auto"] .card.start { background-color: var(--surface); }
       :root[data-theme="auto"] #net { background-image: radial-gradient(circle at 1px 1px, #232838 1px, transparent 0); }
     }
+    /* Build mode → Improvements tab */
+    .imp-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .imp-card { border: 1px solid var(--border); border-radius: var(--r); padding: 8px 10px; background: var(--surface); }
+    .imp-card-lbl { font-size: 11px; color: var(--text-faint); }
+    .imp-card-val { font-size: 20px; font-weight: 700; line-height: 1.2; }
+    .imp-card-d { font-size: 12px; }
+    .imp-charts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 12px; }
+    .imp-chart { border: 1px solid var(--border); border-radius: var(--r); padding: 6px 8px 2px; background: var(--surface); }
+    .imp-chart-top { display: flex; justify-content: space-between; align-items: baseline; }
+    .imp-chart-lbl { font-size: 11px; color: var(--text-dim); }
+    .imp-chart-cur { font-size: 13px; font-weight: 700; }
+    .imp-chart svg { width: 100%; height: auto; display: block; }
+    .imp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .imp-table th { text-align: left; color: var(--text-faint); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
+    .imp-table td { padding: 5px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .imp-sha { font-family: ui-monospace, monospace; font-size: 11px; }
+    .imp-subj { color: var(--text-dim); font-size: 11px; }
+    .imp-when { color: var(--text-faint); font-size: 10px; }
+    /* Improvements canvas overlay (replaces the graph in this tab) */
+    #improveCanvas { position: absolute; inset: 0; z-index: 6; overflow: auto;
+      background: var(--bg); padding: 18px 20px 28px; }
+    .ic-title { font-size: 15px; font-weight: 800; margin: 0 0 2px; }
+    .ic-sub { font-size: 12px; color: var(--text-dim); margin: 0 0 14px; }
+    .ic-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .ic-card { border: 1px solid var(--border); border-radius: var(--r); background: var(--surface);
+      padding: 12px 14px 6px; min-width: 0; }
+    .ic-card.wide { grid-column: 1 / -1; }
+    .ic-card-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+    .ic-card-t { font-size: 13px; font-weight: 700; }
+    .ic-card-now { font-size: 12px; color: var(--text-dim); }
+    .ic-card-d { font-size: 12px; font-weight: 700; }
+    .ic-note { font-size: 11px; color: var(--text-faint); margin: 2px 0 0; }
+    .ic-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 2px; }
+    .ic-legend span.k { font-size: 11px; color: var(--text-dim); display: inline-flex; align-items: center; gap: 5px; }
+    .ic-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    .ic-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+    .ic-empty { border: 1px dashed var(--border); border-radius: var(--r); padding: 40px;
+      text-align: center; color: var(--text-dim); }
   </style>
 </head>
 <body>
@@ -626,6 +667,7 @@
       <div class="tab" data-tab="plan" data-mode="migration">🎯 Plan</div>
       <div class="tab" data-tab="build" data-mode="build">🏗️ Build impact</div>
       <div class="tab" data-tab="recommend" data-mode="build">🪓 Split plan</div>
+      <div class="tab" data-tab="improve" data-mode="build">📈 Improvements</div>
       <div class="tab active" data-tab="explore" data-mode="both">🌳 Hierarchy</div>
     </div>
 
@@ -686,6 +728,20 @@
         <div id="recoSummary" class="info"></div>
         <input id="recoFilter" type="text" class="hier-filter" value="" placeholder="Filter modules…" autocomplete="off" />
         <ul id="recoList"></ul>
+      </div>
+
+      <!-- BUILD IMPROVEMENTS TAB -->
+      <div class="panel" id="panel-improve">
+        <div class="small">Build cost over time. One point per real change (deduped),
+          keyed to the target project's <b>git commit</b> — the log survives
+          <code>just clean</code>. Run <b>clean + tree</b> after each extraction to add a point.
+          <b>Structural</b> metrics (cycles, coupling, modules) are deterministic — trust them.
+          <b>Wall-clock</b> is measured, so noisy — read it as a direction, not proof.</div>
+        <div class="small" style="color:var(--text-faint);margin:-2px 0 8px;">📈 Trend charts fill the main canvas →</div>
+        <div id="impHeadline" class="imp-headline"></div>
+        <h2 style="margin-top:14px;">Per-commit deltas <span class="pill gray" id="impCount">0</span></h2>
+        <div class="small" style="color:var(--text-faint);margin:-2px 0 6px;">Each row vs the one before it. Green = improved.</div>
+        <div id="impTableWrap"></div>
       </div>
 
       <!-- MIGRATION WIZARD TAB -->
@@ -786,6 +842,8 @@
       </div>
     </div>
     <div id="net"></div>
+    <!-- Build mode → Improvements: takes over the canvas with evolution charts. -->
+    <div id="improveCanvas" style="display:none;"></div>
     <div id="nodePopover" class="node-popover" style="display:none;"></div>
     <div id="tvPopover" class="tv-popover hidden"></div>
     <div id="callTreeOverlay" class="ct-overlay hidden">
@@ -1016,6 +1074,9 @@ let buildView = 'warm';   // 'warm' (blast radius) | 'cold' (critical path)
 let moduleNodesDS = null, moduleEdgesDS = null;
 // Modules ranked by split payoff (Build mode → Split plan tab). {items:[…], summary:{…}}.
 const recommendations = DATA.recommendations || { items: [], summary: {} };
+// Build-cost snapshots over time (oldest→newest), one per real change, keyed to
+// the target project's git commit. Powers Build mode → Improvements tab.
+const history = DATA.history || [];
 
 // ── Reverse-lookup indexes for the call-tree view ─────────────────────────
 //   fileEdgesByDst[absRelPath]   → [{src, w, symbols}, …]  (file-level callers)
@@ -1381,6 +1442,9 @@ document.querySelectorAll('.tab').forEach(t => {
 let currentMode = 'explore';
 function applyMode(mode) {
   currentMode = mode;
+  // Leaving the Improvements tab (e.g. switching modes) must drop its canvas
+  // overlay; switchTab('improve') re-shows it when that tab is reactivated.
+  if (typeof toggleImproveCanvas === 'function') toggleImproveCanvas(false);
   document.querySelectorAll('.mode').forEach(m =>
     m.classList.toggle('active', m.dataset.mode === mode));
   let firstVisible = null;
@@ -2321,6 +2385,9 @@ function switchTab(name) {
   document.querySelectorAll('.panel').forEach(x => x.classList.toggle('active', x.id === 'panel-' + name));
   const sb = document.getElementById('navSettings');
   if (sb) sb.classList.toggle('active', name === 'settings');
+  // The Improvements tab takes over the graph canvas with evolution charts;
+  // every other tab hides that overlay and shows the network again.
+  toggleImproveCanvas(name === 'improve');
   // Render the activated tab's content. The plan/wizard panels are data-driven
   // (persisted wizPlan / runway / target), so revealing the panel isn't enough —
   // it must be re-rendered or a fresh load shows stale/empty content.
@@ -2328,6 +2395,7 @@ function switchTab(name) {
   else if (name === 'wizard') renderWizard();
   else if (name === 'build') renderBuild();
   else if (name === 'recommend') renderRecommend();
+  else if (name === 'improve') renderImprovements();
 }
 
 // ── Build mode: module-level build graph (real compile units) ────────────────
@@ -2752,6 +2820,237 @@ function renderRecommend() {
   const rf = document.getElementById('recoFilter');
   if (rf) rf.oninput = () => renderRecommend();
 })();
+
+// ── Build mode → Improvements: build-cost history over time ──────────────────
+// All client-side off the precomputed `history` payload. Structural metrics are
+// deterministic (trust them); wall-clock is measured, so flagged "~" (noisy).
+// "goodDown" = a smaller number is an improvement; green/red follow that.
+const IMP_METRICS = [
+  { key:'wall.est_wall_s',     label:'Est. clean-build wall', fmt:'sec', goodDown:true,  noisy:true },
+  { key:'wall.total_build_s',  label:'Total compile work',    fmt:'sec', goodDown:true,  noisy:true },
+  { key:'structural.cycles',   label:'Module cycles',         fmt:'int', goodDown:true },
+  { key:'structural.crit_len', label:'Critical-path depth',   fmt:'int', goodDown:true },
+  { key:'structural.warm_max', label:'Worst blast radius',    fmt:'int', goodDown:true },
+  { key:'structural.warm_total',label:'Total coupling',       fmt:'int', goodDown:true },
+  { key:'structural.modules',  label:'Modules',               fmt:'int', goodDown:false },
+  { key:'plan.steps',          label:'Migration steps left',  fmt:'int', goodDown:true },
+];
+function impGet(snap, key) {
+  return key.split('.').reduce((o, k) => (o == null ? undefined : o[k]), snap);
+}
+function impFmt(v, fmt) {
+  if (typeof v !== 'number') return '—';
+  return fmt === 'sec' ? fmtDur(v) : String(v);
+}
+function impDelta(cur, prev, goodDown, fmt) {
+  if (typeof cur !== 'number' || typeof prev !== 'number') return '';
+  const d = cur - prev;
+  if (d === 0) return '<span style="color:var(--text-faint)">±0</span>';
+  const improved = goodDown ? d < 0 : d > 0;
+  const col = improved ? '#16a34a' : '#dc2626';
+  const mag = fmt === 'sec' ? fmtDur(Math.abs(d)) : String(Math.abs(d));
+  return '<span style="color:' + col + '">' + (d < 0 ? '▼' : '▲') + ' ' + mag + '</span>';
+}
+function renderImprovements() {
+  const head = document.getElementById('impHeadline');
+  const tw = document.getElementById('impTableWrap');
+  const cnt = document.getElementById('impCount');
+  if (!head) return;
+  cnt.textContent = history.length;
+  if (history.length === 0) {
+    head.innerHTML = '<div class="info">No history yet. Run <code>just clean &amp;&amp; just tree</code> after an extraction to record the first point.</div>';
+    tw.innerHTML = '';
+    return;
+  }
+  const first = history[0], last = history[history.length - 1];
+  const measured = !!(last.wall && last.wall.measured);
+  const hCards = [
+    { label: 'Est. build wall', key: 'wall.est_wall_s', fmt: 'sec', goodDown: true, note: measured ? 'measured' : 'no build times' },
+    { label: 'Module cycles', key: 'structural.cycles', fmt: 'int', goodDown: true },
+    { label: 'Worst blast radius', key: 'structural.warm_max', fmt: 'int', goodDown: true },
+    { label: 'Modules', key: 'structural.modules', fmt: 'int', goodDown: false },
+  ].map(c => {
+    const cur = impGet(last, c.key), base = impGet(first, c.key);
+    const delta = history.length >= 2
+      ? impDelta(cur, base, c.goodDown, c.fmt)
+      : '<span class="small" style="color:var(--text-faint)">first point</span>';
+    return '<div class="imp-card"><div class="imp-card-lbl">' + c.label + '</div>'
+      + '<div class="imp-card-val">' + impFmt(cur, c.fmt) + '</div>'
+      + '<div class="imp-card-d">' + delta
+      + (c.note ? ' <span class="small" style="color:var(--text-faint)">· ' + c.note + '</span>' : '')
+      + '</div></div>';
+  }).join('');
+  head.innerHTML = '<div class="small" style="margin-bottom:6px;color:var(--text-dim)">Since first snapshot ('
+    + history.length + ' point' + (history.length === 1 ? '' : 's') + ') — '
+    + escapeHtml(first.sha_short || '?') + ' → ' + escapeHtml(last.sha_short || '?')
+    + '</div><div class="imp-cards">' + hCards + '</div>';
+  const rows = history.slice().reverse();   // newest first
+  const cols = [
+    { label: 'Wall', key: 'wall.est_wall_s', fmt: 'sec', goodDown: true },
+    { label: 'Work', key: 'wall.total_build_s', fmt: 'sec', goodDown: true },
+    { label: 'Modules', key: 'structural.modules', fmt: 'int', goodDown: false },
+    { label: 'Cycles', key: 'structural.cycles', fmt: 'int', goodDown: true },
+    { label: 'Blast', key: 'structural.warm_max', fmt: 'int', goodDown: true },
+    { label: 'Coupling', key: 'structural.warm_total', fmt: 'int', goodDown: true },
+  ];
+  const thead = '<tr><th>Commit</th>' + cols.map(c => '<th>' + c.label + '</th>').join('') + '</tr>';
+  const body = rows.map((s, ri) => {
+    const prev = rows[ri + 1];   // the older snapshot
+    const sha = (s.sha_short || '—') + (s.dirty ? '*' : '');
+    const subj = s.subject ? escapeHtml(s.subject.length > 42 ? s.subject.slice(0, 42) + '…' : s.subject) : '';
+    const when = s.captured_at ? escapeHtml(s.captured_at.slice(0, 10)) : '';
+    const c0 = '<td><div class="imp-sha">' + escapeHtml(sha) + '</div>'
+      + '<div class="imp-subj" title="' + escapeHtml(s.subject || '') + '">' + subj + '</div>'
+      + '<div class="imp-when">' + when + '</div></td>';
+    const cells = cols.map(c => {
+      const cur = impGet(s, c.key);
+      const d = prev ? impDelta(cur, impGet(prev, c.key), c.goodDown, c.fmt) : '';
+      return '<td><div>' + impFmt(cur, c.fmt) + '</div><div class="small">' + d + '</div></td>';
+    }).join('');
+    return '<tr>' + c0 + cells + '</tr>';
+  }).join('');
+  tw.innerHTML = '<table class="imp-table">' + thead + body + '</table>';
+}
+
+// ── Improvements canvas: full-size evolution charts (replace the graph) ───────
+// Dependency-free inline SVG. `impAxisChart` draws a multi-series line chart;
+// `normalize` scales each series to its own 0..1 (for mixed-unit structural
+// metrics — read the shape, not the height). Per-point <title> = native tooltip.
+const IC_PALETTE = {
+  wall: '#6366f1', work: '#94a3b8', cycles: '#ef4444', blast: '#f59e0b',
+  coupling: '#f97316', crit: '#8b5cf6', modules: '#22c55e', steps: '#0ea5e9',
+};
+function impAxisChart(series, xlabels, opts) {
+  opts = opts || {};
+  const W = Math.max(320, Math.round(opts.width || 600));
+  const H = opts.height || 230;
+  const mL = opts.normalize ? 14 : 54, mR = 16, mT = 12, mB = 30;
+  const iw = W - mL - mR, ih = H - mT - mB;
+  const n = xlabels.length;
+  let lo, hi;
+  if (opts.normalize) { lo = 0; hi = 1; }
+  else {
+    lo = Infinity; hi = -Infinity;
+    series.forEach(s => s.values.forEach(v => {
+      if (typeof v === 'number') { if (v < lo) lo = v; if (v > hi) hi = v; }
+    }));
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (hi === lo) { hi = lo + 1; lo = Math.max(0, lo - 1); }
+    else { const pad = (hi - lo) * 0.08; hi += pad; lo = Math.max(0, lo - pad); }
+  }
+  const xAt = i => mL + (n <= 1 ? iw / 2 : i * iw / (n - 1));
+  const yAt = val => mT + ih - ((val - lo) / (hi - lo)) * ih;
+  const norm = (s, v) => {
+    if (typeof v !== 'number') return null;
+    if (!opts.normalize) return v;
+    const nums = s.values.filter(z => typeof z === 'number');
+    const smin = Math.min(...nums), smax = Math.max(...nums);
+    return smax === smin ? 0.5 : (v - smin) / (smax - smin);
+  };
+  let svg = '';
+  const ticks = 4;
+  for (let t = 0; t <= ticks; t++) {
+    const gy = mT + ih - (t / ticks) * ih;
+    svg += '<line x1="' + mL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - mR) + '" y2="' + gy.toFixed(1)
+      + '" stroke="var(--border)" stroke-width="1" opacity="0.5"/>';
+    if (!opts.normalize) {
+      const val = lo + (t / ticks) * (hi - lo);
+      svg += '<text x="' + (mL - 6) + '" y="' + (gy + 3).toFixed(1) + '" text-anchor="end" font-size="9" '
+        + 'fill="var(--text-faint)">' + (opts.yfmt ? opts.yfmt(val) : Math.round(val)) + '</text>';
+    }
+  }
+  const step = Math.max(1, Math.ceil(n / 8));
+  for (let i = 0; i < n; i++) {
+    if (i % step !== 0 && i !== n - 1) continue;
+    svg += '<text x="' + xAt(i).toFixed(1) + '" y="' + (H - 10) + '" text-anchor="middle" font-size="9" '
+      + 'fill="var(--text-faint)">' + escapeHtml(xlabels[i] || '') + '</text>';
+  }
+  series.forEach(s => {
+    const pts = s.values.map((v, i) => {
+      const nv = norm(s, v); return nv == null ? null : (xAt(i).toFixed(1) + ',' + yAt(nv).toFixed(1));
+    }).filter(Boolean);
+    if (pts.length > 1) {
+      svg += '<polyline fill="none" stroke="' + s.color + '" stroke-width="2" stroke-linejoin="round" '
+        + 'points="' + pts.join(' ') + '"/>';
+    }
+    s.values.forEach((v, i) => {
+      const nv = norm(s, v); if (nv == null) return;
+      const title = s.label + ': ' + impFmt(v, s.fmt || 'int') + '  @' + (xlabels[i] || '');
+      svg += '<circle cx="' + xAt(i).toFixed(1) + '" cy="' + yAt(nv).toFixed(1) + '" r="'
+        + (pts.length === 1 ? 4 : 3) + '" fill="' + s.color + '"><title>' + escapeHtml(title) + '</title></circle>';
+    });
+  });
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H
+    + '" preserveAspectRatio="xMidYMid meet">' + svg + '</svg>';
+}
+function renderImproveCharts() {
+  const c = document.getElementById('improveCanvas');
+  if (!c) return;
+  if (history.length === 0) {
+    c.innerHTML = '<p class="ic-title">📈 Improvements</p><div class="ic-empty">No history yet.<br>'
+      + 'Run <code>just clean &amp;&amp; just tree</code> after extracting a module to record the first data point.</div>';
+    return;
+  }
+  const W = Math.max(360, (c.clientWidth || 760) - 40);
+  const half = Math.max(320, Math.floor((W - 14) / 2));
+  const x = history.map(s => (s.sha_short || '·') + (s.dirty ? '*' : ''));
+  const first = history[0], last = history[history.length - 1];
+  const single = history.length < 2;
+  const measured = !!(last.wall && last.wall.measured);
+  const sv = (key, color, fmt) => ({ label: '', color, fmt, values: history.map(s => impGet(s, key)) });
+  const wallSeries = [
+    Object.assign(sv('wall.est_wall_s', IC_PALETTE.wall, 'sec'), { label: 'Est. clean-build wall' }),
+    Object.assign(sv('wall.total_build_s', IC_PALETTE.work, 'sec'), { label: 'Total compile work' }),
+  ];
+  const structSeries = [
+    Object.assign(sv('structural.cycles', IC_PALETTE.cycles, 'int'), { label: 'Module cycles' }),
+    Object.assign(sv('structural.warm_max', IC_PALETTE.blast, 'int'), { label: 'Worst blast radius' }),
+    Object.assign(sv('structural.warm_total', IC_PALETTE.coupling, 'int'), { label: 'Total coupling' }),
+    Object.assign(sv('structural.crit_len', IC_PALETTE.crit, 'int'), { label: 'Critical-path depth' }),
+  ];
+  const progSeries = [
+    Object.assign(sv('structural.modules', IC_PALETTE.modules, 'int'), { label: 'Modules' }),
+    Object.assign(sv('plan.steps', IC_PALETTE.steps, 'int'), { label: 'Migration steps left' }),
+  ];
+  const legend = series => '<div class="ic-legend">' + series.map(s =>
+    '<span class="k"><i style="background:' + s.color + '"></i>' + escapeHtml(s.label)
+    + ' · <b>' + impFmt(s.values[s.values.length - 1], s.fmt) + '</b></span>').join('') + '</div>';
+  const deltaTag = (key, goodDown, fmt) => single ? ''
+    : '<span class="ic-card-d">since first: ' + impDelta(impGet(last, key), impGet(first, key), goodDown, fmt) + '</span>';
+  c.innerHTML =
+    '<p class="ic-title">📈 Build-cost evolution</p>'
+    + '<p class="ic-sub">' + history.length + ' snapshot' + (single ? '' : 's') + ' · '
+    + escapeHtml(first.sha_short || '?') + ' → ' + escapeHtml(last.sha_short || '?')
+    + ' · structural lines are exact; <b>~ wall</b> is measured, so noisy</p>'
+    + (single ? '<p class="ic-note">Only one snapshot so far — the lines fill in as you record more (extract → <code>clean</code> → <code>tree</code>).</p>' : '')
+    + '<div class="ic-grid">'
+    + '<div class="ic-card wide"><div class="ic-card-h"><span class="ic-card-t">🏗️ Build time'
+    + (measured ? '' : ' <span class="ic-note">(no build_times.json — showing 0; run a cold build for real seconds)</span>')
+    + '</span>' + deltaTag('wall.est_wall_s', true, 'sec') + '</div>'
+    + legend(wallSeries) + '<div class="ic-chart">'
+    + impAxisChart(wallSeries, x, { width: W, height: 240, yfmt: fmtDur }) + '</div></div>'
+    + '<div class="ic-card"><div class="ic-card-h"><span class="ic-card-t">🔗 Coupling &amp; cycles</span></div>'
+    + '<p class="ic-note">Each line scaled to its own range — read the <b>shape</b> (down = better), not the height.</p>'
+    + legend(structSeries) + '<div class="ic-chart">'
+    + impAxisChart(structSeries, x, { width: half, height: 220, normalize: true }) + '</div></div>'
+    + '<div class="ic-card"><div class="ic-card-h"><span class="ic-card-t">📦 Modularization progress</span></div>'
+    + '<p class="ic-note">Modules climbing + steps-left falling = extraction is working.</p>'
+    + legend(progSeries) + '<div class="ic-chart">'
+    + impAxisChart(progSeries, x, { width: half, height: 220 }) + '</div></div>'
+    + '</div>';
+}
+function toggleImproveCanvas(on) {
+  const c = document.getElementById('improveCanvas');
+  const lg = document.getElementById('legendDock');
+  if (!c) return;
+  c.style.display = on ? 'block' : 'none';
+  if (lg) lg.style.display = on ? 'none' : '';   // graph legend is irrelevant here
+  if (on) renderImproveCharts();
+}
+window.addEventListener('resize', () => {
+  const c = document.getElementById('improveCanvas');
+  if (c && c.style.display !== 'none') renderImproveCharts();
+});
 
 function focusToFolder(folder) {
   // Climb to nearest ancestor that has children, focus there, then highlight.

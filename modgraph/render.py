@@ -17,7 +17,8 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 migrated_prefixes, out_path, type_kinds=None,
                 initial_excluded=None, excluded_file=None,
                 folder_package=None, packages=None, file_edges=None, type_edges=None,
-                divisions=None, module_graph=None, recommendations=None):
+                divisions=None, module_graph=None, recommendations=None,
+                history=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -51,6 +52,10 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         # Modules ranked by the build-time payoff of separating them (Build mode's
         # Recommendations tab). {"items": [...], "summary": {...}}.
         "recommendations": recommendations or {"items": [], "summary": {}},
+        # Build-cost snapshots over time (oldest→newest), one per real change,
+        # keyed to the target project's git commit — powers Build mode's
+        # "Improvements" tab. See modgraph/history.py for the row shape.
+        "history": history or [],
     }
     html = _load_template().replace("__PAYLOAD__", json.dumps(payload)).replace(
         "__ROOT_LABEL__", root_label

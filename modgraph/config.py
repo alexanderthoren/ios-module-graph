@@ -14,6 +14,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = REPO_ROOT / "dependency_graph.html"
 DEFAULT_EXCLUDED = REPO_ROOT / ".modularization_excluded.json"
+# Append-only build-cost history (one row per real change, keyed to the target
+# project's git commit). Deliberately NOT wiped by `just clean` — it tracks
+# improvement across extractions. Powers Build mode's "Improvements" tab.
+DEFAULT_HISTORY = REPO_ROOT / "build_history.jsonl"
 
 # Generic skip-list: applies to ANY project. Names matched against directory
 # basename. Patterns matched against the relative-path-from-root via fnmatch.

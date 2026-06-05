@@ -116,6 +116,10 @@ test:
 # Python outputs (HTML/markdown/__pycache__) + swift reader output and build
 # artifacts. Leaves the target project's own build untouched.
 #
+# NOTE: build_history.jsonl is intentionally NOT removed — it's the build-cost
+# history across extractions (Build mode → Improvements), the whole point of which
+# is to survive clean. Delete it by hand to reset the trend.
+#
 # Remove all generated files.
 clean:
     @echo "→ removing generated files"

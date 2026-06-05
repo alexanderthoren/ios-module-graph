@@ -108,6 +108,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `build_impact.py` | `compute_build_impact` — generic **warm-rebuild blast radius** (transitive reverse-dependents) + **cold-build cohort/critical path** (SCC-condensed, reuses `_tarjan_sccs`) scorer over any node/edge set; consumed by `module_graph` |
 | `module_graph.py` | `module_of`, `compute_module_graph` — collapse the folder graph to real **compile units** (SPM targets + one app target), score via `build_impact`; powers "Build" mode |
 | `build_recommendations.py` | `compute_split_recommendations` — rank modules by the build-time **payoff of separating** them (warm cascade + cold critical-path contribution), link dividable ones to `divisions`; powers Build mode's "Split plan" tab |
+| `history.py` | `build_snapshot`/`append_snapshot`/`load_history` — append-only build-cost history (one row per real change, keyed to the **target project's** git commit, deduped) so successive extractions can be compared; survives `just clean`; powers Build mode's "Improvements" tab |
 | `build_times.py` | `aggregate_stats_dir`/`load_build_times` (per-module compile **work** = Σ wall) + `aggregate_floors_dir`/`load_build_floors` (per-module **serial floor** = longest single file) (+ CLI) — read from the Swift compiler's `-stats-output-dir`; feed Build mode's module cost + the from-scratch `cold_wall` |
 | `exclusions.py` | `load_exclusions`, `compute_blocked_by_excluded` |
 | `tasks.py` | `build_task_list`, `write_task_list_markdown`, `write_task_list_json` |
@@ -192,6 +193,26 @@ API"; the app target gets "Extract features into SPM" (pointing at Migration mod
 since it's one compile unit topping the critical path). Hovering a row highlights
 that module's rebuild set on the live graph (`buildHoverModule`).
 
+Build mode has a third tab, **Improvements** (`payload["history"]`, from
+`history.py`): build cost **over time**, to verify each extraction actually paid off.
+On every render, `cli.main` auto-appends ONE snapshot — keyed to the *target
+project's* git commit (sha + dirty flag + subject) — to `build_history.jsonl`
+(`--history`, default repo root). It is **deduped** on a fingerprint of the
+metrics-that-matter, so re-running `just tree` on an unchanged commit is a no-op;
+you get one row per real change. The file **deliberately survives `just clean`** —
+that's the whole point (track improvement *across* extractions). Each row carries
+two metric classes, and the UI treats them differently: **structural**
+(modules/edges/cycles, `warm_max`/`warm_total` coupling, `crit_len`) is
+deterministic — the honest improvement signal — while **wall** (`est_wall_s`,
+`total_build_s`) is measured, hence noisy (flagged `~`, "direction not proof").
+The tab renders headline before/after cards, per-metric inline-SVG sparklines, and
+a per-commit delta table (green = improved per each metric's good-direction), all
+client-side off the payload — no recompute in the browser. The intended loop:
+extract a module → `just clean && just tree` → check the Improvements tab.
+**Gotcha:** because the snapshot writes on every `main()`, the cli `MainTest`
+redirects `--history` into a temp file (see `tests/test_cli.py:setUp`) so the suite
+never writes to the repo root — keep that when adding `main()` tests.
+
 **Real compile times (optional).** Module *cost* defaults to a type-count proxy, but
 `just _index` captures real per-module compile times for free off the cold build it
 already runs: it builds with the Swift compiler's `-stats-output-dir` (via
@@ -205,7 +226,8 @@ build_times.json [build_floors.json]` sums wall-time per module → `{module: se
 (the app's own sources) into the `app` node, attaching `build_ms`/`measured`. When
 present, module node size, the warm `downstream_cost`, and the split-payoff ranking
 are all in **measured seconds** (UI labels "measured" vs "estimated"). `just clean`
-drops `build_times.json`, `build_floors.json`, and `.swiftstats/`.
+drops `build_times.json`, `build_floors.json`, and `.swiftstats/` (but **not**
+`build_history.jsonl` — that survives clean by design; see the Improvements tab).
 
 **Three distinct time numbers (don't conflate them).** `total_build_s` (and each
 node's `build_ms`) is summed CPU **work** — every file's wall added up — which
@@ -288,4 +310,5 @@ exist — do not "simplify" stage 1 back into pure text scanning.
 is also a `just` CLI var; CLI overrides `.env` overrides built-in defaults.
 
 Generated artifacts (`index_graph.json`, `dependency_graph.html`,
-`migration_plan.md`, `.build/`, `__pycache__`) are gitignored.
+`migration_plan.md`, `build_history.jsonl`, `.build/`, `__pycache__`) are
+gitignored.

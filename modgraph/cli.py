@@ -5,8 +5,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_EXCLUDED, DEFAULT_OUT, REPO_ROOT
+from .config import DEFAULT_EXCLUDED, DEFAULT_HISTORY, DEFAULT_OUT, REPO_ROOT
 from .cycles import compute_cycle_breakers, compute_extraction_targets
+from .history import append_snapshot, load_history
 from .divide import compute_division_plan
 from .exclusions import compute_blocked_by_excluded, load_exclusions
 from .graph import build_tree, compute_migration_plan
@@ -71,6 +72,12 @@ def parse_args() -> argparse.Namespace:
                         "compile times from the cold build. When present, Build mode "
                         "uses measured seconds as module cost instead of the type-count "
                         "proxy. Missing/malformed file is ignored (falls back to proxy).")
+    p.add_argument("--history", type=Path, default=DEFAULT_HISTORY, metavar="JSONL",
+                   help="Append-only build-cost history (one row per real change, "
+                        "keyed to the target project's git commit; deduped). "
+                        f"Default: {DEFAULT_HISTORY.name}. Deliberately NOT wiped by "
+                        "`just clean` — it tracks improvement across extractions and "
+                        "powers Build mode's Improvements tab.")
     p.add_argument("--from-index", type=Path, default=None, metavar="JSON",
                    help="Load a resolved dependency graph produced by the index_graph "
                         "Swift tool (reads the compiler index store) instead of "
@@ -262,6 +269,24 @@ def main() -> int:
         print(f"  → Top split candidate: {top['label']} "
               f"(payoff {top['combined']}/100, {top['action'].lower()})")
 
+    # Auto-record a build-cost snapshot keyed to the target project's git commit.
+    # Survives `just clean`, deduped against the last row, so successive
+    # extractions accumulate one comparable point each. Powers Build mode's
+    # "Improvements" tab. Best-effort — never fatal.
+    history_path = args.history.expanduser()
+    try:
+        snap = append_snapshot(history_path, module_graph, plan, root)
+        if snap:
+            tag = snap["sha_short"] or "no-git"
+            if snap["dirty"]:
+                tag += "*"
+            print(f"History:           snapshot @ {tag} → {history_path.name} "
+                  f"({snap['structural']['modules']} modules, "
+                  f"{snap['structural']['cycles']} cycle(s))")
+    except OSError:
+        pass
+    history = load_history(history_path)
+
     if graph_path is not None:
         graph_path = graph_path.expanduser().resolve()
         graph_path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,7 +298,7 @@ def main() -> int:
             folder_package=folder_package, packages=packages,
             file_edges=file_edges, type_edges=type_edges,
             divisions=divisions, module_graph=module_graph,
-            recommendations=recommendations,
+            recommendations=recommendations, history=history,
         )
         print(f"\nWrote graph: {graph_path}")
 
