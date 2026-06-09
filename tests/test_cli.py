@@ -6,6 +6,8 @@ to a tempfile.TemporaryDirectory so the repo's real artifacts are never touched.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -195,6 +197,37 @@ class MainTest(unittest.TestCase):
             rc = self._run([str(project), "--out", str(alias_out)])
             self.assertEqual(rc, 0)
             self.assertTrue(alias_out.exists())
+
+    def test_scan_path_warns_about_phantom_edges(self):
+        # Running without --from-index must print a loud fallback banner so the
+        # degraded (regex-scan) mode is impossible to miss.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            project = tmp / "proj"
+            project.mkdir()
+            fixtures.make_swift_tree(project)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = self._run([str(project), "--graph", str(tmp / "o.html")])
+            self.assertEqual(rc, 0)
+            self.assertIn("REGEX-SCANNER FALLBACK", err.getvalue())
+            self.assertIn("phantom edges", err.getvalue())
+
+    def test_from_index_path_does_not_warn(self):
+        # The accurate path must stay quiet — no false alarm.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            project = tmp / "proj"
+            project.mkdir()
+            index_json = fixtures.write_index_json(tmp)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = self._run([
+                    str(project), "--from-index", str(index_json),
+                    "--graph", str(tmp / "o.html"),
+                ])
+            self.assertEqual(rc, 0)
+            self.assertNotIn("REGEX-SCANNER FALLBACK", err.getvalue())
 
     def test_nonexistent_project_root_returns_1(self):
         with tempfile.TemporaryDirectory() as td:

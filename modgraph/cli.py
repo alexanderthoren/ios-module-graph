@@ -87,6 +87,30 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _warn_scan_fallback() -> None:
+    """Print a prominent banner when running the regex-scanner fallback.
+
+    Without ``--from-index`` the graph is built by text-scanning source files,
+    which cannot tell which folder a reference binds to when several declare a
+    same-named type — it fabricates an edge to *every* declarer (phantom edges).
+    The whole point of the index path is to avoid this, so make the degraded
+    mode impossible to miss in the output.
+    """
+    banner = (
+        "\n"
+        "  ┌────────────────────────────────────────────────────────────────┐\n"
+        "  │  ⚠  REGEX-SCANNER FALLBACK — results may contain phantom edges.  │\n"
+        "  │                                                                  │\n"
+        "  │  No --from-index given, so the graph is built by text-scanning.  │\n"
+        "  │  When two folders declare a same-named type, every reference to  │\n"
+        "  │  that name gets an edge to BOTH — edges you can't trust for a     │\n"
+        "  │  migration plan. Build the index graph and pass --from-index     │\n"
+        "  │  for USR-resolved, accurate edges (see README / `just tree`).    │\n"
+        "  └────────────────────────────────────────────────────────────────┘\n"
+    )
+    print(banner, file=sys.stderr)
+
+
 def main() -> int:
     args = parse_args()
     root = args.project_root.expanduser().resolve()
@@ -100,6 +124,7 @@ def main() -> int:
     if args.from_index is not None:
         data = load_index_graph(args.from_index.expanduser().resolve())
     else:
+        _warn_scan_fallback()
         data = scan(
             root, include_tests=args.include_tests, ignore_patterns=args.ignore, ext=args.ext
         )
