@@ -122,6 +122,7 @@ class LoadIndexGraphMinimalPayloadTest(unittest.TestCase):
         # Omits the optional: type_kinds, file_edges, type_edges, and per-file
         # ref_owners.
         return {
+            "schema_version": index_loader.INDEX_SCHEMA_VERSION,
             "folder_decls": {"Core": ["CoreService"], "Util": ["UtilHelper"]},
             "files": [
                 {"folder": "Core", "name": "CoreService.swift",
@@ -164,6 +165,41 @@ class LoadIndexGraphMinimalPayloadTest(unittest.TestCase):
         self.assertEqual(self.gd.multi_decl_types, set())
 
 
+class LoadIndexGraphSchemaVersionTest(unittest.TestCase):
+    """The loader hard-fails (clearly) when the JSON's schema_version is absent
+    or does not match what it understands — guarding the Swift⇄Python contract."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_matching_version_loads(self):
+        # The sample fixture is stamped with the current version → loads fine.
+        gd = index_loader.load_index_graph(fixtures.write_index_json(self.dir))
+        self.assertIsInstance(gd, GraphData)
+
+    def test_missing_version_raises(self):
+        data = fixtures.sample_index_dict()
+        del data["schema_version"]
+        path = fixtures.write_index_json(self.dir, data)
+        with self.assertRaises(index_loader.IndexSchemaError) as cm:
+            index_loader.load_index_graph(path)
+        self.assertIn("pre-versioning", str(cm.exception))
+
+    def test_mismatched_version_raises(self):
+        data = fixtures.sample_index_dict()
+        data["schema_version"] = index_loader.INDEX_SCHEMA_VERSION + 1
+        path = fixtures.write_index_json(self.dir, data)
+        with self.assertRaises(index_loader.IndexSchemaError) as cm:
+            index_loader.load_index_graph(path)
+        msg = str(cm.exception)
+        self.assertIn(str(index_loader.INDEX_SCHEMA_VERSION), msg)
+        self.assertIn("out of sync", msg)
+
+
 class LoadIndexGraphFolderDiscoveryTest(unittest.TestCase):
     """all_folders is the union of declarers, edge endpoints, and file folders."""
 
@@ -178,6 +214,7 @@ class LoadIndexGraphFolderDiscoveryTest(unittest.TestCase):
         # "Ghost" appears only as an edge dst — no decls, no files — but must
         # still surface in all_folders.
         data = {
+            "schema_version": index_loader.INDEX_SCHEMA_VERSION,
             "folder_decls": {"App": ["AppType"]},
             "files": [{"folder": "App", "name": "A.swift",
                        "decls": ["AppType"], "refs": []}],
@@ -193,6 +230,7 @@ class LoadIndexGraphFolderDiscoveryTest(unittest.TestCase):
     def test_file_only_folder_included(self):
         # A folder that only owns a file (no decls entry, no edges) is included.
         data = {
+            "schema_version": index_loader.INDEX_SCHEMA_VERSION,
             "folder_decls": {"App": ["AppType"]},
             "files": [
                 {"folder": "App", "name": "A.swift",
