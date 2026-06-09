@@ -60,8 +60,56 @@ function buildDependencyClosure(edgesDS, focusId) {
   return closure;
 }
 
+// Iterative Tarjan's SCC over an explicit graph — the algorithmic core shared
+// by the migration wizard (wizComputeSccs builds `deps` from app state, then
+// delegates here). Iterative to dodge deep recursion on big graphs. This mirrors
+// Python's modgraph.graph._tarjan_sccs (same algorithm, cross-checked in tests)
+// so the in-browser plan matches the CLI plan.
+//   nodes: iterable of node ids.
+//   deps:  { node: [neighbour, ...] } adjacency (a node may be absent → no out-edges).
+// Returns an array of SCCs, each an array of node ids.
+function tarjanSccs(nodes, deps) {
+  const idx = {}, low = {}, onS = {}, st = [], sccs = [];
+  let counter = 0;
+  for (const start of nodes) {
+    if (idx[start] !== undefined) continue;
+    const work = [[start, 0]];
+    idx[start] = counter; low[start] = counter; counter++;
+    st.push(start); onS[start] = true;
+    while (work.length) {
+      const top = work[work.length - 1];
+      const v = top[0];
+      const out = deps[v] || [];
+      if (top[1] < out.length) {
+        const w = out[top[1]++];
+        if (idx[w] === undefined) {
+          idx[w] = counter; low[w] = counter; counter++;
+          st.push(w); onS[w] = true;
+          work.push([w, 0]);
+        } else if (onS[w]) {
+          low[v] = Math.min(low[v], idx[w]);
+        }
+      } else {
+        if (low[v] === idx[v]) {
+          const comp = [];
+          while (true) {
+            const w = st.pop(); onS[w] = false; comp.push(w);
+            if (w === v) break;
+          }
+          sccs.push(comp);
+        }
+        work.pop();
+        if (work.length) { const p = work[work.length - 1][0]; low[p] = Math.min(low[p], low[v]); }
+      }
+    }
+  }
+  return sccs;
+}
+
 // Node-only: expose the helpers to the test runner. Guarded so the browser
 // (where `module` is undefined) skips it without error.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure };
+  module.exports = {
+    escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
+  };
 }

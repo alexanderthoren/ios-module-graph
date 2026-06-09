@@ -8,8 +8,13 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure,
+  escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
 } = require('../../modgraph/templates/graph_logic.js');
+
+// Normalise SCC output for order-independent comparison: each component sorted,
+// then the list of components sorted by its first member.
+const normSccs = sccs =>
+  sccs.map(c => [...c].sort()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 
 const ds = edges => ({ get: () => edges });
 const sorted = set => [...set].sort();
@@ -70,4 +75,38 @@ test('closures terminate on cycles', () => {
   const edges = [{ from: 'A', to: 'B' }, { from: 'B', to: 'A' }, { from: 'B', to: 'C' }];
   assert.deepStrictEqual(sorted(buildDependencyClosure(ds(edges), 'A')), ['A', 'B', 'C']);
   assert.deepStrictEqual(sorted(buildRebuildClosure(ds(edges), 'C')), ['A', 'B', 'C']);
+});
+
+test('tarjanSccs: a DAG is all singletons', () => {
+  const deps = { A: ['B'], B: ['C'], C: [] };
+  assert.deepStrictEqual(normSccs(tarjanSccs(['A', 'B', 'C'], deps)), [['A'], ['B'], ['C']]);
+});
+
+test('tarjanSccs: a 2-cycle is one component', () => {
+  // Mirrors the shared fixture topology: Core ⇄ Util, Feature → Core, App → Feature.
+  const deps = {
+    App: ['Feature'], Feature: ['Core'], Core: ['Util'], Util: ['Core'],
+  };
+  const nodes = ['App', 'Feature', 'Core', 'Util'];
+  assert.deepStrictEqual(
+    normSccs(tarjanSccs(nodes, deps)),
+    [['App'], ['Core', 'Util'], ['Feature']],
+  );
+});
+
+test('tarjanSccs: a 3-cycle collapses fully', () => {
+  const deps = { A: ['B'], B: ['C'], C: ['A'] };
+  assert.deepStrictEqual(normSccs(tarjanSccs(['A', 'B', 'C'], deps)), [['A', 'B', 'C']]);
+});
+
+test('tarjanSccs: isolated nodes and missing deps keys are singletons', () => {
+  const deps = { A: ['B'] }; // B, C have no entry
+  assert.deepStrictEqual(normSccs(tarjanSccs(['A', 'B', 'C'], deps)), [['A'], ['B'], ['C']]);
+});
+
+test('tarjanSccs: every node appears in exactly one component', () => {
+  const deps = { A: ['B'], B: ['A'], C: ['D'], D: ['C'], E: ['A'] };
+  const nodes = ['A', 'B', 'C', 'D', 'E'];
+  const flat = tarjanSccs(nodes, deps).flat().sort();
+  assert.deepStrictEqual(flat, ['A', 'B', 'C', 'D', 'E']);
 });
