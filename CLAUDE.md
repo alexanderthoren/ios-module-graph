@@ -22,6 +22,7 @@ just list     # migration plan    → migration_plan.md
 just all      # both
 just serve    # live mode: serve HTML, hot-reload on rebuild, cmd+click → Xcode
 just test     # run the Python test suite (stdlib unittest; alias: just tests)
+just test-js  # run the JS unit tests (Node's built-in runner; no npm deps)
 just clean    # wipe generated files; next run rebuilds from scratch
 ```
 
@@ -54,7 +55,18 @@ one multi-declared type) reused across the suite — assert against it.
 test, concrete assertions, `tempfile.TemporaryDirectory` for any file IO, never
 write to the repo root or under `modgraph/`).
 
-There is no linter. Full verification = run the suite **and** regenerate the
+The **pure JS** helpers extracted from the UI (`modgraph/templates/graph_logic.js`)
+have their own suite under `tests/js/` on Node's built-in runner (`node:test`,
+no npm deps) — run with `just test-js`. Only genuinely pure, DOM-free functions
+belong in `graph_logic.js`; anything touching the DOM or page state stays inline
+in `template.html` (and remains untested for now).
+
+**CI** (`.github/workflows/ci.yml`): the Python suite is the gate (3.10–3.13
+matrix, `PYTHONHASHSEED=1` to exercise determinism), the JS suite runs on Node
+22, and the Swift reader builds best-effort on macOS (`continue-on-error` —
+`indexstore-db` is toolchain-pinned, the runner may lag).
+
+There is no linter. Full verification = run both suites **and** regenerate the
 outputs (`just tree` / re-run against a cached `index_graph.json`) without error.
 
 ## Architecture: a two-stage pipeline
@@ -77,7 +89,11 @@ build/checkout fragments), and emits the graph as JSON. Invoked as
 `index_graph <storePath> <repoRoot> [outJSON]`. The `Graph` Codable struct in
 `Sources/index_graph/main.swift` **is the data contract** — its shape must stay
 in sync with `load_index_graph` in `modgraph/index_loader.py`. Change one, change
-the other.
+the other. The contract is **versioned**: Swift emits `schema_version`
+(`schemaVersion` in `main.swift`) and `load_index_graph` validates it against
+`INDEX_SCHEMA_VERSION` up front, raising `IndexSchemaError` (with a regenerate /
+rebuild hint) on a mismatch instead of crashing on a missing key. Bump both
+constants in lockstep on any incompatible shape change.
 
 **Stage 2 — `modgraph/` (Python package, stdlib only).** Loads the resolved
 graph (`--from-index`), builds the folder-level dependency graph, computes an
@@ -112,11 +128,13 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `build_times.py` | `aggregate_stats_dir`/`load_build_times` (per-module compile **work** = Σ wall) + `aggregate_floors_dir`/`load_build_floors` (per-module **serial floor** = longest single file) (+ CLI) — read from the Swift compiler's `-stats-output-dir`; feed Build mode's module cost + the from-scratch `cold_wall` |
 | `exclusions.py` | `load_exclusions`, `compute_blocked_by_excluded` |
 | `tasks.py` | `build_task_list`, `write_task_list_markdown`, `write_task_list_json` |
-| `render.py` | `render_html` — inject the JSON payload into `templates/template.html` |
+| `render.py` | `render_html` — inject the JSON payload into `templates/template.html`; inlines the vendored vis-network bundle + `graph_logic.js` (placeholders), and escapes the payload safe for a `<script>` block (`_json_for_script`) |
 | `cli.py` | `parse_args` + `main` orchestration |
 | `__main__.py` | `python3 -m modgraph` entry point → `cli.main` |
 | `serve.py` | live-mode HTTP server for `just serve` (`python3 -m modgraph.serve`); SSE hot-reload + `xed` bridge |
 | `templates/template.html` | the entire HTML+JS UI (extracted from the old embedded literal) |
+| `templates/graph_logic.js` | pure, DOM-free JS helpers (e.g. `buildRebuildClosure`); inlined into the output by `render.py`, unit-tested under Node (`tests/js/`) |
+| `templates/vendor/vis-network.min.js` | vendored graph engine, inlined at render time so the output is offline/self-contained (no CDN) |
 
 Both `scan()` and `load_index_graph()` return a **`GraphData`** (see
 `models.py`); `cli.main` unpacks it. The scan path leaves the index-only fields
@@ -263,13 +281,23 @@ exist — do not "simplify" stage 1 back into pure text scanning.
 
 ## Things that will bite you
 
-- **The UI lives in `modgraph/templates/template.html`** (~4.5k lines of HTML+JS). It is
-  read at runtime by `render.py` (`_load_template()`) and the graph data is
-  injected by string-replacing `__PAYLOAD__` (a JSON blob) and `__ROOT_LABEL__`.
-  Editing the UI = editing that file directly now (no more
-  JavaScript-inside-a-Python-raw-string). Don't introduce a literal
-  `__PAYLOAD__`/`__ROOT_LABEL__` into the JS, and remember `str.replace` is
-  literal so the injected JSON must stay valid.
+- **The UI lives in `modgraph/templates/template.html`** (~6k lines of HTML+JS). It is
+  read at runtime by `render.py` (`_load_template()`) and assembled by
+  string-replacing four placeholders: `__VIS_NETWORK_JS__` (vendored graph
+  engine), `__GRAPH_LOGIC_JS__` (the pure helpers from `graph_logic.js`),
+  `__PAYLOAD__` (a JSON blob), and `__ROOT_LABEL__`. Editing the UI = editing
+  that file directly (no more JavaScript-inside-a-Python-raw-string). Two traps:
+  (1) `str.replace` is literal **and global**, so never let a placeholder token
+  appear literally anywhere it shouldn't be filled — including a *comment* in an
+  inlined file (`graph_logic.js`) — or it gets re-substituted; (2) the payload
+  is escaped for a `<script>` block by `_json_for_script` (`<`/`>`/`&` → `\uXXXX`)
+  so a crafted folder/type name can't break out of the script element — don't
+  swap it back to a bare `json.dumps`.
+
+- **The output is self-contained — keep it that way.** No external asset URLs:
+  vis-network is vendored (`templates/vendor/`) and inlined, the webfont CDN was
+  dropped for the system font stack. The generated HTML must open offline / from
+  `file://`. Don't reintroduce a CDN `<script>`/`<link>`.
 
 - **Outputs are deterministic — keep them that way.** The plan/tree/package-map
   are emitted in a fixed order independent of `PYTHONHASHSEED`. This relies on
