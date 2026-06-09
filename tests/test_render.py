@@ -319,5 +319,51 @@ class RenderHtmlSelfContainedTest(unittest.TestCase):
         self.assertNotIn("</script", render._load_graph_logic())
 
 
+class RenderHtmlRootLabelEscapeTest(unittest.TestCase):
+    """The project label is injected verbatim into element text (the <title>
+    and #projectLabel div), so HTML-significant characters must be escaped to
+    avoid corrupting the markup. The payload's own root_label is separate and
+    JSON-escaped, so it must still round-trip raw."""
+
+    LABEL = "A<B & C>D </title><script>x</script>"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out_path = Path(self._tmp.name) / "rl.html"
+        inputs = _toy_inputs(root_label=self.LABEL, out_path=self.out_path)
+        render.render_html(**inputs)
+        self.html = self.out_path.read_text(encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_label_escaped_in_markup(self):
+        # The raw label must not appear; its escaped entities must.
+        self.assertNotIn("A<B", self.html)
+        self.assertNotIn("</title><script>x", self.html)
+        self.assertIn("A&lt;B &amp; C&gt;D", self.html)
+
+    def test_no_smuggled_script_via_label(self):
+        # The label's </title><script> breakout must be neutralised, not present.
+        self.assertNotIn("<script>x</script>", self.html)
+
+    def test_payload_root_label_round_trips_raw(self):
+        # The DATA payload value is JSON-escaped, not HTML-escaped — unchanged.
+        data = _extract_data_json(self.html)
+        self.assertEqual(data["root_label"], self.LABEL)
+
+
+class EscapeHtmlTextUnitTest(unittest.TestCase):
+    def test_ampersand_escaped_first(self):
+        # & must go first so the &lt;/&gt; entities aren't double-escaped.
+        self.assertEqual(render._escape_html_text("&<>"), "&amp;&lt;&gt;")
+
+    def test_plain_text_unchanged(self):
+        self.assertEqual(render._escape_html_text("MyProject"), "MyProject")
+
+    def test_coerces_non_str(self):
+        self.assertEqual(render._escape_html_text(42), "42")
+
+
 if __name__ == "__main__":
     unittest.main()
