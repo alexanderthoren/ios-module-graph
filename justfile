@@ -123,6 +123,12 @@ test-js:
 test-swift:
     cd {{justfile_directory()}}/index_graph && swift test
 
+# Run the end-to-end pipeline smoke test (swiftc → reader → modgraph). macOS +
+# Swift only; builds the reader first. Opt-in elsewhere via MODGRAPH_E2E=1.
+test-e2e:
+    cd {{justfile_directory()}}/index_graph && swift build -c release
+    cd {{justfile_directory()}} && MODGRAPH_E2E=1 python3 -m unittest tests.test_e2e_pipeline -v
+
 # Python outputs (HTML/markdown/__pycache__) + swift reader output and build
 # artifacts. Leaves the target project's own build untouched.
 #
