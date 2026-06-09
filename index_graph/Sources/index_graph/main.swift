@@ -304,17 +304,10 @@ log("file_edges: \(fileEdges.count)")
 // MARK: - phase 4: type→type edges (containing-type-resolved)
 
 // Walks the parent chain until it hits a USR registered in declByUSR (first-party
-// type). Cycles are guarded with a `seen` set — defensive, the index store
-// shouldn't produce them but cheap insurance.
+// type). Logic lives in IndexGraphCore (pure, unit-tested); this wrapper binds the
+// global maps. The isDeclared closure avoids rebuilding a key set per call.
 func containingType(_ usr: String) -> String? {
-    var seen = Set<String>()
-    var cur: String? = usr
-    while let c = cur, !seen.contains(c) {
-        seen.insert(c)
-        if declByUSR[c] != nil { return c }
-        cur = parentByUSR[c]
-    }
-    return nil
+    IndexGraphCore.containingType(usr, isDeclared: { declByUSR[$0] != nil }, parent: parentByUSR)
 }
 
 // (srcTypeUSR, dstTypeUSR) -> total weight + symbol-name -> count.
