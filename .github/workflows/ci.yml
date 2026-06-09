@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The real gate: the stdlib-unittest suite. No pip deps, no index build, no
+  # toolchain — pure Python, deterministic across PYTHONHASHSEED. Runs on a
+  # version matrix because modgraph is the only thing most contributors touch.
+  python-tests:
+    name: Python tests (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run test suite
+        # Force a non-zero PYTHONHASHSEED so the determinism regression tests
+        # actually exercise hash-order independence (see tests/test_graph.py).
+        env:
+          PYTHONHASHSEED: "1"
+        run: python -m unittest discover -s tests -v
+
+  # Best-effort: verify the Swift index reader still compiles. indexstore-db is
+  # pinned to release/6.3 in index_graph/Package.swift to match a local Swift
+  # toolchain; the GitHub macOS runner may ship an older Xcode, in which case
+  # resolution/build can fail through no fault of the change under review. So
+  # this job is informational (continue-on-error) — the Python job is the gate.
+  # If the runner toolchain catches up, flip continue-on-error to false.
+  swift-build:
+    name: Swift reader build (best-effort)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Build index_graph
+        working-directory: index_graph
+        run: swift build -c release
