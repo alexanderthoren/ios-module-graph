@@ -297,7 +297,10 @@ exist — do not "simplify" stage 1 back into pure text scanning.
 - **The output is self-contained — keep it that way.** No external asset URLs:
   vis-network is vendored (`templates/vendor/`) and inlined, the webfont CDN was
   dropped for the system font stack. The generated HTML must open offline / from
-  `file://`. Don't reintroduce a CDN `<script>`/`<link>`.
+  `file://`. Don't reintroduce a CDN `<script>`/`<link>`. The vendored bundle is
+  pinned by sha256 in `templates/vendor/README.md` and re-verified by
+  `tests/test_vendor_integrity.py`; when updating it (steps in that README),
+  refresh the digest or the suite fails.
 
 - **Outputs are deterministic — keep them that way.** The plan/tree/package-map
   are emitted in a fixed order independent of `PYTHONHASHSEED`. This relies on
