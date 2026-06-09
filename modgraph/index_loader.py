@@ -11,6 +11,35 @@ from pathlib import Path
 
 from .models import GraphData
 
+# Version of the JSON contract with the index_graph Swift producer. Must match
+# `schemaVersion` in index_graph/Sources/index_graph/main.swift. Bump both in
+# lockstep on any incompatible change to the emitted shape.
+INDEX_SCHEMA_VERSION = 1
+
+
+class IndexSchemaError(RuntimeError):
+    """Raised when index_graph.json was produced by an incompatible reader."""
+
+
+def _validate_schema(data: dict, json_path: Path) -> None:
+    """Hard-fail with an actionable message if the JSON's schema_version does
+    not match what this loader understands, instead of crashing on a missing or
+    renamed key deep inside the parse."""
+    version = data.get("schema_version")
+    if version is None:
+        raise IndexSchemaError(
+            f"{json_path} has no 'schema_version' — it was produced by a "
+            f"pre-versioning index_graph reader. Regenerate it: `just clean` "
+            f"then re-run (this loader expects schema v{INDEX_SCHEMA_VERSION})."
+        )
+    if version != INDEX_SCHEMA_VERSION:
+        raise IndexSchemaError(
+            f"{json_path} is schema v{version} but this loader expects "
+            f"v{INDEX_SCHEMA_VERSION}. The Swift reader and Python loader are "
+            f"out of sync — rebuild the reader (`cd index_graph && swift build "
+            f"-c release`) and regenerate (`just clean` then re-run)."
+        )
+
 
 def load_index_graph(json_path: Path) -> GraphData:
     """Load the resolved folder dependency graph emitted by the index_graph Swift
@@ -29,6 +58,7 @@ def load_index_graph(json_path: Path) -> GraphData:
     """
     print(f"Loading index graph {json_path} ...", file=sys.stderr)
     data = json.loads(json_path.read_text(encoding="utf-8"))
+    _validate_schema(data, json_path)
 
     decls: dict[str, set[str]] = {f: set(names) for f, names in data["folder_decls"].items()}
     file_records = [

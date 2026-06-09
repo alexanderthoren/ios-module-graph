@@ -47,7 +47,14 @@ struct TypeEdge: Codable {
     let src_file: String            // path of file declaring src type (rel to repoRoot)
     let dst_file: String            // path of file declaring dst type
 }
+// Version of the JSON contract between this Swift producer and the Python
+// consumer (modgraph/index_loader.py). BUMP THIS whenever the emitted shape
+// changes incompatibly, and bump INDEX_SCHEMA_VERSION in index_loader.py to
+// match — the loader hard-fails on a mismatch instead of crashing cryptically.
+let schemaVersion = 1
+
 struct Graph: Codable {
+    let schema_version: Int
     let edges: [Edge]
     let pair_types: [PairTypes]
     let folder_decls: [String: [String]]
@@ -414,6 +421,7 @@ for path in allPaths {
 }
 
 let graph = Graph(
+    schema_version: schemaVersion,
     edges: edges.sorted { $0.src == $1.src ? $0.dst < $1.dst : $0.src < $1.src },
     pair_types: pairList,
     folder_decls: folderDecls.mapValues { $0.sorted() },

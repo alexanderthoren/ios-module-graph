@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from modgraph import index_loader
+
 # --- folder-level declarations ---------------------------------------------
 FOLDER_DECLS: dict[str, list[str]] = {
     "App": ["AppCoordinator"],
@@ -93,6 +95,7 @@ TYPE_EDGES: list[dict] = [
 def sample_index_dict() -> dict:
     """A complete index_graph.json payload for the toy project."""
     return {
+        "schema_version": index_loader.INDEX_SCHEMA_VERSION,
         "folder_decls": {k: list(v) for k, v in FOLDER_DECLS.items()},
         "files": [dict(f) for f in FILES],
         "edges": [dict(e) for e in EDGES],
