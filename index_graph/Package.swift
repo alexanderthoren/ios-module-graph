@@ -14,11 +14,19 @@ let package = Package(
         .package(url: "https://github.com/apple/indexstore-db.git", branch: "release/6.3"),
     ],
     targets: [
+        // Pure path/filter logic, no IndexStoreDB dependency, so it is unit-testable
+        // without an index store. Imported by the executable below.
+        .target(name: "IndexGraphCore"),
         .executableTarget(
             name: "index_graph",
             dependencies: [
+                "IndexGraphCore",
                 .product(name: "IndexStoreDB", package: "indexstore-db"),
             ]
+        ),
+        .testTarget(
+            name: "IndexGraphCoreTests",
+            dependencies: ["IndexGraphCore"]
         ),
     ]
 )

@@ -1,5 +1,6 @@
 import Foundation
 import IndexStoreDB
+import IndexGraphCore
 
 // ── index_graph ──────────────────────────────────────────────────────────────
 // Reads a Swift/Clang compiler index store and emits a *resolved* folder-level
@@ -133,20 +134,14 @@ log("polled units; ingestion complete")
 
 // MARK: - first-party filter + folder mapping
 
-// Exclude system, build-output, and SPM-checkout sources. First-party local
-// package sources live under repoRoot but NOT under these → kept.
-let excludedFragments = ["/.tmpBuildData/", "/DerivedData/", "/SourcePackages/", "/.build/", "/checkouts/"]
+// First-party filtering + path→folder mapping live in IndexGraphCore (pure, unit
+// -tested). These thin wrappers bind the global repoRoot so call sites are
+// unchanged. Excluding system/build-output/checkout sources keeps only local code.
 func isFirstParty(_ path: String) -> Bool {
-    guard path.hasPrefix(repoRoot) else { return false }
-    for f in excludedFragments where path.contains(f) { return false }
-    return true
+    IndexGraphCore.isFirstParty(path, repoRoot: repoRoot)
 }
-// POSIX folder relative to repoRoot; root-level files bucket into ".".
 func relFolder(_ path: String) -> String {
-    let rel = String(path.dropFirst(repoRoot.count))
-    guard let slash = rel.lastIndex(of: "/") else { return "." }
-    let folder = String(rel[..<slash])
-    return folder.isEmpty ? "." : folder
+    IndexGraphCore.relFolder(path, repoRoot: repoRoot)
 }
 
 let typeKinds: Set<IndexSymbolKind> = [.class, .struct, .enum, .protocol, .typealias]
@@ -278,8 +273,7 @@ var fileEdgeWeight: [String: [String: Int]] = [:]
 var fileEdgeSymCounts: [String: [String: [String: Int]]] = [:]
 
 func relPath(_ p: String) -> String {
-    guard p.hasPrefix(repoRoot) else { return p }
-    return String(p.dropFirst(repoRoot.count))
+    IndexGraphCore.relPath(p, repoRoot: repoRoot)
 }
 
 for (usr, fd) in fileDeclByUSR {

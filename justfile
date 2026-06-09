@@ -118,6 +118,11 @@ test:
 test-js:
     node --test {{justfile_directory()}}/tests/js/*.test.js
 
+# Run the Swift unit tests for the index reader's pure path-filter logic
+# (IndexGraphCore). No index store needed.
+test-swift:
+    cd {{justfile_directory()}}/index_graph && swift test
+
 # Python outputs (HTML/markdown/__pycache__) + swift reader output and build
 # artifacts. Leaves the target project's own build untouched.
 #

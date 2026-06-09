@@ -64,3 +64,6 @@ jobs:
       - name: Build index_graph
         working-directory: index_graph
         run: swift build -c release
+      - name: Test IndexGraphCore
+        working-directory: index_graph
+        run: swift test
