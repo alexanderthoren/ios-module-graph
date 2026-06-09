@@ -53,6 +53,50 @@ class Hub:
                 pass
 
 
+class OpenRequestError(Exception):
+    """A rejected /open request, carrying the HTTP status and payload to send."""
+
+    def __init__(self, code: int, message: str, **extra) -> None:
+        super().__init__(message)
+        self.code = code
+        self.payload = {"error": message, **extra}
+
+
+def resolve_open_target(repo_root: Path, rel: str) -> Path:
+    """Resolve a posted relative path against ``repo_root`` and confine it there.
+
+    Pure (filesystem-reading) helper extracted from ``do_POST`` so the security
+    boundary — a malicious payload must not pop open files outside the project —
+    is unit-testable. Raises :class:`OpenRequestError` for an empty path (400),
+    one that escapes the root (403), or a non-existent target (404).
+    """
+    rel = (rel or "").strip()
+    if not rel:
+        raise OpenRequestError(400, "missing path")
+    target = (repo_root / rel).resolve()
+    try:
+        target.relative_to(repo_root.resolve())
+    except ValueError:
+        raise OpenRequestError(403, "path escapes repo root")
+    if not target.exists():
+        raise OpenRequestError(404, "not found", path=str(target))
+    return target
+
+
+def build_xed_command(target: Path, line) -> list[str]:
+    """Build the ``xed`` argv to open ``target`` (optionally at ``line``)."""
+    cmd = ["xed"]
+    if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+        cmd += ["-l", str(line)]
+    cmd.append(str(target))
+    return cmd
+
+
+def format_sse_event(event: str, ts: int) -> str:
+    """Format one Server-Sent Event frame (event name + data + blank-line end)."""
+    return f"event: {event}\ndata: {ts}\n\n"
+
+
 def watch_html(html_path: Path, hub: Hub) -> None:
     """Poll the HTML file's mtime; broadcast 'reload' on change."""
     last = html_path.stat().st_mtime if html_path.exists() else 0.0
@@ -111,26 +155,15 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._json(400, {"error": "bad json"})
             return
-        rel = (body.get("path") or "").strip()
         line = body.get("line")
-        if not rel:
-            self._json(400, {"error": "missing path"})
-            return
-        # Resolve relative paths against the repo root, then confine to it so a
-        # malicious payload can't pop open arbitrary files outside the project.
-        target = (self.server_repo_root / rel).resolve()
+        # Resolve + confine to the repo root so a malicious payload can't pop
+        # open arbitrary files outside the project (logic + tests in this module).
         try:
-            target.relative_to(self.server_repo_root.resolve())
-        except ValueError:
-            self._json(403, {"error": "path escapes repo root"})
+            target = resolve_open_target(self.server_repo_root, body.get("path"))
+        except OpenRequestError as e:
+            self._json(e.code, e.payload)
             return
-        if not target.exists():
-            self._json(404, {"error": "not found", "path": str(target)})
-            return
-        cmd = ["xed"]
-        if isinstance(line, int) and line > 0:
-            cmd += ["-l", str(line)]
-        cmd.append(str(target))
+        cmd = build_xed_command(target, line)
         try:
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
@@ -152,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
             while True:
                 try:
                     evt = q.get(timeout=15)
-                    payload = f"event: {evt}\ndata: {int(time.time())}\n\n"
+                    payload = format_sse_event(evt, int(time.time()))
                 except queue.Empty:
                     payload = ": ping\n\n"
                 try:
