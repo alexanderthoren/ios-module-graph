@@ -58,6 +58,24 @@ def _json_for_script(payload) -> str:
     )
 
 
+def _escape_html_text(s: str) -> str:
+    """Escape a string for HTML *element text* content.
+
+    ``__ROOT_LABEL__`` is replaced verbatim into element text (the ``<title>``
+    and the ``#projectLabel`` div), not into the JSON payload — so unlike the
+    payload it isn't protected by ``_json_for_script``. A project label
+    containing ``<`` / ``>`` / ``&`` (e.g. ``A<B``) would otherwise corrupt the
+    markup or inject elements. ``&`` is escaped first so the others' entities
+    aren't double-escaped.
+    """
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 plan, stuck, root_label, root_path, initial_migrated,
                 migrated_prefixes, out_path, type_kinds=None,
@@ -108,6 +126,6 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         .replace("__VIS_NETWORK_JS__", _load_vis_network())
         .replace("__GRAPH_LOGIC_JS__", _load_graph_logic())
         .replace("__PAYLOAD__", _json_for_script(payload))
-        .replace("__ROOT_LABEL__", root_label)
+        .replace("__ROOT_LABEL__", _escape_html_text(root_label))
     )
     out_path.write_text(html, encoding="utf-8")
