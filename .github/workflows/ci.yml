@@ -67,3 +67,9 @@ jobs:
       - name: Test IndexGraphCore
         working-directory: index_graph
         run: swift test
+      - name: End-to-end pipeline smoke test
+        # Reader binary is built by the step above; MODGRAPH_E2E un-gates the
+        # opt-in test. Runs from the repo root so `python -m modgraph` resolves.
+        env:
+          MODGRAPH_E2E: "1"
+        run: python3 -m unittest tests.test_e2e_pipeline -v

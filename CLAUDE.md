@@ -59,12 +59,26 @@ The **pure JS** helpers extracted from the UI (`modgraph/templates/graph_logic.j
 have their own suite under `tests/js/` on Node's built-in runner (`node:test`,
 no npm deps) — run with `just test-js`. Only genuinely pure, DOM-free functions
 belong in `graph_logic.js`; anything touching the DOM or page state stays inline
-in `template.html` (and remains untested for now).
+in `template.html` (and remains untested for now). Two parity tests
+(`tests/test_scc_parity.py`, `tests/test_plan_parity.py`) shell out to `node` to
+prove the JS SCC + plan ordering match Python's — they **skip** when `node` is
+absent so the Python suite stays hermetic.
+
+The **Swift** reader's pure logic (path filtering, USR-chain walk) is a separate
+library target `IndexGraphCore` tested by `swift test` / `just test-swift`.
+
+An **end-to-end** smoke test (`tests/test_e2e_pipeline.py`, `just test-e2e`)
+builds a real tiny SPM package → index store → reader → renderer. It is opt-in
+(`MODGRAPH_E2E=1`, macOS + `swift` + a built reader) so it never slows the
+default suite. Gotcha baked into the test: build the toy project under `$HOME`,
+not `/var/folders` — the latter's `/private` symlink defeats the reader's
+first-party path matching.
 
 **CI** (`.github/workflows/ci.yml`): the Python suite is the gate (3.10–3.13
 matrix, `PYTHONHASHSEED=1` to exercise determinism), the JS suite runs on Node
-22, and the Swift reader builds best-effort on macOS (`continue-on-error` —
-`indexstore-db` is toolchain-pinned, the runner may lag).
+22, and the Swift job (best-effort on macOS, `continue-on-error` — `indexstore-db`
+is toolchain-pinned, the runner may lag) builds the reader, runs `swift test`,
+and runs the e2e test with `MODGRAPH_E2E=1`.
 
 There is no linter. Full verification = run both suites **and** regenerate the
 outputs (`just tree` / re-run against a cached `index_graph.json`) without error.
