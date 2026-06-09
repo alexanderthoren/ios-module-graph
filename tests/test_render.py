@@ -277,5 +277,38 @@ class RenderHtmlScriptEscapeTest(unittest.TestCase):
         self.assertEqual(data["files"][0]["folder"], self.PAYLOAD)
 
 
+class RenderHtmlSelfContainedTest(unittest.TestCase):
+    """The rendered graph must be a self-contained single file — no external
+    asset URLs — so it works offline and from file://. vis-network is vendored
+    and inlined; the webfont CDN was dropped for the system font stack."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out_path = Path(self._tmp.name) / "sc.html"
+        render.render_html(**_toy_inputs(out_path=self.out_path))
+        self.html = self.out_path.read_text(encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_no_external_loadable_references(self):
+        # A loadable external asset is a src=/href= pointing at http(s). (Bare
+        # URLs inside the inlined vis-network banner/strings are harmless and
+        # expected, so we match the attribute form, not any occurrence.)
+        loadable = re.findall(r'(?:src|href)\s*=\s*["\']https?:', self.html)
+        self.assertEqual(loadable, [],
+                         f"rendered HTML still loads external assets: {loadable}")
+
+    def test_vis_network_inlined(self):
+        # The vendored UMD banner and a public symbol prove the lib is embedded.
+        self.assertIn("vis-network", self.html)
+        self.assertIn("__VIS_NETWORK_JS__", render._load_template())
+        self.assertNotIn("__VIS_NETWORK_JS__", self.html)
+
+    def test_vis_bundle_has_no_script_breakout(self):
+        # Inlining is only safe if the bundle can't close the <script> early.
+        self.assertNotIn("</script", render._load_vis_network())
+
+
 if __name__ == "__main__":
     unittest.main()
