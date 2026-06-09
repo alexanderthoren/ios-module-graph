@@ -34,6 +34,21 @@ jobs:
           PYTHONHASHSEED: "1"
         run: python -m unittest discover -s tests -v
 
+  # JS unit tests for the pure graph helpers extracted from template.html
+  # (modgraph/templates/graph_logic.js). Node's built-in runner — no npm deps.
+  js-tests:
+    name: JS tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run graph_logic tests
+        # Let the shell expand the glob (portable across Node versions) rather
+        # than relying on node --test's own path globbing.
+        run: node --test tests/js/*.test.js
+
   # Best-effort: verify the Swift index reader still compiles. indexstore-db is
   # pinned to release/6.3 in index_graph/Package.swift to match a local Swift
   # toolchain; the GitHub macOS runner may ship an older Xcode, in which case

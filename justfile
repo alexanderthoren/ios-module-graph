@@ -113,6 +113,11 @@ test:
     # report itself goes to stderr, so drop stdout for a clean, readable run.
     python3 -m unittest discover -s "{{justfile_directory()}}/tests" -t "{{justfile_directory()}}" -v 2>&1 >/dev/null
 
+# Run the JS unit tests for the extracted graph helpers (Node's built-in runner,
+# no npm deps). Covers modgraph/templates/graph_logic.js.
+test-js:
+    node --test {{justfile_directory()}}/tests/js/*.test.js
+
 # Python outputs (HTML/markdown/__pycache__) + swift reader output and build
 # artifacts. Leaves the target project's own build untouched.
 #
