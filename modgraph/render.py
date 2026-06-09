@@ -5,11 +5,25 @@ import json
 from pathlib import Path
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "template.html"
+_VIS_NETWORK_PATH = (
+    Path(__file__).resolve().parent / "templates" / "vendor" / "vis-network.min.js"
+)
 
 
 def _load_template() -> str:
     """Read the HTML template shipped alongside this module."""
     return _TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def _load_vis_network() -> str:
+    """Read the vendored vis-network UMD bundle inlined into every output.
+
+    Vendored (not loaded from a CDN) so the generated graph is a self-contained
+    single file that works offline and from ``file://`` — the whole point of the
+    artifact. The bundle is verified to contain no ``</script`` / placeholder
+    sequences, so it is safe to inline verbatim into the ``<script>`` block.
+    """
+    return _VIS_NETWORK_PATH.read_text(encoding="utf-8")
 
 
 def _json_for_script(payload) -> str:
@@ -77,7 +91,10 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         # "Improvements" tab. See modgraph/history.py for the row shape.
         "history": history or [],
     }
-    html = _load_template().replace("__PAYLOAD__", _json_for_script(payload)).replace(
-        "__ROOT_LABEL__", root_label
+    html = (
+        _load_template()
+        .replace("__VIS_NETWORK_JS__", _load_vis_network())
+        .replace("__PAYLOAD__", _json_for_script(payload))
+        .replace("__ROOT_LABEL__", root_label)
     )
     out_path.write_text(html, encoding="utf-8")

@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <title>__ROOT_LABEL__ — folder dependency explorer</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <!-- No external assets: the output is a self-contained single file that works
+       offline / from file://. The Inter webfont was dropped in favour of the
+       system font stack below; vis-network is inlined at render time. -->
+  <script>__VIS_NETWORK_JS__</script>
   <style>
     /* ── design tokens ─────────────────────────────────────────────────────── */
     :root {
