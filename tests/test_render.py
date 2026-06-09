@@ -309,6 +309,15 @@ class RenderHtmlSelfContainedTest(unittest.TestCase):
         # Inlining is only safe if the bundle can't close the <script> early.
         self.assertNotIn("</script", render._load_vis_network())
 
+    def test_graph_logic_inlined(self):
+        self.assertIn("__GRAPH_LOGIC_JS__", render._load_template())
+        self.assertNotIn("__GRAPH_LOGIC_JS__", self.html)
+        # A function moved into graph_logic.js must appear in the output.
+        self.assertIn("function buildRebuildClosure", self.html)
+
+    def test_graph_logic_has_no_script_breakout(self):
+        self.assertNotIn("</script", render._load_graph_logic())
+
 
 if __name__ == "__main__":
     unittest.main()

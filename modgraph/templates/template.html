@@ -1020,6 +1020,10 @@
   </div>
 
 </div>
+<!-- Pure graph/format helpers, extracted for Node unit testing; inlined here so
+     the output stays a single self-contained file. Defines globals the main
+     script below calls. (Placeholder filled by render.py.) -->
+<script>__GRAPH_LOGIC_JS__</script>
 <script>
 const DATA = __PAYLOAD__;
 const tree = DATA.tree;
@@ -1584,46 +1588,8 @@ function _ensureOrig(weakMap, ds, getField) {
   }
   return m;
 }
-// Build mode: light up the hovered folder's *rebuild set* — every folder that
-// transitively depends on it (and so recompiles when it changes), with the
-// propagation edges drawn red. Reverse-BFS over the displayed dependency edges
-// (edge from→to means from depends on to, so rebuilds flow to→from).
-function buildRebuildClosure(edgesDS, focusId) {
-  const radj = new Map();
-  edgesDS.get().forEach(e => {
-    if (e.from == null || e.to == null) return;
-    if (e.from === '__ext__' || e.to === '__ext__') return;
-    if (!radj.has(e.to)) radj.set(e.to, []);
-    radj.get(e.to).push(e.from);
-  });
-  const closure = new Set([focusId]);
-  const stack = [focusId];
-  while (stack.length) {
-    const x = stack.pop();
-    (radj.get(x) || []).forEach(a => { if (!closure.has(a)) { closure.add(a); stack.push(a); } });
-  }
-  return closure;
-}
-// Build mode (cold lens): light up the hovered module's *dependency set* — every
-// module it transitively depends on, which must compile *before* it on a clean
-// build. Forward-BFS over the displayed edges (edge from→to means from depends on
-// to, so we follow from→to).
-function buildDependencyClosure(edgesDS, focusId) {
-  const adj = new Map();
-  edgesDS.get().forEach(e => {
-    if (e.from == null || e.to == null) return;
-    if (e.from === '__ext__' || e.to === '__ext__') return;
-    if (!adj.has(e.from)) adj.set(e.from, []);
-    adj.get(e.from).push(e.to);
-  });
-  const closure = new Set([focusId]);
-  const stack = [focusId];
-  while (stack.length) {
-    const x = stack.pop();
-    (adj.get(x) || []).forEach(b => { if (!closure.has(b)) { closure.add(b); stack.push(b); } });
-  }
-  return closure;
-}
+// buildRebuildClosure / buildDependencyClosure moved to graph_logic.js (inlined
+// above) so they can be unit-tested under Node. They are globals here, as before.
 // Dim color used for nodes/edges outside the hovered module's rebuild set. We
 // fade the node *color* (low-alpha gray) rather than the vis `opacity` property,
 // which the bundled vis build doesn't honor on nodes — so the body fades too,
@@ -2369,17 +2335,8 @@ function applyUpTo(step) {
   render();
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-// Human-friendly duration from seconds: "0.4s", "42s", "3m 2s", "1h 4m".
-function fmtDur(secs) {
-  const s = Math.max(0, +secs || 0);
-  if (s < 1) return s.toFixed(1) + 's';
-  if (s < 60) return Math.round(s) + 's';
-  if (s < 3600) { const m = Math.floor(s / 60); return m + 'm ' + Math.round(s - m * 60) + 's'; }
-  const h = Math.floor(s / 3600); return h + 'h ' + Math.round((s - h * 3600) / 60) + 'm';
-}
+// escapeHtml / fmtDur moved to graph_logic.js (inlined above) so they can be
+// unit-tested under Node. Globals as before.
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === name));

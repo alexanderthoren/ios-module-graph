@@ -8,6 +8,7 @@ _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "template.html"
 _VIS_NETWORK_PATH = (
     Path(__file__).resolve().parent / "templates" / "vendor" / "vis-network.min.js"
 )
+_GRAPH_LOGIC_PATH = Path(__file__).resolve().parent / "templates" / "graph_logic.js"
 
 
 def _load_template() -> str:
@@ -24,6 +25,17 @@ def _load_vis_network() -> str:
     sequences, so it is safe to inline verbatim into the ``<script>`` block.
     """
     return _VIS_NETWORK_PATH.read_text(encoding="utf-8")
+
+
+def _load_graph_logic() -> str:
+    """Read the extracted pure-JS graph/format helpers inlined into the output.
+
+    Kept in its own file (not embedded in template.html) so Node can unit-test
+    it (tests/js/graph_logic.test.js); inlined here so the rendered graph stays
+    a single self-contained file. It is our own code with no ``</script`` /
+    placeholder sequences, so it inlines verbatim.
+    """
+    return _GRAPH_LOGIC_PATH.read_text(encoding="utf-8")
 
 
 def _json_for_script(payload) -> str:
@@ -94,6 +106,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
     html = (
         _load_template()
         .replace("__VIS_NETWORK_JS__", _load_vis_network())
+        .replace("__GRAPH_LOGIC_JS__", _load_graph_logic())
         .replace("__PAYLOAD__", _json_for_script(payload))
         .replace("__ROOT_LABEL__", root_label)
     )
