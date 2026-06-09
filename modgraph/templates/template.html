@@ -4336,109 +4336,17 @@ function computeWizardPlan(folderSet) {
   const sourceSet = folderSet.filter(f =>
     !excluded.has(f) && !migrated.has(f) && !blockedSet.has(f)
   );
-  const { deps, sccs } = wizComputeSccs(sourceSet);
-  const sccsSorted = sccs.map(c => c.slice().sort());
-  const sccOf = {};
-  sccsSorted.forEach((c, i) => c.forEach(v => sccOf[v] = i));
-  const sdeps = sccsSorted.map(() => new Set());
-  const sRdeps = sccsSorted.map(() => new Set());
-  Object.keys(deps).forEach(a => {
-    for (const b of deps[a]) {
-      const sa = sccOf[a], sb = sccOf[b];
-      if (sa !== sb) { sdeps[sa].add(sb); sRdeps[sb].add(sa); }
-    }
-  });
-  const remaining = sdeps.map(s => s.size);
-  const migratedScc = new Set();
-  const eligible = new Set();
-  for (let i = 0; i < sccsSorted.length; i++) if (remaining[i] === 0) eligible.add(i);
-  // Precompute transitive reverse-reach — same definition + caveat as Python
-  // compute_migration_plan. Iterative DP in reverse-topological order.
-  const reverseReach = sccsSorted.map(() => 0);
-  {
-    const topo = [];
-    const indeg = sdeps.map(s => s.size);
-    const q = [];
-    for (let i = 0; i < sccsSorted.length; i++) if (indeg[i] === 0) q.push(i);
-    while (q.length) {
-      const v = q.pop();
-      topo.push(v);
-      for (const w of sRdeps[v]) { indeg[w]--; if (indeg[w] === 0) q.push(w); }
-    }
-    for (let k = topo.length - 1; k >= 0; k--) {
-      const v = topo[k];
-      let acc = 0;
-      for (const w of sRdeps[v]) acc += 1 + reverseReach[w];
-      reverseReach[v] = acc;
-    }
-  }
-  const immediateUnlocks = i => {
-    let n = 0;
-    for (const s of sRdeps[i]) {
-      if (migratedScc.has(s)) continue;
-      if (s !== i && remaining[s] === 1) n++;
-    }
-    return n;
-  };
-  // "Most-used" tiebreaker: total inbound reference weight per SCC, restricted
-  // to consumers inside sourceSet (we don't credit edges from excluded/blocked
-  // folders since they aren't going anywhere). Bigger = more call sites will
-  // benefit from this folder becoming SPM. Acts as a tiebreaker among equally
-  // impactful SCCs — it never reorders past the DAG constraint.
-  const sccOfNode = new Map();
-  sccsSorted.forEach((c, idx) => c.forEach(f => sccOfNode.set(f, idx)));
-  const sourceSetLookup = new Set(sourceSet);
-  const inboundWeight = sccsSorted.map(() => 0);
-  edges.forEach(e => {
-    const dstScc = sccOfNode.get(e.dst);
-    if (dstScc === undefined) return;
-    if (!sourceSetLookup.has(e.src)) return;     // consumer must also be in scope
-    const srcScc = sccOfNode.get(e.src);
-    if (srcScc === dstScc) return;
-    inboundWeight[dstScc] += (e.refs || e.value || 1);
-  });
-  const out = [];
-  while (eligible.size) {
-    let pick = -1, best = null;
-    for (const i of eligible) {
-      const key = [
-        reverseReach[i],          // DAG-correctness signal: transitive unlocks
-        inboundWeight[i],         // "most-used" — primary user preference
-        immediateUnlocks(i),      // local unlock count (secondary)
-        -sccsSorted[i].length,    // prefer smaller bundles (smaller PRs)
-        sccsSorted[i][0] || '',   // deterministic last-resort tiebreaker
-      ];
-      const better = best === null
-        || key[0] > best[0]
-        || (key[0] === best[0] && key[1] > best[1])
-        || (key[0] === best[0] && key[1] === best[1] && key[2] > best[2])
-        || (key[0] === best[0] && key[1] === best[1] && key[2] === best[2] && key[3] > best[3])
-        || (key[0] === best[0] && key[1] === best[1] && key[2] === best[2] && key[3] === best[3] && key[4] < best[4]);
-      if (better) { best = key; pick = i; }
-    }
-    eligible.delete(pick);
-    migratedScc.add(pick);
-    const fs = sccsSorted[pick];
-    const unlocks = [];
-    for (const r of sRdeps[pick]) {
-      if (migratedScc.has(r)) continue;
-      remaining[r]--;
-      if (remaining[r] === 0) {
-        eligible.add(r);
-        unlocks.push({ folders: sccsSorted[r], size: sccsSorted[r].length });
-      }
-    }
-    out.push({
-      step: out.length + 1,
-      folders: fs,
-      is_cycle: fs.length > 1,
-      size: fs.length,
-      targets: fs.map(f => wiz.assign[f] || 'stay'),
-      unlocks: unlocks,
-      inbound_weight: inboundWeight[pick],
-    });
-  }
-  return out;
+  // SCC condensation + impact-ranked ordering lives in graph_logic.js
+  // (migrationPlanOrder, unit-tested + cross-checked vs Python). wizComputeSccs
+  // still builds `deps` from app state (excluded/migrated edge filtering); the
+  // "most-used" tiebreaker reads inbound reference weight from the edges. Here we
+  // only decorate each step with the per-folder target assignment (pure UI).
+  const { deps } = wizComputeSccs(sourceSet);
+  const wedges = edges.map(e => ({ src: e.src, dst: e.dst, w: (e.refs || e.value || 1) }));
+  return migrationPlanOrder(sourceSet, deps, wedges).map(s => ({
+    ...s,
+    targets: s.folders.map(f => wiz.assign[f] || 'stay'),
+  }));
 }
 
 function renderWizardPlan() {
