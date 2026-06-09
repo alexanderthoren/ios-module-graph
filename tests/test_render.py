@@ -225,5 +225,57 @@ class RenderHtmlExcludedFileTest(unittest.TestCase):
             self.assertEqual(data["excluded_file_path"], excluded)
 
 
+class RenderHtmlScriptEscapeTest(unittest.TestCase):
+    """Payload strings containing ``</script>`` (or ``<``/``>``/``&``) must not be
+    able to break out of the inline ``<script>`` block. Regression for the bug
+    where a bare ``json.dumps`` let a crafted folder/type/path name close the
+    script element early and corrupt the page."""
+
+    PAYLOAD = "</script><img src=x onerror=alert(1)>&amp;<b>"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out_path = Path(self._tmp.name) / "x.html"
+        # Smuggle the dangerous string through several payload-carried fields.
+        render.render_html(
+            tree={},
+            leaf_edges={},
+            multi_decl_types=set(),
+            file_records=[{"folder": self.PAYLOAD, "name": self.PAYLOAD,
+                           "decls": [self.PAYLOAD], "refs": [], "ref_owners": []}],
+            type_owners={self.PAYLOAD: [self.PAYLOAD]},
+            plan=[],
+            stuck=[],
+            root_label="Safe",
+            root_path=self.PAYLOAD,
+            initial_migrated=[],
+            migrated_prefixes=[],
+            out_path=self.out_path,
+        )
+        self.html = self.out_path.read_text(encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_dangerous_sequence_not_emitted_verbatim(self):
+        # The unescaped breakout sequence must never reach the HTML — its ``<``
+        # had to be escaped to <. (The template's own legit </script> tags
+        # don't contain this suffix, so a plain substring check is safe.)
+        self.assertNotIn("</script><img", self.html)
+        self.assertNotIn("<img src=x onerror", self.html)
+
+    def test_escaped_form_present(self):
+        # Proof the escaping actually fired on the payload's '<'.
+        self.assertIn("\\u003c", self.html)
+
+    def test_payload_still_round_trips(self):
+        # Escaping is transparent to a JSON/JS parser: the original string comes
+        # back intact, so the data is unchanged — only the HTML parser is fooled.
+        data = _extract_data_json(self.html)
+        self.assertEqual(data["root_path"], self.PAYLOAD)
+        self.assertIn(self.PAYLOAD, data["type_owners"])
+        self.assertEqual(data["files"][0]["folder"], self.PAYLOAD)
+
+
 if __name__ == "__main__":
     unittest.main()

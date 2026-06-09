@@ -12,6 +12,26 @@ def _load_template() -> str:
     return _TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
+def _json_for_script(payload) -> str:
+    """Serialize ``payload`` to JSON safe to inline inside an HTML ``<script>``.
+
+    The template embeds the payload as ``const DATA = __PAYLOAD__;`` inside a
+    ``<script>`` block. A bare ``json.dumps`` is unsafe there: if any string in
+    the payload (a folder name, type name, symbol, …) contains ``</script`` —
+    or even just ``</`` — the HTML parser would close the script element early
+    and corrupt the page. ``<`` / ``>`` / ``&`` only ever occur inside JSON
+    string values (structural JSON has none), so escaping them to their
+    ``\\uXXXX`` form keeps the JSON identical to a JS parser while making it
+    inert to the HTML parser.
+    """
+    return (
+        json.dumps(payload)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
 def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 plan, stuck, root_label, root_path, initial_migrated,
                 migrated_prefixes, out_path, type_kinds=None,
@@ -57,7 +77,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         # "Improvements" tab. See modgraph/history.py for the row shape.
         "history": history or [],
     }
-    html = _load_template().replace("__PAYLOAD__", json.dumps(payload)).replace(
+    html = _load_template().replace("__PAYLOAD__", _json_for_script(payload)).replace(
         "__ROOT_LABEL__", root_label
     )
     out_path.write_text(html, encoding="utf-8")
