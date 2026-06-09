@@ -9,7 +9,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
+  migrationPlanOrder,
 } = require('../../modgraph/templates/graph_logic.js');
+
+// Just the ordered list of folder-groups from a plan (drops decoration).
+const planFolders = steps => steps.map(s => s.folders);
 
 // Normalise SCC output for order-independent comparison: each component sorted,
 // then the list of components sorted by its first member.
@@ -109,4 +113,48 @@ test('tarjanSccs: every node appears in exactly one component', () => {
   const nodes = ['A', 'B', 'C', 'D', 'E'];
   const flat = tarjanSccs(nodes, deps).flat().sort();
   assert.deepStrictEqual(flat, ['A', 'B', 'C', 'D', 'E']);
+});
+
+test('migrationPlanOrder: linear chain migrates leaf-first', () => {
+  // A→B→C (depends-on). C is depended on by all → highest reverse-reach → first.
+  const steps = migrationPlanOrder(['A', 'B', 'C'], { A: ['B'], B: ['C'] }, []);
+  assert.deepStrictEqual(planFolders(steps), [['C'], ['B'], ['A']]);
+  assert.strictEqual(steps[0].step, 1);
+  assert.deepStrictEqual(steps.map(s => s.is_cycle), [false, false, false]);
+});
+
+test('migrationPlanOrder: a cycle bundles into one step', () => {
+  // Fixture topology: App→Feature→Core⇄Util.
+  const deps = { App: ['Feature'], Feature: ['Core'], Core: ['Util'], Util: ['Core'] };
+  const steps = migrationPlanOrder(['App', 'Feature', 'Core', 'Util'], deps, []);
+  assert.deepStrictEqual(planFolders(steps), [['Core', 'Util'], ['Feature'], ['App']]);
+  assert.deepStrictEqual(steps.map(s => s.is_cycle), [true, false, false]);
+  assert.strictEqual(steps[0].size, 2);
+});
+
+test('migrationPlanOrder: a step records what it unlocks', () => {
+  const steps = migrationPlanOrder(['A', 'B'], { A: ['B'] }, []);
+  // Migrating B (first) unlocks A.
+  assert.deepStrictEqual(steps[0].folders, ['B']);
+  assert.deepStrictEqual(steps[0].unlocks, [{ folders: ['A'], size: 1 }]);
+});
+
+test('migrationPlanOrder: inbound weight breaks ties (most-used first)', () => {
+  // Two independent leaves X and Y (nothing depends on either → equal reach 0),
+  // consumed by an in-scope C. Y is referenced more heavily → migrates first.
+  const sourceSet = ['C', 'X', 'Y'];
+  const deps = { C: ['X', 'Y'] };
+  const wedges = [
+    { src: 'C', dst: 'X', w: 1 },
+    { src: 'C', dst: 'Y', w: 9 },
+  ];
+  const steps = migrationPlanOrder(sourceSet, deps, wedges);
+  // C depends on both, so it's last; among {X,Y} the heavier-referenced Y wins.
+  assert.deepStrictEqual(planFolders(steps), [['Y'], ['X'], ['C']]);
+});
+
+test('migrationPlanOrder: deterministic regardless of input order', () => {
+  const a = migrationPlanOrder(['A', 'B', 'C'], { A: ['B'], B: ['C'] }, []);
+  const b = migrationPlanOrder(['C', 'A', 'B'], { B: ['C'], A: ['B'] }, []);
+  assert.deepStrictEqual(planFolders(a), planFolders(b));
 });

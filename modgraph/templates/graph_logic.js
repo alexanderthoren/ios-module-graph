@@ -106,10 +106,124 @@ function tarjanSccs(nodes, deps) {
   return sccs;
 }
 
+// SCC-aware, deterministic migration-plan ordering — the algorithmic core of
+// computeWizardPlan, extracted so it can be unit-tested and cross-checked
+// against Python's modgraph.graph.compute_migration_plan.
+//
+//   sourceSet: array of in-scope folder ids (excluded/migrated/blocked already
+//              removed by the caller).
+//   deps:      { a: [b, ...] } folder→folder adjacency among sourceSet.
+//   weightedEdges: [{src, dst, w}] used only for the "most-used" tiebreaker
+//              (total in-scope inbound reference weight per SCC).
+//
+// Returns ordered steps: { step, folders (sorted), is_cycle, size, unlocks,
+// inbound_weight }. Folders that cyclically depend bundle into one step.
+//
+// NOTE: this matches Python on the primary signal (transitive reverse-reach) and
+// the SCC bundling, but the wizard adds `inbound_weight` ("most-used") as a
+// secondary key that Python does not have — so the two agree on step ORDER only
+// when reverse-reach alone determines it (and always agree on the set of steps).
+function migrationPlanOrder(sourceSet, deps, weightedEdges) {
+  const sccs = tarjanSccs(sourceSet, deps).map(c => c.slice().sort());
+  const sccOf = {};
+  sccs.forEach((c, i) => c.forEach(v => { sccOf[v] = i; }));
+
+  const sdeps = sccs.map(() => new Set());
+  const sRdeps = sccs.map(() => new Set());
+  Object.keys(deps).forEach(a => {
+    for (const b of deps[a]) {
+      const sa = sccOf[a], sb = sccOf[b];
+      if (sa !== sb) { sdeps[sa].add(sb); sRdeps[sb].add(sa); }
+    }
+  });
+
+  const remaining = sdeps.map(s => s.size);
+  const migratedScc = new Set();
+  const eligible = new Set();
+  for (let i = 0; i < sccs.length; i++) if (remaining[i] === 0) eligible.add(i);
+
+  // Transitive reverse-reach via reverse-topological DP (same direct + 1-hop
+  // approximation as Python — double-counts in diamonds, order stays stable).
+  const reverseReach = sccs.map(() => 0);
+  {
+    const indeg = sdeps.map(s => s.size);
+    const topo = [];
+    const q = [];
+    for (let i = 0; i < sccs.length; i++) if (indeg[i] === 0) q.push(i);
+    while (q.length) {
+      const v = q.pop();
+      topo.push(v);
+      for (const w of sRdeps[v]) { indeg[w]--; if (indeg[w] === 0) q.push(w); }
+    }
+    for (let k = topo.length - 1; k >= 0; k--) {
+      const v = topo[k];
+      let acc = 0;
+      for (const w of sRdeps[v]) acc += 1 + reverseReach[w];
+      reverseReach[v] = acc;
+    }
+  }
+
+  const immediateUnlocks = i => {
+    let n = 0;
+    for (const s of sRdeps[i]) {
+      if (migratedScc.has(s)) continue;
+      if (s !== i && remaining[s] === 1) n++;
+    }
+    return n;
+  };
+
+  const sourceSetLookup = new Set(sourceSet);
+  const inboundWeight = sccs.map(() => 0);
+  (weightedEdges || []).forEach(e => {
+    const dstScc = sccOf[e.dst];
+    if (dstScc === undefined) return;
+    if (!sourceSetLookup.has(e.src)) return;
+    const srcScc = sccOf[e.src];
+    if (srcScc === dstScc) return;
+    inboundWeight[dstScc] += (e.w || 1);
+  });
+
+  const out = [];
+  while (eligible.size) {
+    let pick = -1, best = null;
+    for (const i of eligible) {
+      const key = [
+        reverseReach[i], inboundWeight[i], immediateUnlocks(i),
+        -sccs[i].length, sccs[i][0] || '',
+      ];
+      const better = best === null
+        || key[0] > best[0]
+        || (key[0] === best[0] && key[1] > best[1])
+        || (key[0] === best[0] && key[1] === best[1] && key[2] > best[2])
+        || (key[0] === best[0] && key[1] === best[1] && key[2] === best[2] && key[3] > best[3])
+        || (key[0] === best[0] && key[1] === best[1] && key[2] === best[2] && key[3] === best[3] && key[4] < best[4]);
+      if (better) { best = key; pick = i; }
+    }
+    eligible.delete(pick);
+    migratedScc.add(pick);
+    const fs = sccs[pick];
+    const unlocks = [];
+    for (const r of sRdeps[pick]) {
+      if (migratedScc.has(r)) continue;
+      remaining[r]--;
+      if (remaining[r] === 0) {
+        eligible.add(r);
+        unlocks.push({ folders: sccs[r], size: sccs[r].length });
+      }
+    }
+    out.push({
+      step: out.length + 1, folders: fs, is_cycle: fs.length > 1,
+      size: fs.length, unlocks, inbound_weight: inboundWeight[pick],
+    });
+  }
+  return out;
+}
+
 // Node-only: expose the helpers to the test runner. Guarded so the browser
 // (where `module` is undefined) skips it without error.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
+    migrationPlanOrder,
   };
 }
