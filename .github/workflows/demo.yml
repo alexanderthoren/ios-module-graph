@@ -25,7 +25,9 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    # Newest macOS image (arm64) — carries the newest Xcodes, which the demo
+    # app tends to require. `macos-latest` lags a major version behind (15).
+    runs-on: macos-26
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
