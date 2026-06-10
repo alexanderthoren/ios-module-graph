@@ -14,11 +14,19 @@ state (git missing/broken) means *no verdict*, never a crash.
 """
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 
 from .history import _git_state
 
 REBUILD_HINT = "Rebuild: `just clean` then re-run."
+
+# Exit code the CLI returns when the cached graph is verifiably stale, so the
+# justfile's `_prep` can branch on it (an incremental refresh). Every other
+# outcome — fresh, unverifiable, unreadable JSON, bad args — exits 0 so a refresh
+# only ever fires on a *definite* staleness verdict, never on uncertainty.
+STALE_EXIT = 10
 
 
 def classify_staleness(
@@ -79,3 +87,43 @@ def warn_if_stale(target_commit, project_dir, *, git_state=_git_state) -> str | 
     )
     print(banner, file=sys.stderr)
     return message
+
+
+def _embedded_commit(json_path: Path) -> dict | None:
+    """Read just ``target_commit`` out of a saved index_graph.json, tolerating
+    anything (missing file, bad JSON, old schema) by returning ``None`` — the CLI
+    must never crash a `just tree`; an unverifiable graph is simply reused."""
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    tc = data.get("target_commit")
+    return tc if isinstance(tc, dict) else None
+
+
+def main(argv=None) -> int:
+    """`python3 -m modgraph.staleness <index_graph.json> <project_dir>`.
+
+    Exits :data:`STALE_EXIT` when the cached graph is verifiably stale vs the
+    target repo's current git state (so the justfile triggers an incremental
+    refresh), and 0 for fresh / unverifiable / error — refresh only on a definite
+    verdict. Prints a one-line reason to stderr for visibility.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) != 2:
+        print("usage: python3 -m modgraph.staleness <index_graph.json> <project_dir>",
+              file=sys.stderr)
+        return 0  # never block a reuse on a usage slip
+    json_path, project_dir = Path(argv[0]), argv[1]
+
+    target_commit = _embedded_commit(json_path)
+    sha, _subject, dirty = _git_state(project_dir)
+    message = classify_staleness(target_commit, sha, dirty)
+    if message is None:
+        return 0
+    print(f"stale: {message}", file=sys.stderr)
+    return STALE_EXIT
+
+
+if __name__ == "__main__":
+    sys.exit(main())

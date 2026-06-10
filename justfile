@@ -9,7 +9,10 @@
 # tree/list/all reuse the index_graph.json Swift produced last time, so editing
 # the modgraph package and re-rendering is instant. If it's missing — first run,
 # or after `just clean` — they rebuild it from a fresh build of the target
-# project automatically. To force a rebuild from zero: `just clean` then run.
+# project automatically. If it's present but the target repo MOVED since (HEAD
+# changed or the working tree is dirty), they run an incremental refresh under
+# the hood instead of reusing a stale graph (set AUTO_REFRESH=0 to disable and
+# keep warn-only reuse). To force a rebuild from zero: `just clean` then run.
 #
 # ── pointing it at a project ───────────────────────────────────────────────────
 # Nothing here is tied to a specific app. Point it at any project two ways:
@@ -37,6 +40,13 @@ project_dir := env_var_or_default('PROJECT_DIR', env_var('HOME') / "Developer/io
 #   xcode → xcodebuild -workspace/-project -scheme (Xcode-managed project)
 #   spm   → swift build (pure SwiftPM package, no Xcode project)
 build_mode := env_var_or_default('BUILD_MODE', 'auto')
+
+# Auto-refresh: when index_graph.json exists but the target repo moved (HEAD
+# changed or the working tree is dirty), tree/list/all run an INCREMENTAL refresh
+# under the hood instead of reusing a stale graph. Set AUTO_REFRESH=0 to keep the
+# old warn-only reuse (CI / slow projects); `just clean` always forces a full
+# cold rebuild regardless.
+auto_refresh := env_var_or_default('AUTO_REFRESH', '1')
 
 # xcode-mode inputs. Leave blank to auto-detect the single .xcworkspace/
 # .xcodeproj and a scheme of the same basename under project_dir.
@@ -190,17 +200,28 @@ clean:
 
 # ── private plumbing (hidden from `just --list`) ──────────────────────────────
 
-# Ensure index_graph.json is ready: reuse the existing one, or build it from a
-# fresh build of the target project when missing (first run / after `just clean`).
+# Ensure index_graph.json is ready, with a three-way decision:
+#   • missing (first run / after `just clean`)  → cold _index (full build)
+#   • present but the target repo moved          → incremental refresh (_index 0),
+#     unless AUTO_REFRESH=0, in which case reuse + the renderer's stale warning
+#   • present and verifiably current/unverifiable → reuse as-is
+# Staleness is decided by modgraph.staleness (exit 10 = stale) comparing the
+# repo's current HEAD/dirty state against the commit the cached graph embeds.
+# Note: the refresh path keeps build_times from the last cold build and may let
+# deleted files linger in the index store — `just clean` for a full reset.
 _prep: _migrate_legacy
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p "{{out_dir}}"
-    if [[ -f "{{graph_json}}" ]]; then
-        echo "↺ reusing {{graph_json}} (run \`just clean\` to force a rebuild)"
-    else
+    if [[ ! -f "{{graph_json}}" ]]; then
         echo "→ {{graph_json}} missing — building from the project…"
         just _index
+    elif [[ "{{auto_refresh}}" == "1" ]] && ! python3 -m modgraph.staleness "{{graph_json}}" "{{project_dir}}"; then
+        echo "↻ target repo moved since {{graph_json}} was built — incremental refresh"
+        echo "  (build_times kept from the last cold build; \`just clean\` for a full reset)"
+        just _index 0
+    else
+        echo "↺ reusing {{graph_json}} (run \`just clean\` to force a rebuild)"
     fi
 
 # One-time upgrade shim: artifacts used to live at the repo root (single-project

@@ -85,8 +85,11 @@ from a pre-`out/` checkout are migrated there automatically on the next run.
 run, so re-rendering is instant. It's rebuilt automatically when missing — the
 first run, or after `just clean`. The cached graph records which commit of your
 project it was indexed at; if the repo has moved on (or has uncommitted
-changes) the renderer prints a **stale-index warning** so you don't silently
-analyze an old world. **To force a rebuild from zero:**
+changes) `tree`/`list`/`all` **auto-refresh** it incrementally before rendering,
+so you never silently analyze an old world. Prefer the old behavior — reuse the
+stale graph and just print a warning (e.g. in CI, or on a project where even an
+incremental build is slow)? Set `AUTO_REFRESH=0`. **To force a rebuild from
+zero:**
 
 ```sh
 just clean && just tree
