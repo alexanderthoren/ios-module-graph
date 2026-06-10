@@ -96,6 +96,77 @@ class MigrationPlanTest(unittest.TestCase):
         self.assertFalse(plan[0]["is_cycle"])
 
 
+class MigrationPlanRoiTest(unittest.TestCase):
+    """ROI-ranked frontier: `scores` reorders the eligible set, never the topology."""
+
+    # Two independent leaves consumed by C: both eligible at step 1.
+    EDGES = {("C", "A"): 1, ("C", "B"): 1}
+    FOLDERS = {"A", "B", "C"}
+
+    def test_without_scores_steps_carry_none(self):
+        plan, _ = graph.compute_migration_plan(self.EDGES, self.FOLDERS)
+        self.assertIsNone(plan[0]["roi"])
+        self.assertIsNone(plan[0]["payoff"])
+        self.assertIsNone(plan[0]["effort"])
+
+    def test_higher_roi_jumps_the_frontier(self):
+        # Default order is alphabetical (A, B tie on reverse-reach); a higher
+        # ROI on B flips it.
+        scores = {"A": {"combined": 10.0, "effort": 10},
+                  "B": {"combined": 50.0, "effort": 1},
+                  "C": {"combined": 0.0, "effort": 1}}
+        plan, _ = graph.compute_migration_plan(self.EDGES, self.FOLDERS, scores)
+        self.assertEqual([p["folders"][0] for p in plan], ["B", "A", "C"])
+
+    def test_roi_never_violates_topology(self):
+        # C has a huge score but depends on A and B — it still goes last.
+        scores = {"A": {"combined": 1.0, "effort": 1},
+                  "B": {"combined": 1.0, "effort": 1},
+                  "C": {"combined": 100.0, "effort": 1}}
+        plan, _ = graph.compute_migration_plan(self.EDGES, self.FOLDERS, scores)
+        self.assertEqual(plan[2]["folders"], ["C"])
+
+    def test_hot_preferred_over_combined(self):
+        # A wins on `combined` but B wins on churn-weighted `hot`.
+        scores = {"A": {"combined": 50.0, "hot": 0.0, "effort": 1},
+                  "B": {"combined": 10.0, "hot": 10.0, "effort": 1},
+                  "C": {"combined": 0.0, "effort": 1}}
+        plan, _ = graph.compute_migration_plan(self.EDGES, self.FOLDERS, scores)
+        self.assertEqual(plan[0]["folders"], ["B"])
+
+    def test_steps_annotated_with_aggregates(self):
+        scores = {"A": {"combined": 10.0, "effort": 4},
+                  "B": {"combined": 50.0, "effort": 1},
+                  "C": {"combined": 0.0, "effort": 1}}
+        plan, _ = graph.compute_migration_plan(self.EDGES, self.FOLDERS, scores)
+        b = next(p for p in plan if p["folders"] == ["B"])
+        self.assertEqual(b["payoff"], 50.0)
+        self.assertEqual(b["effort"], 1)
+        self.assertEqual(b["roi"], 50.0)
+
+    def test_cycle_bundle_sums_member_scores(self):
+        edges = {("X", "Y"): 1, ("Y", "X"): 1}
+        scores = {"X": {"combined": 30.0, "effort": 2},
+                  "Y": {"combined": 10.0, "effort": 2}}
+        plan, _ = graph.compute_migration_plan(edges, {"X", "Y"}, scores)
+        self.assertEqual(plan[0]["payoff"], 40.0)
+        self.assertEqual(plan[0]["effort"], 4)
+        self.assertEqual(plan[0]["roi"], 10.0)
+
+    def test_missing_score_rows_default_to_zero(self):
+        plan, _ = graph.compute_migration_plan(self.EDGES, self.FOLDERS, {})
+        self.assertEqual([p["folders"][0] for p in plan], ["A", "B", "C"])
+        self.assertEqual(plan[0]["roi"], 0.0)
+
+    def test_deterministic_across_calls_with_scores(self):
+        scores = {"A": {"combined": 10.0, "effort": 10},
+                  "B": {"combined": 50.0, "effort": 1},
+                  "C": {"combined": 0.0, "effort": 1}}
+        a, _ = graph.compute_migration_plan(self.EDGES, self.FOLDERS, scores)
+        b, _ = graph.compute_migration_plan(self.EDGES, self.FOLDERS, scores)
+        self.assertEqual(a, b)
+
+
 class BuildTreeTest(unittest.TestCase):
     def test_keys_sorted_for_determinism(self):
         # Regression: tree dict came from a set and reordered per hash seed.

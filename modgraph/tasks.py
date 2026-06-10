@@ -38,6 +38,9 @@ def build_task_list(
                 "id": task_num,
                 "plan_step": step["step"],
                 "type": "extract_leaf",
+                "payoff": step.get("payoff"),
+                "effort": step.get("effort"),
+                "roi": step.get("roi"),
                 "folder": folder,
                 "files": sorted(files_by_folder.get(folder, [])),
                 "files_count": len(files_by_folder.get(folder, [])),
@@ -63,6 +66,9 @@ def build_task_list(
                     "id": task_num,
                     "plan_step": step["step"],
                     "type": "extract_from_cycle",
+                    "payoff": step.get("payoff"),
+                    "effort": step.get("effort"),
+                    "roi": step.get("roi"),
                     "folder": folder,
                     "files": sorted(files_by_folder.get(folder, [])),
                     "files_count": len(files_by_folder.get(folder, [])),
@@ -132,6 +138,10 @@ def write_task_list_markdown(tasks: list[dict], meta: dict, out_path: Path) -> N
         lines.append("")
         lines.append(f"- **Type:** `{t['type']}`")
         lines.append(f"- **Plan step:** {t['plan_step']}")
+        if t.get("roi") is not None:
+            lines.append(f"- **ROI:** {t['roi']} "
+                         f"(payoff {t['payoff']}, effort {t['effort']} — "
+                         f"files + refs to refactor + types going public)")
         lines.append(f"- **Files:** {t['files_count']}")
         if t["files"]:
             lines.append("  - " + ", ".join(f"`{n}`" for n in t["files"]))

@@ -19,6 +19,7 @@ from .module_graph import compute_module_graph
 from .render import render_html
 from .resources import collect_resources
 from .scanner import compute_pair_types, scan
+from .scoring import compute_folder_scores
 from .spm import _build_package_map, auto_detect_migrated_prefixes, is_migrated
 from .staleness import warn_if_stale
 from .tasks import build_task_list, write_task_list_json, write_task_list_markdown
@@ -190,14 +191,28 @@ def main() -> int:
         (a, b): w for (a, b), w in leaf_edges.items()
         if a in source_folders and b in source_folders
     }
-    plan, stuck = compute_migration_plan(plan_edges, source_folders)
-
-    # For each cycle bundle in the plan, compute ordered cycle-breaker edges.
-    # Use plan_edges (not leaf_edges) so already-migrated targets are ignored.
     # In index mode pair_types is already resolved by USR; recomputing by name
     # would reintroduce the collision false-edges we built this tool to avoid.
     pair_types = (resolved_pair_types if resolved_pair_types is not None
                   else compute_pair_types(file_records, raw_owners))
+
+    # Git churn over the target repo (commits touching Swift in the last year).
+    # Weights both the per-folder scores below and Build mode's Split-plan
+    # ranking. Best-effort like every other git capture — no git, no churn,
+    # never fatal.
+    churn_commits = compute_churn(root)
+
+    # Per-folder payoff/effort scores rank the plan's eligible frontier by ROI:
+    # cheap, high-payoff steps lead while the topological order stays exact.
+    folder_scores = compute_folder_scores(
+        tree, plan_edges, source_folders, pair_types, decls, file_records,
+        churn_commits=churn_commits,
+    )
+    plan, stuck = compute_migration_plan(plan_edges, source_folders,
+                                         scores=folder_scores["folders"])
+
+    # For each cycle bundle in the plan, compute ordered cycle-breaker edges.
+    # Use plan_edges (not leaf_edges) so already-migrated targets are ignored.
     for step in plan:
         if step["is_cycle"]:
             br = compute_cycle_breakers(step["folders"], plan_edges, pair_types)
@@ -236,7 +251,8 @@ def main() -> int:
     if plan:
         head = plan[0]
         h_label = head["folders"][0] if head["size"] == 1 else f"cycle of {head['size']} folders"
-        print(f"  → Start with: {h_label} (unlocks {len(head['unlocks'])} bundle(s))")
+        roi_note = f"roi {head['roi']}, " if head.get("roi") is not None else ""
+        print(f"  → Start with: {h_label} ({roi_note}unlocks {len(head['unlocks'])} bundle(s))")
 
     # Ship every edge to the HTML — Explore mode now renders SPM-to-SPM
     # coupling as first-class. Migration mode filters per the chosen
@@ -288,10 +304,6 @@ def main() -> int:
     # build-times file; powers the from-scratch cold-build wall estimate.
     build_floors = (load_build_floors(Path(args.build_times).with_name("build_floors.json"))
                     if args.build_times else {})
-    # Git churn over the target repo (commits touching Swift in the last year):
-    # weights the Split-plan ranking by how often each module actually changes.
-    # Best-effort like every other git capture — no git, no churn, never fatal.
-    churn_commits = compute_churn(root)
     module_graph = compute_module_graph(
         all_source_folders, leaf_edges, migrated_prefixes, decls,
         root_label=root_label, build_times=build_times, build_floors=build_floors,

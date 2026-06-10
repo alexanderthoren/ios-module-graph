@@ -54,6 +54,40 @@ def sample_meta(**overrides):
 
 
 # --- build_task_list -------------------------------------------------------
+class TaskScoreFieldsTest(unittest.TestCase):
+    def test_tasks_copy_step_scores(self):
+        step = singleton_step(1, "Core")
+        step.update({"payoff": 75.0, "effort": 3, "roi": 25.0})
+        out = tasks.build_task_list([step], [], "Root", "/root", [], 0, 1)
+        self.assertEqual(out[0]["roi"], 25.0)
+        self.assertEqual(out[0]["payoff"], 75.0)
+        self.assertEqual(out[0]["effort"], 3)
+
+    def test_tasks_default_scores_to_none(self):
+        out = tasks.build_task_list(
+            [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1)
+        self.assertIsNone(out[0]["roi"])
+
+    def test_markdown_shows_roi_line_when_scored(self):
+        step = singleton_step(1, "Core")
+        step.update({"payoff": 75.0, "effort": 3, "roi": 25.0})
+        out = tasks.build_task_list([step], [], "Root", "/root", [], 0, 1)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.md"
+            tasks.write_task_list_markdown(out, sample_meta(), path)
+            text = path.read_text(encoding="utf-8")
+        self.assertIn("**ROI:** 25.0 (payoff 75.0, effort 3", text)
+
+    def test_markdown_omits_roi_line_without_scores(self):
+        out = tasks.build_task_list(
+            [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.md"
+            tasks.write_task_list_markdown(out, sample_meta(), path)
+            text = path.read_text(encoding="utf-8")
+        self.assertNotIn("**ROI:**", text)
+
+
 class BuildTaskListSingletonTest(unittest.TestCase):
     def setUp(self):
         self.file_records = [
