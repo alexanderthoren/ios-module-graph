@@ -91,6 +91,12 @@ matrix, `PYTHONHASHSEED=1` to exercise determinism), the JS suite runs on Node
 is toolchain-pinned, the runner may lag) builds the reader, runs `swift test`,
 and runs the e2e test with `MODGRAPH_E2E=1`.
 
+**Demo** (`.github/workflows/demo.yml`): weekly (+ manual dispatch), runs the
+whole pipeline against IceCubesApp (checked out fresh; its `.xcconfig` copied
+from the repo's template) on a macOS runner and publishes the resulting HTML to
+GitHub Pages (`index.html`). Requires Pages source = "GitHub Actions" in repo
+settings. The README's live-demo link points at it.
+
 There is no linter. Full verification = run both suites **and** regenerate the
 outputs (`just tree` / re-run against a cached `index_graph.json`) without error.
 
@@ -352,7 +358,8 @@ exist — do not "simplify" stage 1 back into pure text scanning.
   tolerated non-zero exit.
 
 - **Build mode is auto-detected** (`BUILD_MODE=auto`): `.xcworkspace`/`.xcodeproj`
-  ⇒ `xcode` (xcodebuild, needs `xcsift` on PATH); else `Package.swift` ⇒ `spm`
+  ⇒ `xcode` (xcodebuild; output piped through `xcsift` when installed, raw
+  `cat` otherwise); else `Package.swift` ⇒ `spm`
   (`swift build`). The spm path is prepared for splitting an app into multiple
   packages but is less battle-tested; iOS-only SPM code may need
   `SWIFT_BUILD_FLAGS` for an SDK/target.

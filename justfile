@@ -275,12 +275,15 @@ _index: _build_reader
         # non-zero xcodebuild exit (e.g. a link error) is tolerated because
         # indexing finishes before linking; we then assert the store populated
         # so a real compile failure still hard-fails.
+        # xcodebuild output goes through xcsift when installed (nice summaries),
+        # else straight through — keeps CI/fresh machines dependency-free.
+        fmt="cat"; command -v xcsift >/dev/null && fmt="xcsift"
         ( cd "$proj" && xcodebuild clean build \
             "${proj_flag[@]}" -scheme "$sc" -configuration "{{config}}" \
             -destination '{{dest}}' -derivedDataPath "{{derived}}" \
             SWIFT_ENABLE_EXPLICIT_MODULES=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             "OTHER_SWIFT_FLAGS=\$(inherited) -stats-output-dir {{stats_dir}}" \
-            {{xcode_flags}} 2>&1 | xcsift ) || echo "⚠ xcodebuild non-zero — verifying index store…"
+            {{xcode_flags}} 2>&1 | "$fmt" ) || echo "⚠ xcodebuild non-zero — verifying index store…"
 
         store="{{derived}}/Index.noindex/DataStore"
     else

@@ -11,6 +11,7 @@
 
 <img src="docs/explore.png" alt="Explore mode — interactive folder-level dependency graph" width="100%">
 <img src="docs/migrate.png" alt="Migration mode — SPM migration planner with progress tracking" width="100%">
+<img src="docs/build.png" alt="Build mode — module-level build-cost graph with warm/cold lenses and split-payoff ranking (IceCubesApp)" width="100%">
 
 </div>
 
@@ -33,6 +34,11 @@ compiler index store, resolves every type reference **by USR**, and gives you:
 > when several folders declare a type named `Foo`, so it fabricates edges. This
 > tool reads the index store Apple's compiler writes during a build and resolves
 > every reference to the **exact** declaration by USR — no phantom edges.
+
+**🚀 [Try the live demo](https://alexanderthoren.github.io/ios-module-graph/)** — the
+graph of [IceCubesApp](https://github.com/Dimillian/IceCubesApp), a real,
+heavily-modularized open-source Mastodon client, regenerated weekly by CI.
+Nothing to install.
 
 ---
 
@@ -305,7 +311,7 @@ DEST="generic/platform=iOS Simulator"
 | Swift 6.x toolchain | builds the index-store reader | ships with Xcode |
 | Python 3 | renders the HTML / task list | stdlib only, no pip deps |
 | Xcode + `xcodebuild` | builds the target project (xcode mode) | only for `.xcworkspace`/`.xcodeproj` |
-| `xcsift` | formats `xcodebuild` output | only used in xcode mode |
+| `xcsift` | formats `xcodebuild` output | optional — raw output when absent |
 
 The reader depends on `apple/indexstore-db` (`release/6.3`), fetched once on
 first build. If it fails to resolve, match the branch to your toolchain in
