@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
-  migrationPlanOrder, decodePayload,
+  migrationPlanOrder, decodePayload, resourcesUnder,
 } = require('../../modgraph/templates/graph_logic.js');
 
 // Just the ordered list of folder-groups from a plan (drops decoration).
@@ -197,4 +197,26 @@ test('decodePayload: tolerates missing sections', () => {
                             file_edges: [], type_edges: [] });
   assert.deepStrictEqual(d.edges, []);
   assert.deepStrictEqual(d.type_edges, []);
+});
+
+// ── resourcesUnder ───────────────────────────────────────────────────────────
+
+test('resourcesUnder: own folder entries come back bare', () => {
+  const map = { Core: ['View.xib', 'Assets.xcassets'] };
+  assert.deepStrictEqual(resourcesUnder(map, 'Core'), ['View.xib', 'Assets.xcassets']);
+});
+
+test('resourcesUnder: subfolder entries are prefixed with their relative path', () => {
+  const map = { 'Core/UI': ['Cell.xib'], Core: ['Top.strings'] };
+  assert.deepStrictEqual(resourcesUnder(map, 'Core'), ['Top.strings', 'UI/Cell.xib']);
+});
+
+test('resourcesUnder: sibling prefixes do not leak (Core vs CoreFoo)', () => {
+  const map = { CoreFoo: ['Nope.xib'], Core: ['Yes.xib'] };
+  assert.deepStrictEqual(resourcesUnder(map, 'Core'), ['Yes.xib']);
+});
+
+test('resourcesUnder: empty/missing map yields empty list', () => {
+  assert.deepStrictEqual(resourcesUnder({}, 'Core'), []);
+  assert.deepStrictEqual(resourcesUnder(undefined, 'Core'), []);
 });

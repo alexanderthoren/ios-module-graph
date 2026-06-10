@@ -248,11 +248,30 @@ function decodePayload(data) {
   return out;
 }
 
+// ── resources per migration step ─────────────────────────────────────────────
+// Aggregate the bundle resources a folder move drags along: entries of the
+// folder itself plus everything under it (a move takes the whole subtree).
+// `map` is payload.resources ({folder id -> [names]}); entries from subfolders
+// come back prefixed with their path relative to `folder` so the prompt shows
+// where each file lives. Deterministic: keys walked sorted.
+function resourcesUnder(map, folder) {
+  const out = [];
+  Object.keys(map || {}).sort().forEach(k => {
+    if (k === folder) {
+      map[k].forEach(n => out.push(n));
+    } else if (k.startsWith(folder + '/')) {
+      const rel = k.slice(folder.length + 1);
+      map[k].forEach(n => out.push(rel + '/' + n));
+    }
+  });
+  return out;
+}
+
 // Node-only: expose the helpers to the test runner. Guarded so the browser
 // (where `module` is undefined) skips it without error.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
-    migrationPlanOrder, decodePayload,
+    migrationPlanOrder, decodePayload, resourcesUnder,
   };
 }

@@ -4628,16 +4628,22 @@ function mpGeneratePrompt() {
     } else {
       L.push('- (Container folder -- move the .swift files in its subfolders too.)');
     }
+    const res = resourcesUnder(DATA.resources || {}, m.f);
+    if (res.length) {
+      L.push('- Resource files (' + res.length + ') -- these move with the folder:');
+      res.forEach(rn => L.push('  - `' + rn + '`'));
+    }
   });
   L.push('');
   L.push('## How to migrate each folder');
   L.push('1. `git mv` the listed `.swift` files into the destination target\'s `Sources/<Module>/` directory (preserve history).');
   L.push('2. **Move the tests too.** Locate the matching test files for the moved types (e.g. `<Type>Tests.swift`, the mirrored path under the current test target) and `git mv` them into the destination package\'s test target (the `Tests/<Module>Tests/` path shown above). Create that test target if it does not exist. Do NOT leave orphaned tests in the old target.');
-  L.push('3. For any NEW target/package: add the `.target` and a matching `.testTarget` to `Package.swift`, and wire `products`/`dependencies` so dependents can `import` it.');
-  L.push('4. Raise access levels: moved types, initializers, and any members used from outside the new module must become `public` (use `open` only where subclassed).');
-  L.push('5. Add `import <Module>` to every file across the whole project that references the moved types, and fix all references.');
-  L.push('6. Remove the moved source AND test files from the old target membership in the `.xcodeproj` so nothing compiles twice.');
-  L.push('7. Build the package and the app, then run the moved tests. Everything must compile and all moved tests must pass before finishing.');
+  L.push('3. **Move the listed resource files too** (if a folder lists any): `git mv` them into the module, declare them in the target\'s `resources:` in `Package.swift` (`.process(...)` for xibs/storyboards/assets/strings), and switch their lookups from `Bundle.main` (or `nibName`/`UIImage(named:)` defaults) to `Bundle.module`.');
+  L.push('4. For any NEW target/package: add the `.target` and a matching `.testTarget` to `Package.swift`, and wire `products`/`dependencies` so dependents can `import` it.');
+  L.push('5. Raise access levels: moved types, initializers, and any members used from outside the new module must become `public` (use `open` only where subclassed).');
+  L.push('6. Add `import <Module>` to every file across the whole project that references the moved types, and fix all references.');
+  L.push('7. Remove the moved source, test AND resource files from the old target membership in the `.xcodeproj` so nothing compiles twice or ships twice.');
+  L.push('8. Build the package and the app, then run the moved tests. Everything must compile and all moved tests must pass before finishing.');
   L.push('');
   L.push('## Constraints');
   L.push('- Behavior-preserving: no logic changes.');
