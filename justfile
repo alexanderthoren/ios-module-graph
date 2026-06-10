@@ -116,6 +116,11 @@ all:
     python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --history "{{history_jsonl}}" --excluded-file "{{excluded_json}}" --graph "{{html}}" --list "{{md}}"
     echo "✓ {{html}}  {{md}}"
 
+# Diff two saved index graphs: folders/edges/cycles added or removed, each new
+# edge annotated with the type references that explain it. format: markdown|json.
+diff old new format="markdown":
+    @python3 -m modgraph.diff "{{old}}" "{{new}}" --format "{{format}}"
+
 # Run the Python test suite (stdlib unittest — no pip deps, no index build).
 alias tests := test
 test:
