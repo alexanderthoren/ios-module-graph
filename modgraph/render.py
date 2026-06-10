@@ -135,7 +135,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 initial_excluded=None, excluded_file=None,
                 folder_package=None, packages=None, file_edges=None, type_edges=None,
                 divisions=None, module_graph=None, recommendations=None,
-                history=None):
+                history=None, resources=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -173,6 +173,10 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         # keyed to the target project's git commit — powers Build mode's
         # "Improvements" tab. See modgraph/history.py for the row shape.
         "history": history or [],
+        # folder id -> bundle-resource names directly inside it (xibs, asset
+        # catalogs, .strings, …) — the migration prompts list what a step must
+        # move besides code. See modgraph/resources.py.
+        "resources": resources or {},
     }
     html = (
         _load_template()

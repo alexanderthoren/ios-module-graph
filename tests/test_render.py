@@ -272,6 +272,7 @@ class RenderHtmlDefaultsTest(unittest.TestCase):
         self.assertEqual(self.data["packages"], [])
         self.assertEqual(self.data["file_edges"], [])
         self.assertEqual(self.data["type_edges"], [])
+        self.assertEqual(self.data["resources"], {})
 
     def test_excluded_file_name_default(self):
         # When excluded_file is None, the basename defaults to the dotfile name.

@@ -16,6 +16,7 @@ from .build_times import load_build_floors, load_build_times
 from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
 from .render import render_html
+from .resources import collect_resources
 from .scanner import compute_pair_types, scan
 from .spm import _build_package_map, auto_detect_migrated_prefixes, is_migrated
 from .staleness import warn_if_stale
@@ -244,6 +245,17 @@ def main() -> int:
         all_source_folders, migrated_prefixes
     )
 
+    # Per-folder bundle-resource inventory (xibs, asset catalogs, .strings, …)
+    # for the migration prompts: a step must move these along with the code,
+    # declare them in Package.swift, and switch Bundle.main → Bundle.module.
+    # Best-effort — a filesystem hiccup never blocks a render.
+    try:
+        resources = collect_resources(
+            root, include_tests=args.include_tests, ignore_patterns=args.ignore
+        )
+    except OSError:
+        resources = {}
+
     # Decide which outputs to emit. --out is a back-compat alias for --graph.
     graph_path: Path | None = args.graph
     if args.out is not None:
@@ -329,6 +341,7 @@ def main() -> int:
             file_edges=file_edges, type_edges=type_edges,
             divisions=divisions, module_graph=module_graph,
             recommendations=recommendations, history=history,
+            resources=resources,
         )
         print(f"\nWrote graph: {graph_path}")
 
