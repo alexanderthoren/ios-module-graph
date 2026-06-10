@@ -426,6 +426,10 @@
     .step.done { background: var(--green-soft); border-color: #b6ebcb; }
     .step.next { background: var(--orange-soft); border-color: #fcd9a0; box-shadow: var(--ring); }
     .step .stepNum { font-weight: 700; color: var(--text-faint); margin-right: 6px; }
+    .wave-badge, .roi-badge { display: inline-block; font-size: 10px; font-weight: 700;
+      padding: 1px 6px; border-radius: 9px; margin-right: 4px; vertical-align: 1px; cursor: help; }
+    .wave-badge { background: var(--surface-2); color: var(--text-dim); border: 1px solid var(--border); }
+    .roi-badge { background: var(--green-soft); color: var(--green); border: 1px solid #b6ebcb; }
     .step .unlocks { color: var(--text-dim); font-size: 11px; margin-top: 3px; }
     .step .unlocks .u { color: var(--green); font-weight: 600; }
     .step-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -2045,6 +2049,21 @@ function stepUnlocksText(step) {
   return step.unlocks.map(u => u.size === 1 ? u.folders[0] : ('cycle×' + u.size)).join(', ');
 }
 
+// Wave + ROI badges for a plan step (CLI plan and wizard steps share the
+// shape: wave always present on fresh payloads, roi/payoff/effort only when
+// per-folder scores were available). Older cached plans lack the fields —
+// guards keep them rendering unchanged.
+function stepScoreBadges(s) {
+  let html = '';
+  if (s.wave != null) {
+    html += '<span class="wave-badge" title="Wave ' + s.wave + ' — steps in the same wave have no dependencies on each other and can be done in parallel, one PR each. Waves complete in order.">🌊 W' + s.wave + '</span>';
+  }
+  if (s.roi != null) {
+    html += '<span class="roi-badge" title="ROI ' + s.roi + ' = payoff ' + s.payoff + ' ÷ effort ' + s.effort + ' (files + refs to refactor + types going public). Higher = cheaper win, extracted earlier.">⚡ ' + s.roi + '</span>';
+  }
+  return html;
+}
+
 function renderPlan() {
   if (migrationTarget) { renderTargetPlan(); return; }
   // Normal (global) plan mode — restore the default chrome.
@@ -2069,6 +2088,8 @@ function renderPlan() {
     rec.innerHTML =
       '<h3>' + (isStart ? '🚀 Start here' : '➡️ Next step') + ' — step ' + nextStep.step + ' of ' + plan.length + '</h3>' +
       '<div class="card-headline">' + escapeHtml(headline) + '</div>' +
+      ((nextStep.wave != null || nextStep.roi != null)
+        ? '<div style="margin:4px 0;">' + stepScoreBadges(nextStep) + '</div>' : '') +
       (isCycle
         ? (
             '<div class="info" style="background:#fdf2e9;padding:8px;border-radius:4px;border-left:3px solid #e67e22;margin: 6px 0;">' +
@@ -2134,6 +2155,7 @@ function renderPlan() {
       : '<b>⚠ Cycle bundle (' + s.size + ' folders)</b>';
     let inner =
       '<span class="stepNum">#' + s.step + '</span>' +
+      stepScoreBadges(s) +
       (isDone ? '✓ ' : '') + folderListHtml +
       (unlocksTxt
         ? '<div class="unlocks">→ unlocks: <span class="u">' + escapeHtml(unlocksTxt) + '</span></div>'
@@ -4450,6 +4472,7 @@ function renderWizardPlan() {
     const headerHtml = '<div class="wiz-step-header">' +
       '<span class="stepNum">' + (displayIdx + 1) + '.</span>' +
       '<span class="grow"><b>' + (s.is_cycle ? '⚠ Bundle of ' + s.size + ' (cyclically coupled)' : 'Move folder') + '</b></span>' +
+      stepScoreBadges(s) +
       statusBadge +
       '</div>';
     const actionHtml = '<div class="step-actions">' +
