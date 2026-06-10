@@ -83,6 +83,32 @@ class CollapseToModules(unittest.TestCase):
     def test_deterministic(self):
         self.assertEqual(self.g, _toy_graph())
 
+    def test_churn_defaults_to_zero_and_unflagged(self):
+        self.assertEqual(self.by_id["app"]["churn"], 0)
+        self.assertFalse(self.g["summary"]["churned"])
+
+
+class ChurnAttachment(unittest.TestCase):
+    def test_commits_counted_once_per_module(self):
+        folders = {"App/Main", "Pkg/Sources/Core/Impl", "Pkg/Sources/Util"}
+        leaf_edges = {("App/Main", "Pkg/Sources/Core/Impl"): 1}
+        decls = {f: {"T"} for f in folders}
+        # One commit touches two folders of Core's module + the app; another
+        # touches only the app. A third touches a folder outside the graph —
+        # it folds into app via module_of like any unprefixed path.
+        commits = [
+            {"Pkg/Sources/Core/Impl", "Pkg/Sources/Core/Other", "App/Main"},
+            {"App/Main"},
+            {"Gone/Deleted"},
+        ]
+        g = compute_module_graph(folders, leaf_edges, ["Pkg/Sources"], decls,
+                                 churn_commits=commits)
+        by_id = {n["id"]: n for n in g["nodes"]}
+        self.assertEqual(by_id["Pkg/Sources/Core"]["churn"], 1)
+        self.assertEqual(by_id["app"]["churn"], 3)
+        self.assertEqual(by_id["Pkg/Sources/Util"]["churn"], 0)
+        self.assertTrue(g["summary"]["churned"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -162,6 +162,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `divide.py` | split ONE module into smaller modules: `aggregate_module` (subfolders→units), `public_surface`, `compute_division_plan` (reuses `graph`/`cycles`), `dividable_modules` |
 | `build_impact.py` | `compute_build_impact` — generic **warm-rebuild blast radius** (transitive reverse-dependents) + **cold-build cohort/critical path** (SCC-condensed, reuses `_tarjan_sccs`) scorer over any node/edge set; consumed by `module_graph` |
 | `module_graph.py` | `module_of`, `compute_module_graph` — collapse the folder graph to real **compile units** (SPM targets + one app target), score via `build_impact`; powers "Build" mode |
+| `churn.py` | `compute_churn` (git capture) + pure `commit_folder_sets`/`churn_by_module` — commits-per-module over the last year; weights Build mode's Split-plan ranking (`hot`) |
 | `build_recommendations.py` | `compute_split_recommendations` — rank modules by the build-time **payoff of separating** them (warm cascade + cold critical-path contribution), link dividable ones to `divisions`; powers Build mode's "Split plan" tab |
 | `history.py` | `build_snapshot`/`append_snapshot`/`load_history` — append-only build-cost history (one row per real change, keyed to the **target project's** git commit, deduped) so successive extractions can be compared; survives `just clean`; powers Build mode's "Improvements" tab |
 | `build_times.py` | `aggregate_stats_dir`/`load_build_times` (per-module compile **work** = Σ wall) + `aggregate_floors_dir`/`load_build_floors` (per-module **serial floor** = longest single file) (+ CLI) — read from the Swift compiler's `-stats-output-dir`; feed Build mode's module cost + the from-scratch `cold_wall` |
@@ -232,9 +233,15 @@ displayed edges). Collapsing to modules is also *more correct*: folder-level cyc
 vanish (they're intra-module and irrelevant — a module compiles atomically), so the
 Fever graph drops from 28 folder cycles to **0 module cycles**.
 
-Deterministic (sorted nodes/edges; reuses `_tarjan_sccs`). **Structural only** — no
-git churn weighting yet (the obvious v2: rank by `blast_radius × commit-frequency`
-to separate "foundational" from "actually hurts").
+Deterministic for a given input (sorted nodes/edges; reuses `_tarjan_sccs`).
+**Churn-aware**: `churn.py` captures the target repo's last-year `git log
+--name-only` (best-effort, like every git capture), `compute_module_graph`
+attaches per-module `churn` = commits touching it (once per commit, however
+many files), and the Split-plan ranking key becomes `hot = combined ×
+churn/maxChurn` — separating "foundational" (huge blast radius, never touched)
+from "actually hurts" (touched weekly). Without git, `hot` is `None`,
+`summary["churned"]` false, and everything falls back to the structural
+`combined` exactly as before.
 
 Build mode has a second tab, **Split plan** (`payload["recommendations"]`, from
 `build_recommendations.compute_split_recommendations`): modules ranked by the

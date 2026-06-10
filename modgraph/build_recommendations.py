@@ -14,10 +14,15 @@ cut build time, structurally (no git churn):
   parallel, shaving up to that cost off the floor. Off-path modules give no cold
   benefit (splitting them doesn't shorten the longest chain).
 
-``combined`` = ``50·warm/maxWarm + 50·cold/maxCold`` (0–100), the ranking key — so
-the list is ordered by total build-time improvement, surfacing modules that help
-warm, cold, or both. Compile cost is proxied by declared-type count (falls back to
-folder count). Deterministic: sorted by combined desc, then warm, then id.
+``combined`` = ``50·warm/maxWarm + 50·cold/maxCold`` (0–100) measures what a split
+*would* save. When the module graph carries **churn** (commits touching each
+module in the last year — see :mod:`modgraph.churn`), the ranking key becomes
+``hot`` = ``combined × churn/maxChurn`` (0–100): how often you *actually pay*
+that cost. That separates "foundational" (huge blast radius, never touched —
+leave it alone) from "actually hurts" (touched weekly). Without churn data the
+sort falls back to ``combined``. Compile cost is proxied by declared-type count
+(falls back to folder count). Deterministic for a given input: sorted by the
+ranking key desc, then combined, then warm, then id.
 
 A module is *dividable* when a precomputed division plan exists for it (it has
 sub-folder structure); the UI links those rows straight to the Divide modal.
@@ -78,6 +83,7 @@ def compute_split_recommendations(module_graph: dict, divisions: dict | None = N
             "id": mid,
             "label": n.get("label", mid),
             "kind": n.get("kind", "spm"),
+            "churn": n.get("churn", 0),
             "cost": cost[mid],
             "cost_human": _fmt(cost[mid], measured),
             "dependents": len(deps),
@@ -94,15 +100,24 @@ def compute_split_recommendations(module_graph: dict, divisions: dict | None = N
 
     max_warm = max((r["warm_score"] for r in raw), default=0) or 1
     max_cold = max((r["cold_score"] for r in raw), default=0) or 1
+    churned = bool(module_graph.get("summary", {}).get("churned"))
+    max_churn = max((r["churn"] for r in raw), default=0) or 1
     for r in raw:
         r["warm_norm"] = round(50.0 * r["warm_score"] / max_warm, 1)
         r["cold_norm"] = round(50.0 * r["cold_score"] / max_cold, 1)
         r["combined"] = round(r["warm_norm"] + r["cold_norm"], 1)
+        # What a split saves × how often you pay it. 0 when untouched all year:
+        # splitting what nobody edits buys nothing warm-wise.
+        r["hot"] = round(r["combined"] * r["churn"] / max_churn, 1) if churned else None
         r["action"], r["reason"] = _advise(r)
 
-    # Only modules with something to gain; ordered by total payoff.
+    # Only modules with something to gain; ordered by what actually hurts when
+    # churn is known, else by structural payoff.
     items = [r for r in raw if r["combined"] > 0]
-    items.sort(key=lambda r: (-r["combined"], -r["warm_score"], r["id"]))
+    if churned:
+        items.sort(key=lambda r: (-r["hot"], -r["combined"], -r["warm_score"], r["id"]))
+    else:
+        items.sort(key=lambda r: (-r["combined"], -r["warm_score"], r["id"]))
 
     summary = {
         "modules": len(nodes),
@@ -111,6 +126,7 @@ def compute_split_recommendations(module_graph: dict, divisions: dict | None = N
         "addressable_warm_cost": sum(r["downstream_cost"] for r in raw),
         "crit_path_cost": sum(r["cold_score"] for r in raw),
         "measured": measured,
+        "churned": churned,
     }
     return {"items": items, "summary": summary}
 
