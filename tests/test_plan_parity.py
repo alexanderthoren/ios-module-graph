@@ -46,13 +46,17 @@ def _nodes(edges):
     return sorted(s)
 
 
-def _py_plan_folders(edges):
+def _py_plan_folders(edges, scores=None):
     leaf_edges = {(a, b): w for a, b, w in edges}
-    plan, _ = graph.compute_migration_plan(leaf_edges, set(_nodes(edges)))
+    # Python scores rows use `combined` (hot absent) — payoff falls back to it.
+    py_scores = ({f: {"combined": s["payoff"], "effort": s["effort"]}
+                  for f, s in scores.items()} if scores is not None else None)
+    plan, _ = graph.compute_migration_plan(leaf_edges, set(_nodes(edges)),
+                                           py_scores)
     return [step["folders"] for step in plan]
 
 
-def _js_plan_folders(edges):
+def _js_plan_folders(edges, scores=None):
     nodes = _nodes(edges)
     deps = defaultdict(list)
     for a, b, _ in edges:
@@ -63,15 +67,25 @@ def _js_plan_folders(edges):
         "const {migrationPlanOrder} = require(" + json.dumps(str(_GRAPH_LOGIC)) + ");"
         "let raw='';process.stdin.on('data',d=>raw+=d).on('end',()=>{"
         "const o=JSON.parse(raw);"
-        "const steps=migrationPlanOrder(o.nodes,o.deps,o.wedges);"
+        "const steps=migrationPlanOrder(o.nodes,o.deps,o.wedges,o.scores??null);"
         "process.stdout.write(JSON.stringify(steps.map(s=>s.folders)));});"
     )
     proc = subprocess.run(
         [_NODE, "-e", script],
-        input=json.dumps({"nodes": nodes, "deps": dict(deps), "wedges": wedges}),
+        input=json.dumps({"nodes": nodes, "deps": dict(deps), "wedges": wedges,
+                          "scores": scores}),
         capture_output=True, text=True, check=True,
     )
     return json.loads(proc.stdout)
+
+
+def _scores_for(edges):
+    """Distinct integer payoff per folder (effort 1) so the ROI key alone
+    determines every frontier pick — no reliance on the wizard's extra
+    inbound-weight tiebreaker, and integer values round identically in both
+    languages."""
+    return {n: {"payoff": 10 * (i + 1), "effort": 1}
+            for i, n in enumerate(_nodes(edges))}
 
 
 @unittest.skipIf(_NODE is None, "node not on PATH; skipping JS↔Python plan parity")
@@ -80,6 +94,23 @@ class PlanParityTest(unittest.TestCase):
         for name, edges in _CASES.items():
             with self.subTest(case=name):
                 self.assertEqual(_js_plan_folders(edges), _py_plan_folders(edges))
+
+    def test_step_order_matches_python_with_scores(self):
+        # ROI-ranked variant (scores given): both engines must agree too.
+        for name, edges in _CASES.items():
+            with self.subTest(case=name):
+                scores = _scores_for(edges)
+                self.assertEqual(_js_plan_folders(edges, scores),
+                                 _py_plan_folders(edges, scores))
+
+    def test_scores_change_the_order_in_both(self):
+        # Sanity: the scored order genuinely differs from the structural one
+        # (A and B tie on reverse-reach; B's higher ROI must flip them).
+        edges = _CASES["converging_tree"]
+        scores = _scores_for(edges)
+        scored = _py_plan_folders(edges, scores)
+        self.assertEqual(_js_plan_folders(edges, scores), scored)
+        self.assertNotEqual(scored, _py_plan_folders(edges))
 
     def test_same_set_of_steps(self):
         # Even where order could differ, the partition into steps must match.
