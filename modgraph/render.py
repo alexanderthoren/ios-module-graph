@@ -135,7 +135,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 initial_excluded=None, excluded_file=None,
                 folder_package=None, packages=None, file_edges=None, type_edges=None,
                 divisions=None, module_graph=None, recommendations=None,
-                history=None, resources=None):
+                history=None, resources=None, quick_wins=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -177,6 +177,10 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         # catalogs, .strings, …) — the migration prompts list what a step must
         # move besides code. See modgraph/resources.py.
         "resources": resources or {},
+        # ROI-ranked extract-today candidates: cut-sets with fix advice and the
+        # auto-picked absorb-into-existing destination per folder. See
+        # modgraph/quick_wins.py. {"items": [...], "summary": {...}}.
+        "quick_wins": quick_wins or {"items": [], "summary": {}},
     }
     html = (
         _load_template()

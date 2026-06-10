@@ -33,6 +33,17 @@ TEST_DIR_NAMES = {"Tests", "Test", "UITests", "SnapshotTests", "tests"}
 # Xcode/Resource bundles — never useful as source.
 EXT_SKIPS = {".xcodeproj", ".xcworkspace", ".bundle", ".framework", ".app"}
 
+# Quick-win engine tunables (modgraph/quick_wins.py; decisions D1/D2 of the
+# 2026-06-10 study). Absorption into an existing module is the default outcome
+# but only while it stays simple enough to review:
+ABSORB_MAX_FILES = 30    # bigger folders deserve their own module
+ABSORB_MAX_PUBLIC = 20   # types forced public — beyond this the API is its own design job
+# Cut-edge classification: "move these files" only stays actionable for a
+# couple of files; a type counts as a shared primitive when this many folders
+# consume it.
+MOVE_FILE_MAX = 2
+SHARED_MIN_CONSUMERS = 2
+
 DECL_RE = re.compile(
     r"\b(?:class|struct|enum|protocol|actor|typealias)\s+([A-Z][A-Za-z0-9_]*)"
 )

@@ -16,6 +16,7 @@ from .build_times import load_build_floors, load_build_times
 from .churn import CHURN_DAYS, compute_churn
 from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
+from .quick_wins import compute_quick_wins
 from .render import render_html
 from .resources import collect_resources
 from .scanner import compute_pair_types, scan
@@ -327,6 +328,23 @@ def main() -> int:
     # ones to the precomputed division plans). Computed after divisions so it can
     # flag which modules have an auto-split plan.
     recommendations = compute_split_recommendations(module_graph, divisions)
+
+    # Quick wins: per source folder, the cut-set blocking an extract-today, the
+    # auto-picked absorb-into-existing destination (D2), ranked by ROI (D1).
+    # Needs the module graph for the absorb cycle check, hence computed here.
+    quick_wins = compute_quick_wins(
+        folder_scores, plan_edges, pair_types, leaf_edges, source_folders,
+        migrated_prefixes, file_edges, module_graph,
+    )
+    qsum = quick_wins["summary"]
+    print(f"Quick wins:        {qsum['extractable_now']} folder(s) extractable now "
+          f"({qsum['absorbable']} absorbable into existing modules, "
+          f"{qsum['cut_first']} need cuts first)")
+    if quick_wins["items"]:
+        top = quick_wins["items"][0]
+        dest = (f"absorb into {top['destination']['label']}" if top["destination"]
+                else top["action"].replace("_", " "))
+        print(f"  → Top quick win: {top['folder']} (roi {top['roi']}, {dest})")
     if recommendations["items"]:
         top = recommendations["items"][0]
         score = (f"hot {top['hot']}/100" if top.get("hot") is not None
@@ -364,7 +382,7 @@ def main() -> int:
             file_edges=file_edges, type_edges=type_edges,
             divisions=divisions, module_graph=module_graph,
             recommendations=recommendations, history=history,
-            resources=resources,
+            resources=resources, quick_wins=quick_wins,
         )
         print(f"\nWrote graph: {graph_path}")
 
