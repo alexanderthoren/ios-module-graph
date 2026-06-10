@@ -116,6 +116,21 @@ all:
     python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --history "{{history_jsonl}}" --excluded-file "{{excluded_json}}" --graph "{{html}}" --list "{{md}}"
     echo "✓ {{html}}  {{md}}"
 
+# Fast loop: re-index from an INCREMENTAL build (no clean) and re-render the
+# graph. After an extraction/refactor this gives a fresh graph in roughly the
+# time of an incremental build instead of a full cold one. Two trade-offs vs
+# `just clean && just tree`: compile TIMES are kept from the last cold build
+# (an incremental build only times what it recompiled — re-aggregating would
+# lie), and deleted files may linger in the index store until the next clean
+# run. The graph/edges/commit stamp are fully fresh.
+refresh:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _migrate_legacy
+    just _index 0
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --history "{{history_jsonl}}" --excluded-file "{{excluded_json}}" --graph "{{html}}"
+    echo "✓ {{html}} (refreshed)"
+
 # Diff two saved index graphs: folders/edges/cycles added or removed, each new
 # edge annotated with the type references that explain it. format: markdown|json.
 diff old new format="markdown":
@@ -214,7 +229,14 @@ _migrate_legacy:
 
 # Build the target project to populate its compiler index store, then resolve
 # the graph by USR → index_graph.json.
-_index: _build_reader
+#
+# fresh=1 (default): wipe the scratch dir, `clean build`, and (re)capture the
+# per-module compile times — the full, slow, honest run.
+# fresh=0 (`just refresh`): INCREMENTAL build into the existing scratch dir —
+# only changed files recompile, the index store updates in place, and the
+# existing build_times.json is kept (an incremental build only times what it
+# recompiled; aggregating that would lie).
+_index fresh="1": _build_reader
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -235,11 +257,19 @@ _index: _build_reader
     fi
     echo "→ build mode: $mode"
 
-    # Wipe the scratch build/index dir so indexing starts clean.
-    echo "→ removing {{derived}}"
-    rm -rf "{{derived}}"
-    # Fresh stats dir for the Swift compiler's -stats-output-dir (per-module times).
-    rm -rf "{{stats_dir}}"; mkdir -p "{{stats_dir}}"
+    if [[ "{{fresh}}" == "1" ]]; then
+        # Wipe the scratch build/index dir so indexing starts clean.
+        echo "→ removing {{derived}}"
+        rm -rf "{{derived}}"
+        # Fresh stats dir for the Swift compiler's -stats-output-dir (per-module times).
+        rm -rf "{{stats_dir}}"
+    else
+        echo "→ incremental refresh (reusing {{derived}})"
+    fi
+    # The stats dir must exist either way: the -stats-output-dir flag is part of
+    # the build settings, and dropping it between runs would defeat incrementality
+    # by changing the settings hash. Incremental stats are simply never aggregated.
+    mkdir -p "{{stats_dir}}"
 
     if [[ "$mode" == "xcode" ]]; then
         # Auto-detect workspace/project + scheme if not provided.
@@ -278,7 +308,8 @@ _index: _build_reader
         # xcodebuild output goes through xcsift when installed (nice summaries),
         # else straight through — keeps CI/fresh machines dependency-free.
         fmt="cat"; command -v xcsift >/dev/null && fmt="xcsift"
-        ( cd "$proj" && xcodebuild clean build \
+        actions=(build); [[ "{{fresh}}" == "1" ]] && actions=(clean build)
+        ( cd "$proj" && xcodebuild "${actions[@]}" \
             "${proj_flag[@]}" -scheme "$sc" -configuration "{{config}}" \
             -destination '{{dest}}' -derivedDataPath "{{derived}}" \
             SWIFT_ENABLE_EXPLICIT_MODULES=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
@@ -307,13 +338,19 @@ _index: _build_reader
     # compile times (+ a serial-floor sidecar = longest single file per module,
     # for the from-scratch cold-build wall estimate). The cold build above already
     # wrote them, so this is free; best-effort, never fatal (Build mode falls back
-    # to a type-count proxy).
-    rm -f "{{times_json}}" "{{floors_json}}"
-    if python3 -m modgraph.build_times "{{stats_dir}}" "{{times_json}}" "{{floors_json}}"; then
-        echo "✓ build times: {{times_json}} (+ {{floors_json}})"
-    else
+    # to a type-count proxy). Skipped on incremental refreshes: only changed files
+    # were recompiled (and timed), so re-aggregating would understate every module
+    # — the last cold build's numbers stay authoritative.
+    if [[ "{{fresh}}" == "1" ]]; then
         rm -f "{{times_json}}" "{{floors_json}}"
-        echo "ℹ no compile stats captured — Build mode uses the type-count proxy"
+        if python3 -m modgraph.build_times "{{stats_dir}}" "{{times_json}}" "{{floors_json}}"; then
+            echo "✓ build times: {{times_json}} (+ {{floors_json}})"
+        else
+            rm -f "{{times_json}}" "{{floors_json}}"
+            echo "ℹ no compile stats captured — Build mode uses the type-count proxy"
+        fi
+    else
+        echo "↺ keeping build times from the last cold build"
     fi
 
     "{{reader}}" "$store" "$proj" "{{graph_json}}"

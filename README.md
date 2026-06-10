@@ -71,6 +71,7 @@ The first run builds your project, indexes it, and writes
 | `just tree` | interactive HTML graph → `out/<Project>/dependency_graph.html` |
 | `just list` | migration task list → `out/<Project>/migration_plan.md` |
 | `just all` | both |
+| `just refresh` | fast loop — re-index from an **incremental** build (no clean), re-render |
 | `just serve` | live mode — serve the HTML, hot-reload on rebuild, `cmd`+click → Xcode |
 | `just test` | run the Python test suite (stdlib unittest) |
 | `just clean` | wipe the current project's generated files (forces a full rebuild next run) |
@@ -90,6 +91,13 @@ analyze an old world. **To force a rebuild from zero:**
 ```sh
 just clean && just tree
 ```
+
+For the edit → re-check loop there's a faster path: **`just refresh`** rebuilds
+incrementally (only changed files recompile), re-reads the index store, and
+re-renders — minutes become seconds-to-a-minute on big projects. Compile
+*times* are deliberately kept from the last cold build (an incremental build
+only times what it recompiled), and deleted files can linger in the index until
+the next clean run; the graph's edges and commit stamp are fully fresh.
 
 **Per-run overrides** — every `.env` key is also a `just` CLI var (CLI wins):
 

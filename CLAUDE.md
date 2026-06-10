@@ -20,6 +20,7 @@ See `README.md` for user-facing usage. This file covers the internals.
 just tree     # HTML graph        → out/<project>/dependency_graph.html
 just list     # migration plan    → out/<project>/migration_plan.md
 just all      # both
+just refresh  # fast loop: INCREMENTAL build → re-index → re-render (no clean)
 just serve    # live mode: serve HTML, hot-reload on rebuild, cmd+click → Xcode
 just diff a b # structural delta between two saved index_graph.json snapshots
 just check g … # architecture gate: exit 1 when a graph violates rules (CI)
@@ -39,7 +40,11 @@ and `--excluded-file`.
 
 `tree`/`list`/`all` reuse `index_graph.json` if present and rebuild it (full
 project build → index → resolve) only when missing. There is **no `--clean`
-flag** — force a rebuild with `just clean` then re-run.
+flag** — force a rebuild with `just clean` then re-run. `just refresh` re-indexes
+from an *incremental* build (`_index fresh=0`): no scratch-dir wipe, plain
+`build` instead of `clean build`, stats not re-aggregated (kept from the last
+cold build), reader re-runs over the updated store. Deletions may linger in the
+store until a clean run.
 
 Build the Swift reader alone:
 
@@ -266,7 +271,9 @@ deterministic — the honest improvement signal — while **wall** (`est_wall_s`
 The tab renders headline before/after cards, per-metric inline-SVG sparklines, and
 a per-commit delta table (green = improved per each metric's good-direction), all
 client-side off the payload — no recompute in the browser. The intended loop:
-extract a module → `just clean && just tree` → check the Improvements tab.
+extract a module → `just clean && just tree` → check the Improvements tab
+(or `just refresh` for a quick structural look first — it keeps the old
+timings, so wall metrics only move on the next cold run).
 **Gotcha:** because the snapshot writes on every `main()`, the cli `MainTest`
 redirects `--history` into a temp file (see `tests/test_cli.py:setUp`) so the suite
 never writes to the repo root — keep that when adding `main()` tests.
