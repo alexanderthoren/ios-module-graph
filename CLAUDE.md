@@ -17,14 +17,23 @@ See `README.md` for user-facing usage. This file covers the internals.
 `just` is the only entry point for the full pipeline. Recipes:
 
 ```sh
-just tree     # HTML graph        → dependency_graph.html
-just list     # migration plan    → migration_plan.md
+just tree     # HTML graph        → out/<project>/dependency_graph.html
+just list     # migration plan    → out/<project>/migration_plan.md
 just all      # both
 just serve    # live mode: serve HTML, hot-reload on rebuild, cmd+click → Xcode
 just test     # run the Python test suite (stdlib unittest; alias: just tests)
 just test-js  # run the JS unit tests (Node's built-in runner; no npm deps)
-just clean    # wipe generated files; next run rebuilds from scratch
+just clean    # wipe the current project's generated files; next run rebuilds
 ```
+
+All artifacts live in a **per-project workspace** `out/<project basename>/`
+(override: `OUT_DIR` env / `out_dir=` CLI var), so multiple target projects
+coexist without clobbering each other's cache or history. A hidden
+`_migrate_legacy` recipe moves pre-`out/` root-level artifacts there on the
+next run (skip-if-destination-exists; the staleness warning catches a
+wrong-project mismatch). The Python CLI's *own* defaults still point at the
+repo root — the justfile passes every path explicitly, including `--history`
+and `--excluded-file`.
 
 `tree`/`list`/`all` reuse `index_graph.json` if present and rebuild it (full
 project build → index → resolve) only when missing. There is **no `--clean`
@@ -235,7 +244,8 @@ Build mode has a third tab, **Improvements** (`payload["history"]`, from
 `history.py`): build cost **over time**, to verify each extraction actually paid off.
 On every render, `cli.main` auto-appends ONE snapshot — keyed to the *target
 project's* git commit (sha + dirty flag + subject) — to `build_history.jsonl`
-(`--history`, default repo root). It is **deduped** on a fingerprint of the
+(`--history`; cli default repo root, the justfile passes the per-project
+`out/<project>/build_history.jsonl`). It is **deduped** on a fingerprint of the
 metrics-that-matter, so re-running `just tree` on an unchanged commit is a no-op;
 you get one row per real change. The file **deliberately survives `just clean`** —
 that's the whole point (track improvement *across* extractions). Each row carries
@@ -357,9 +367,13 @@ exist — do not "simplify" stage 1 back into pure text scanning.
 
 `.env` (gitignored, auto-loaded via `set dotenv-load`) holds the target project:
 `PROJECT_DIR`, optional `WORKSPACE`/`SCHEME` (auto-detected if unset), plus
-`BUILD_MODE`/`CONFIG`/`DEST`/`SWIFT_BUILD_FLAGS`/`XCODE_BUILD_FLAGS`. Every key
-is also a `just` CLI var; CLI overrides `.env` overrides built-in defaults.
+`BUILD_MODE`/`CONFIG`/`DEST`/`SWIFT_BUILD_FLAGS`/`XCODE_BUILD_FLAGS`/`OUT_DIR`.
+Every key is also a `just` CLI var; CLI overrides `.env` overrides built-in
+defaults.
 
-Generated artifacts (`index_graph.json`, `dependency_graph.html`,
-`migration_plan.md`, `build_history.jsonl`, `.build/`, `__pycache__`) are
-gitignored.
+Generated artifacts live under `out/<project basename>/` (`index_graph.json`,
+`dependency_graph.html`, `migration_plan.md`, `build_times.json`,
+`build_floors.json`, `.swiftstats/`, `build_history.jsonl`,
+`.modularization_excluded.json`); `out/`, `.build/` and `__pycache__` are
+gitignored. The legacy root-level names stay in `.gitignore` because the
+*direct* Python CLI defaults still write there.
