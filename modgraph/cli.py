@@ -18,6 +18,7 @@ from .module_graph import compute_module_graph
 from .render import render_html
 from .scanner import compute_pair_types, scan
 from .spm import _build_package_map, auto_detect_migrated_prefixes, is_migrated
+from .staleness import warn_if_stale
 from .tasks import build_task_list, write_task_list_json, write_task_list_markdown
 
 
@@ -123,6 +124,10 @@ def main() -> int:
 
     if args.from_index is not None:
         data = load_index_graph(args.from_index.expanduser().resolve())
+        # The JSON is cached across runs; if the target repo moved since it was
+        # indexed (or either side is dirty), say so loudly instead of silently
+        # rendering an old world.
+        warn_if_stale(data.target_commit, root)
     else:
         _warn_scan_fallback()
         data = scan(

@@ -136,6 +136,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `models.py` | `GraphData` dataclass — the typed container both producers return |
 | `scanner.py` | regex-scan fallback path (`scan`, `strip_noise`, `should_skip_dir`, `collect_swift_files`, `compute_pair_types`) |
 | `index_loader.py` | `load_index_graph` — parse the USR-resolved `index_graph.json` |
+| `staleness.py` | `classify_staleness` (pure verdict matrix) + `warn_if_stale` — compare `GraphData.target_commit` against the target repo's current sha/dirty state, loud stderr banner when the cached `index_graph.json` is stale; silent when nothing can be verified |
 | `graph.py` | `_tarjan_sccs`, `compute_migration_plan` (SCC-aware, deterministic), `build_tree` |
 | `cycles.py` | `_feedback_arc_set`, `compute_cycle_breakers`, `compute_extraction_targets` |
 | `spm.py` | `_build_package_map`, `auto_detect_migrated_prefixes`, `is_migrated`, `_package_label` |
