@@ -16,6 +16,7 @@ from .build_times import load_build_floors, load_build_times
 from .churn import CHURN_DAYS, compute_churn
 from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
+from .module_splits import compute_module_splits
 from .file_affinity import compute_file_moves
 from .quick_wins import compute_quick_wins
 from .render import render_html
@@ -347,6 +348,21 @@ def main() -> int:
                 else top["action"].replace("_", " "))
         print(f"  → Top quick win: {top['folder']} (roi {top['roi']}, {dest})")
 
+    # Composite-module splits: migrated SPM modules whose level spread says a
+    # low-level core is trapped inside (consumers could drop their dependency
+    # height). Advisory; index path only (public cost needs pair_types).
+    module_splits = compute_module_splits(
+        module_graph, leaf_edges,
+        resolved_pair_types if resolved_pair_types is not None else {},
+        decls, migrated_prefixes,
+    )
+    if module_splits["items"]:
+        top_split = module_splits["items"][0]
+        print(f"Module splits:     {module_splits['summary']['candidates']} "
+              f"candidate(s) (top: {top_split['label']} L{top_split['level']} "
+              f"hides L{top_split['min_intrinsic']} core, "
+              f"{len(top_split['releasable'])} consumer(s) releasable)")
+
     # Misplaced files: the smallest PRs of all — moving a file whose references
     # overwhelmingly bind to another folder dissolves fake coupling before any
     # extraction. Advisory; index path only (empty without file_edges).
@@ -394,6 +410,7 @@ def main() -> int:
             divisions=divisions, module_graph=module_graph,
             recommendations=recommendations, history=history,
             resources=resources, quick_wins=quick_wins, file_moves=file_moves,
+            module_splits=module_splits,
         )
         print(f"\nWrote graph: {graph_path}")
 
