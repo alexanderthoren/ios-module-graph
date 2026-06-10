@@ -54,6 +54,82 @@ def sample_meta(**overrides):
 
 
 # --- build_task_list -------------------------------------------------------
+def quick_wins_for(folder, destination):
+    """Minimal quick_wins payload marking *folder* absorbable into *destination*."""
+    return {"items": [{
+        "folder": folder, "action": "absorb",
+        "destination": {"module": destination, "label": destination.split("/")[-1],
+                        "refs": 4, "uses": 4, "used_by": 0},
+    }]}
+
+
+class AbsorbTaskTest(unittest.TestCase):
+    def test_absorbable_leaf_becomes_absorb_task(self):
+        out = tasks.build_task_list(
+            [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1,
+            quick_wins=quick_wins_for("Core", "Pkg/Sources/Lib"))
+        self.assertEqual(out[0]["type"], "absorb_into_existing")
+        self.assertEqual(out[0]["destination"]["label"], "Lib")
+        self.assertIn("Lib", out[0]["notes"])
+
+    def test_leaf_without_destination_stays_extract_leaf(self):
+        out = tasks.build_task_list(
+            [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1,
+            quick_wins={"items": [{"folder": "Core", "action": "new_module",
+                                   "destination": None}]})
+        self.assertEqual(out[0]["type"], "extract_leaf")
+        self.assertIsNone(out[0]["destination"])
+
+    def test_markdown_renders_destination_and_absorb_steps(self):
+        out = tasks.build_task_list(
+            [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1,
+            quick_wins=quick_wins_for("Core", "Pkg/Sources/Lib"))
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.md"
+            tasks.write_task_list_markdown(out, sample_meta(), path)
+            text = path.read_text(encoding="utf-8")
+        self.assertIn("**Destination:** absorb into `Lib`", text)
+        self.assertIn("Move every file into `Lib`'s sources", text)
+        self.assertNotIn("1. Create a new SPM target", text)
+
+
+class WaveTest(unittest.TestCase):
+    def _two_wave_tasks(self):
+        s1 = singleton_step(1, "Core")
+        s1["wave"] = 1
+        s2 = singleton_step(2, "Feature")
+        s2["wave"] = 2
+        s3 = singleton_step(3, "Util")
+        s3["wave"] = 1
+        return tasks.build_task_list([s1, s2, s3], [], "Root", "/root", [], 0, 3)
+
+    def test_tasks_copy_step_wave(self):
+        out = self._two_wave_tasks()
+        self.assertEqual([t["wave"] for t in out], [1, 2, 1])
+
+    def test_markdown_groups_by_wave(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.md"
+            tasks.write_task_list_markdown(self._two_wave_tasks(),
+                                           sample_meta(), path)
+            text = path.read_text(encoding="utf-8")
+        self.assertIn("## Wave 1 — 2 task(s), parallelizable", text)
+        self.assertIn("## Wave 2 — 1 task(s), parallelizable", text)
+        # Wave 1's Util (task 3) is listed before wave 2's Feature (task 2).
+        self.assertLess(text.index("`Util`"), text.index("`Feature`"))
+        self.assertIn("grouped into **waves**", text)
+
+    def test_markdown_without_waves_keeps_sequential_guidance(self):
+        out = tasks.build_task_list(
+            [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.md"
+            tasks.write_task_list_markdown(out, sample_meta(), path)
+            text = path.read_text(encoding="utf-8")
+        self.assertNotIn("## Wave", text)
+        self.assertIn("complete them sequentially", text)
+
+
 class TaskScoreFieldsTest(unittest.TestCase):
     def test_tasks_copy_step_scores(self):
         step = singleton_step(1, "Core")

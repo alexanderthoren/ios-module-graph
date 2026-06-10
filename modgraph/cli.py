@@ -392,6 +392,7 @@ def main() -> int:
         tasks = build_task_list(
             plan, file_records, root_label, str(root),
             migrated_prefixes, len(initial_migrated), len(all_source_folders),
+            quick_wins=quick_wins,
         )
         meta = {
             "root_label": root_label,

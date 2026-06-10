@@ -96,6 +96,27 @@ class MigrationPlanTest(unittest.TestCase):
         self.assertFalse(plan[0]["is_cycle"])
 
 
+class MigrationPlanWaveTest(unittest.TestCase):
+    def test_toy_waves_follow_dependency_depth(self):
+        plan, _ = graph.compute_migration_plan(
+            fixtures.leaf_edges(), fixtures.source_folders())
+        waves = {tuple(p["folders"]): p["wave"] for p in plan}
+        self.assertEqual(waves[("Core", "Util")], 1)
+        self.assertEqual(waves[("Feature",)], 2)
+        self.assertEqual(waves[("App",)], 3)
+
+    def test_independent_leaves_share_wave_one(self):
+        plan, _ = graph.compute_migration_plan({}, {"Alpha", "Bravo"})
+        self.assertEqual([p["wave"] for p in plan], [1, 1])
+
+    def test_wave_is_depth_not_pick_order(self):
+        # C depends on A only; B is free. Whatever the pick order, B is wave 1.
+        plan, _ = graph.compute_migration_plan(
+            {("C", "A"): 1}, {"A", "B", "C"})
+        waves = {p["folders"][0]: p["wave"] for p in plan}
+        self.assertEqual(waves, {"A": 1, "B": 1, "C": 2})
+
+
 class MigrationPlanRoiTest(unittest.TestCase):
     """ROI-ranked frontier: `scores` reorders the eligible set, never the topology."""
 

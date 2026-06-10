@@ -83,6 +83,8 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str],
         is_cycle: bool,                          # True if SCC has >1 folder
         unlocks: [{step, folders, size}],        # SCCs that became eligible
         payoff, effort, roi,                     # from `scores`; None without
+        wave: int,                               # parallel cohort (1 = no deps;
+                                                 # same wave => independent)
       }]
       stuck_sccs = list of SCCs never reachable (shouldn't occur with full DAG
                    plan, but kept for symmetry).
@@ -157,6 +159,15 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str],
             indeg[w] -= 1
             if indeg[w] == 0:
                 queue.append(w)
+    # Wave = 1 + longest dependency chain beneath an SCC (its cohort in the
+    # condensation DAG). Steps sharing a wave have no dependencies among one
+    # another, so they can be extracted in parallel — one PR each. topo_order
+    # lists dependencies before dependents, so one forward pass suffices.
+    wave: dict[int, int] = {}
+    for v in topo_order:
+        deps_v = scc_deps.get(v, ())
+        wave[v] = 1 + max((wave[d] for d in deps_v), default=0) if deps_v else 1
+
     reverse_reach: dict[int, int] = {i: 0 for i in range(n_sccs)}
     for v in reversed(topo_order):
         seen: set[int] = set()
@@ -216,6 +227,7 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str],
             "payoff": scc_payoff.get(pick),
             "effort": scc_effort.get(pick),
             "roi": scc_roi.get(pick),
+            "wave": wave[pick],
         })
 
     # Backfill the 'step' field on unlocks now that all steps exist.
