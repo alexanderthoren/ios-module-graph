@@ -13,6 +13,7 @@ from .exclusions import compute_blocked_by_excluded, load_exclusions
 from .graph import build_tree, compute_migration_plan
 from .build_recommendations import compute_split_recommendations
 from .build_times import load_build_floors, load_build_times
+from .churn import CHURN_DAYS, compute_churn
 from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
 from .render import render_html
@@ -287,14 +288,22 @@ def main() -> int:
     # build-times file; powers the from-scratch cold-build wall estimate.
     build_floors = (load_build_floors(Path(args.build_times).with_name("build_floors.json"))
                     if args.build_times else {})
+    # Git churn over the target repo (commits touching Swift in the last year):
+    # weights the Split-plan ranking by how often each module actually changes.
+    # Best-effort like every other git capture — no git, no churn, never fatal.
+    churn_commits = compute_churn(root)
     module_graph = compute_module_graph(
         all_source_folders, leaf_edges, migrated_prefixes, decls,
         root_label=root_label, build_times=build_times, build_floors=build_floors,
+        churn_commits=churn_commits,
     )
     msum = module_graph["summary"]
     if build_times:
         print(f"Build times:       measured for {len(build_times)} target(s) "
               f"(~{msum['total_build_s']}s total compile work)")
+    if churn_commits:
+        print(f"Churn:             {len(churn_commits)} commit(s) touched Swift "
+              f"in the last {CHURN_DAYS} days")
     n_app = sum(1 for n in module_graph["nodes"] if n["kind"] == "app")
     print(f"Build graph:       {len(module_graph['nodes'])} module(s) "
           f"({len(module_graph['nodes']) - n_app} SPM + {n_app} app), "
@@ -308,8 +317,10 @@ def main() -> int:
     recommendations = compute_split_recommendations(module_graph, divisions)
     if recommendations["items"]:
         top = recommendations["items"][0]
+        score = (f"hot {top['hot']}/100" if top.get("hot") is not None
+                 else f"payoff {top['combined']}/100")
         print(f"  → Top split candidate: {top['label']} "
-              f"(payoff {top['combined']}/100, {top['action'].lower()})")
+              f"({score}, {top['action'].lower()})")
 
     # Auto-record a build-cost snapshot keyed to the target project's git commit.
     # Survives `just clean`, deduped against the last row, so successive

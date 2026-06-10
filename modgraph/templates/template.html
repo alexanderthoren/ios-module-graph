@@ -128,6 +128,8 @@
     .reco-name { flex: 1; font-weight: 600; font-size: 12.5px; overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap; }
     .reco-score { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 13px; }
+    .reco-churn { font-variant-numeric: tabular-nums; font-size: 10.5px;
+      color: var(--text-dim); white-space: nowrap; }
     .reco-bars { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; }
     .reco-bar-lbl { font-size: 9.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .5px; }
     .reco-bar { height: 7px; border-radius: 4px; display: inline-block; min-width: 2px; }
@@ -2393,6 +2395,8 @@ function moduleVisNode(n, cohorts) {
     + (n.measured ? '\n⏱ compile work: ' + fmtDur(n.build_ms / 1000)
         + '  ·  ' + fmtDur(n.build_ms / 1000 / cores) + ' share of the ' + cores + '-core build' : '')
     + (n.measured ? '\n🧱 from scratch (incl deps): ~' + fmtDur(n.cold_wall_ms / 1000) + ' wall' : '')
+    + (moduleGraph.summary && moduleGraph.summary.churned
+        ? '\n✏️ touched by ' + n.churn + ' commit(s) in the last year' : '')
     + (buildView === 'warm'
         ? '\n🔥 warm blast radius: ' + n.warm + ' module(s) — ' + n.warm_pct + '%  (' + n.fan_in + ' direct dependents)'
         : '\n🧊 cohort level ' + n.level + ' / ' + ((cohorts || 1) - 1) + (n.crit ? '  • on the critical path' : ''))
@@ -2744,6 +2748,7 @@ function renderRecommend() {
     + '<div class="small" style="margin-top:4px;color:var(--text-dim)">'
     + (sum.measured ? '⏱ payoff in <b>measured</b> build seconds'
                     : '📐 payoff estimated from type counts (run a cold build for real seconds)')
+    + (sum.churned ? ' · ✏️ ranked by payoff × last-year churn' : '')
     + '</div>';
   const q = (document.getElementById('recoFilter').value || '').toLowerCase();
   let rows = items;
@@ -2754,10 +2759,15 @@ function renderRecommend() {
     const icon = r.kind === 'app' ? '📱' : '📦';
     const divBtn = r.dividable
       ? '<button class="ghost reco-div" data-id="' + escapeHtml(r.id) + '">✂️ Divide</button>' : '';
+    const score = (r.hot !== null && r.hot !== undefined) ? r.hot : r.combined;
+    const churnChip = sum.churned
+      ? '<span class="reco-churn" title="commits touching this module in the last year · payoff ' + r.combined + '/100 × churn = ' + score + '">✏️' + r.churn + '</span>'
+      : '';
     return '<li class="reco-row" data-id="' + escapeHtml(r.id) + '" title="' + escapeHtml(r.id) + '">'
       + '<div class="reco-head"><span class="reco-rank">' + (i + 1) + '</span>'
       + '<span class="reco-name">' + icon + ' ' + escapeHtml(r.label) + '</span>'
-      + '<span class="reco-score">' + r.combined + '</span></div>'
+      + churnChip
+      + '<span class="reco-score">' + score + '</span></div>'
       + '<div class="reco-bars">'
       +   '<span class="reco-bar-lbl">warm</span><span class="reco-bar" style="width:' + warmW + 'px;background:#ef4444"></span>'
       +   '<span class="reco-bar-lbl">cold</span><span class="reco-bar" style="width:' + coldW + 'px;background:#3b82f6"></span>'

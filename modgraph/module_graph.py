@@ -21,6 +21,7 @@ import os
 from collections import defaultdict
 
 from .build_impact import compute_build_impact
+from .churn import churn_by_module
 from .graph import build_tree
 from .spm import _package_label
 
@@ -51,7 +52,7 @@ def module_of(folder: str, migrated_prefixes: list[str]) -> str:
 
 def compute_module_graph(all_folders, leaf_edges, migrated_prefixes, decls,
                          root_label: str = "App", build_times=None,
-                         build_floors=None) -> dict:
+                         build_floors=None, churn_commits=None) -> dict:
     """Return ``{"nodes": [...], "edges": [...], "summary": {...}}`` for Build mode.
 
     Each node: ``{id, label, kind: 'app'|'spm', folders, types, warm, warm_pct,
@@ -60,6 +61,13 @@ def compute_module_graph(all_folders, leaf_edges, migrated_prefixes, decls,
     (``{target_name: seconds}``) is supplied, each node gets its measured compile
     *work* (``build_ms``); SPM modules match by label, and any target not matching
     an SPM label folds into the app node.
+
+    ``churn_commits`` (list of per-commit folder sets, from
+    :func:`modgraph.churn.compute_churn`) attaches ``churn`` to each node — the
+    commits in the window that touched the module (once per commit, however
+    many of its folders changed). Absent → every node carries ``churn: 0`` and
+    ``summary["churned"]`` is false, so consumers can tell "no data" from
+    "untouched".
 
     ``cold_wall_ms`` = estimated **from-scratch wall-clock** to build that module
     *and everything it depends on*, clean — the time-weighted longest path through
@@ -128,6 +136,11 @@ def compute_module_graph(all_folders, leaf_edges, migrated_prefixes, decls,
 
     cores = os.cpu_count() or 1
 
+    # Commits-touching-this-module in the churn window (0 when no data; the
+    # summary flag below disambiguates). Deleted/renamed-away folders resolve
+    # through module_of like any other — under no prefix they fold into app.
+    churn_counts = churn_by_module(churn_commits or [], mod)
+
     # Per-module own wall = within-module parallelism (work spread over cores),
     # but never below its serial floor (longest single file).
     def node_wall(m: str) -> float:
@@ -172,10 +185,12 @@ def compute_module_graph(all_folders, leaf_edges, migrated_prefixes, decls,
             "build_ms": int(round(s * 1000)),
             "cold_wall_ms": int(round(cold_wall(m) * 1000)) if secs else 0,
             "measured": s > 0,
+            "churn": churn_counts.get(m, 0),
         })
     edges = [{"from": a, "to": b, "w": w} for (a, b), w in sorted(module_edges.items())]
     summary = dict(bi["summary"])
     summary["measured"] = bool(build_times)
+    summary["churned"] = bool(churn_commits)
     summary["total_build_s"] = round(sum(secs.values()), 1) if secs else 0.0
 
     # Estimated real (wall-clock) clean build. The headline `total_build_s` is

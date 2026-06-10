@@ -67,6 +67,44 @@ class Dividability(unittest.TestCase):
         self.assertIn("Stabilize", util["action"])
 
 
+class ChurnWeighting(unittest.TestCase):
+    """With churn data, the ranking key becomes hot = combined × churn share —
+    'foundational but never touched' sinks below 'touched weekly'."""
+
+    def _recs_with_churn(self, commits):
+        folders = {"App/Main", "Pkg/Sources/Core/Impl", "Pkg/Sources/Util"}
+        leaf_edges = {
+            ("App/Main", "Pkg/Sources/Core/Impl"): 2,
+            ("Pkg/Sources/Core/Impl", "Pkg/Sources/Util"): 1,
+        }
+        decls = {
+            "App/Main": {"AppDelegate"},
+            "Pkg/Sources/Core/Impl": {"CoreService"},
+            "Pkg/Sources/Util": {"UtilA", "UtilB"},
+        }
+        mg = compute_module_graph(folders, leaf_edges, ["Pkg/Sources"], decls,
+                                  churn_commits=commits)
+        return compute_split_recommendations(mg)
+
+    def test_untouched_foundational_module_sinks(self):
+        # Core is edited weekly; Util (structural top) was never touched.
+        commits = [{"Pkg/Sources/Core/Impl"}] * 5
+        items = self._recs_with_churn(commits)["items"]
+        self.assertEqual(items[0]["id"], "Pkg/Sources/Core")
+        util = next(i for i in items if i["id"] == "Pkg/Sources/Util")
+        self.assertEqual(util["hot"], 0.0)
+        self.assertEqual(util["churn"], 0)
+
+    def test_hot_is_none_without_churn_data(self):
+        items = _recs()["items"]
+        self.assertTrue(all(i["hot"] is None for i in items))
+        self.assertFalse(_recs()["summary"]["churned"])
+
+    def test_summary_flags_churn(self):
+        r = self._recs_with_churn([{"App/Main"}])
+        self.assertTrue(r["summary"]["churned"])
+
+
 class Determinism(unittest.TestCase):
     def test_repeated_runs_identical(self):
         self.assertEqual(_recs(), _recs())
