@@ -43,6 +43,12 @@ ABSORB_MAX_PUBLIC = 20   # types forced public — beyond this the API is its ow
 # consume it.
 MOVE_FILE_MAX = 2
 SHARED_MIN_CONSUMERS = 2
+# Misplaced-file detector (modgraph/file_affinity.py): suggest moving a file
+# only when one foreign folder holds at least MIN_REFS of its reference mass
+# AND dominates every alternative (own folder included) by DOMINANCE× —
+# coordinators talking to many folders fail dominance and stay put.
+FILE_AFFINITY_MIN_REFS = 3
+FILE_AFFINITY_DOMINANCE = 2
 
 DECL_RE = re.compile(
     r"\b(?:class|struct|enum|protocol|actor|typealias)\s+([A-Z][A-Za-z0-9_]*)"
