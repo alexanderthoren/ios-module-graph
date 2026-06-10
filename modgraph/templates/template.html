@@ -751,6 +751,16 @@
           module, or cut a new target. Blocked rows list the exact references to
           sever first, each with a suggested fix.</div>
         <div id="qwSummary" class="info"></div>
+        <!-- Misplaced files (payload.file_moves): the smallest PRs of all —
+             moving one file dissolves fake folder coupling before extraction. -->
+        <details id="qwMovesWrap" style="display:none;margin:6px 0;">
+          <summary style="font-size:12px;font-weight:600;cursor:pointer;"></summary>
+          <div class="small" style="margin:4px 0;color:var(--text-dim)">Files whose
+            references overwhelmingly bind to another folder. Moving one is the
+            smallest possible PR: it can kill a folder edge, shrink a cut-set, or
+            break a cycle. Advisory — confirm the move makes semantic sense.</div>
+          <div id="qwMoves" class="qw-edges" style="max-height:260px;"></div>
+        </details>
         <input id="qwFilter" type="text" class="hier-filter" value="" placeholder="Filter folders…" autocomplete="off" />
         <ul id="qwList"></ul>
       </div>
@@ -1118,6 +1128,7 @@ let moduleNodesDS = null, moduleEdgesDS = null;
 // Modules ranked by split payoff (Build mode → Split plan tab). {items:[…], summary:{…}}.
 const recommendations = DATA.recommendations || { items: [], summary: {} };
 const quickWins = DATA.quick_wins || { items: [], summary: {} };
+const fileMoves = DATA.file_moves || { items: [], summary: {} };
 // Build-cost snapshots over time (oldest→newest), one per real change, keyed to
 // the target project's git commit. Powers Build mode → Improvements tab.
 const history = DATA.history || [];
@@ -2947,6 +2958,56 @@ function renderQuickWins() {
       const f = b.dataset.folder;
       if (b.dataset.act === 'preview') openMigPreview([f], '⚡');
       else setTarget(f);
+    };
+  });
+  renderFileMoves();
+}
+
+// Misplaced-file suggestions (payload.file_moves) inside the Quick wins tab.
+// One row per move; 📋 copies a self-contained move prompt for an agent.
+function fileMovePrompt(m) {
+  return 'Move the file `' + m.file + '` from folder `' + m.from + '` to folder `'
+    + m.to + '` in this repository (git mv, keep history). '
+    + m.refs + ' of its type references bind to `' + m.to + '`'
+    + (m.symbols && m.symbols.length ? ' (e.g. ' + m.symbols.join(', ') + ')' : '')
+    + ', so it belongs there. Update any imports/target membership the move '
+    + 'requires, change nothing else, and verify the project still builds and '
+    + 'tests pass. If the move is semantically wrong (the file only *uses* that '
+    + 'folder heavily but belongs where it is), say so instead of moving it.';
+}
+
+function renderFileMoves() {
+  const wrapEl = document.getElementById('qwMovesWrap');
+  const movesEl = document.getElementById('qwMoves');
+  if (!wrapEl || !movesEl) return;
+  const moves = (fileMoves.items || []).filter(m =>
+    !migrated.has(m.from) && !excluded.has(m.from));
+  if (!moves.length) { wrapEl.style.display = 'none'; return; }
+  wrapEl.style.display = '';
+  wrapEl.querySelector('summary').textContent =
+    '📁 Misplaced files (' + moves.length + ') — smallest PRs first';
+  movesEl.innerHTML = moves.slice(0, 50).map((m, i) => {
+    const name = m.file.split('/').pop();
+    return '<div style="padding:3px 0;border-bottom:1px solid var(--border);">'
+      + '<code data-folder="' + escapeHtml(m.from) + '" title="' + escapeHtml(m.file) + '">' + escapeHtml(name) + '</code>'
+      + ' <span style="color:var(--text-faint);">' + escapeHtml(m.from) + '</span>'
+      + ' → <b>' + escapeHtml(m.to) + '</b>'
+      + ' <span style="color:var(--text-dim);">(' + m.refs + ' ref' + (m.refs === 1 ? '' : 's')
+      + (m.symbols && m.symbols.length ? ': ' + escapeHtml(m.symbols.slice(0, 3).join(', ')) : '') + ')</span>'
+      + ' <button class="ghost" style="font-size:10px;padding:1px 7px;" data-mv="' + i + '">📋</button>'
+      + '</div>';
+  }).join('')
+  + (moves.length > 50 ? '<div style="color:var(--text-faint);padding:4px;">…' + (moves.length - 50) + ' more</div>' : '');
+  movesEl.querySelectorAll('code[data-folder]').forEach(el => {
+    el.onclick = () => focusToFolder(el.dataset.folder);
+  });
+  movesEl.querySelectorAll('button[data-mv]').forEach(b => {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const m = moves[Number(b.dataset.mv)];
+      navigator.clipboard.writeText(fileMovePrompt(m)).then(() => {
+        b.textContent = '✓'; setTimeout(() => { b.textContent = '📋'; }, 1200);
+      });
     };
   });
 }
