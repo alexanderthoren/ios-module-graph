@@ -137,6 +137,22 @@
       align-items: center; gap: 8px; flex-wrap: wrap; }
     .reco-action .reco-div { padding: 2px 9px; font-size: 11px; }
     .reco-reason { font-size: 11px; color: var(--text-dim); line-height: 1.45; margin-top: 4px; }
+    /* Quick wins (Migration mode): rows reuse .reco-row; chips classify the
+       per-folder outcome and each blocking edge's suggested fix. */
+    #qwList { list-style: none; padding: 0; margin: 8px 0 0; }
+    .qw-chip { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px;
+      border-radius: 9px; margin: 3px 4px 0 0; border: 1px solid var(--border);
+      color: var(--text-dim); background: var(--surface-2); cursor: help; }
+    .qw-chip.absorb { background: var(--green-soft); color: var(--green); border-color: #b6ebcb; }
+    .qw-chip.newmod { background: #eaf2fd; color: #2563eb; border-color: #bfdbfe; }
+    .qw-chip.cut { background: var(--orange-soft); color: #d35400; border-color: #fcd9a0; }
+    .qw-fix { font-size: 9.5px; font-weight: 700; padding: 0 5px; border-radius: 7px;
+      margin-left: 4px; white-space: nowrap; cursor: help; }
+    .qw-fix.move_file { background: #eaf2fd; color: #2563eb; }
+    .qw-fix.shared_primitive { background: #f3eafd; color: #7c3aed; }
+    .qw-fix.invert { background: var(--orange-soft); color: #d35400; }
+    .qw-edges { font-size: 11px; max-height: 220px; overflow: auto; margin-top: 4px; }
+    .qw-edges code { cursor: pointer; }
     /* Custom node popover: stats + action buttons, follows hovered/selected node. */
     .node-popover { position: absolute; z-index: 7; min-width: 230px; max-width: 280px;
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
@@ -672,6 +688,7 @@
     <div class="tabs">
       <div class="tab" data-tab="wizard" data-mode="migration">🧭 Setup</div>
       <div class="tab" data-tab="plan" data-mode="migration">🎯 Plan</div>
+      <div class="tab" data-tab="quickwins" data-mode="migration">⚡ Quick wins</div>
       <div class="tab" data-tab="build" data-mode="build">🏗️ Build impact</div>
       <div class="tab" data-tab="recommend" data-mode="build">🪓 Split plan</div>
       <div class="tab" data-tab="improve" data-mode="build">📈 Improvements</div>
@@ -723,6 +740,19 @@
           <span class="h-val" id="buildValHead" title="">Level</span>
         </div>
         <ul id="buildRank"></ul>
+      </div>
+
+      <!-- MIGRATION QUICK-WINS TAB -->
+      <div class="panel" id="panel-quickwins">
+        <div class="small">Every in-scope folder ranked by <b>ROI</b> — payoff (warm
+          blast radius = unblocking power, cold critical path, churn) over effort
+          (files + refs to refactor + types going public). Rows marked
+          <b>extractable today</b> can ship now: absorb into the suggested existing
+          module, or cut a new target. Blocked rows list the exact references to
+          sever first, each with a suggested fix.</div>
+        <div id="qwSummary" class="info"></div>
+        <input id="qwFilter" type="text" class="hier-filter" value="" placeholder="Filter folders…" autocomplete="off" />
+        <ul id="qwList"></ul>
       </div>
 
       <!-- BUILD SPLIT-PLAN TAB -->
@@ -1087,6 +1117,7 @@ let buildView = 'warm';   // 'warm' (blast radius) | 'cold' (critical path)
 let moduleNodesDS = null, moduleEdgesDS = null;
 // Modules ranked by split payoff (Build mode → Split plan tab). {items:[…], summary:{…}}.
 const recommendations = DATA.recommendations || { items: [], summary: {} };
+const quickWins = DATA.quick_wins || { items: [], summary: {} };
 // Build-cost snapshots over time (oldest→newest), one per real change, keyed to
 // the target project's git commit. Powers Build mode → Improvements tab.
 const history = DATA.history || [];
@@ -2377,6 +2408,7 @@ function switchTab(name) {
   // it must be re-rendered or a fresh load shows stale/empty content.
   if (name === 'plan') renderPlan();
   else if (name === 'wizard') renderWizard();
+  else if (name === 'quickwins') renderQuickWins();
   else if (name === 'build') renderBuild();
   else if (name === 'recommend') renderRecommend();
   else if (name === 'improve') renderImprovements();
@@ -2811,6 +2843,116 @@ function renderRecommend() {
 (function () {
   const rf = document.getElementById('recoFilter');
   if (rf) rf.oninput = () => renderRecommend();
+})();
+
+// ── Migration mode → Quick wins: ROI-ranked extract-today candidates ─────────
+// All client-side off the precomputed `quick_wins` payload (modgraph/quick_wins.py):
+// per folder, the cut-set blocking an extract-today (each edge classified with a
+// suggested fix) and the auto-picked absorb-into-existing destination. Rows for
+// folders the user already marked migrated/excluded are hidden live.
+const QW_FIX_LABEL = {
+  move_file: '📄 move file',
+  shared_primitive: '🔻 shared type',
+  invert: '🔁 invert',
+};
+const QW_FIX_TITLE = {
+  move_file: 'These references come from a couple of files whose home is the target folder — move them and this edge disappears.',
+  shared_primitive: 'Every crossing type is consumed by several folders — push it down into a shared module both can depend on.',
+  invert: 'Own a protocol here and let the target folder conform (dependency inversion).',
+};
+
+function qwRowHtml(it, idx) {
+  let actionChip;
+  if (it.action === 'absorb') {
+    const d = it.destination;
+    actionChip = '<span class="qw-chip absorb" title="Extractable today. Auto-picked destination: '
+      + escapeHtml(d.label) + ' already exchanges ' + d.refs + ' reference(s) with this folder ('
+      + d.uses + ' it uses, ' + d.used_by + ' using it). Folding in beats creating a new target.">'
+      + '📦 absorb → ' + escapeHtml(d.label) + '</span>';
+  } else if (it.action === 'new_module') {
+    actionChip = '<span class="qw-chip newmod" title="Extractable today, but no existing module fits '
+      + '(no traffic, complexity bounds, or a module cycle) — create a new SPM target.">🆕 new module</span>';
+  } else {
+    actionChip = '<span class="qw-chip cut" title="Blocked: ' + it.cut.total_refs
+      + ' outgoing reference(s) must be refactored before this folder can move. Expand for the exact edges.">'
+      + '✂ cut ' + it.cut.total_refs + ' ref' + (it.cut.total_refs === 1 ? '' : 's') + ' first</span>';
+  }
+  const chips = actionChip
+    + '<span class="qw-chip" title="files to move">' + it.files + ' file' + (it.files === 1 ? '' : 's') + '</span>'
+    + (it.public ? '<span class="qw-chip" title="types referenced from other folders — must flip internal → public">' + it.public + ' public</span>' : '')
+    + (it.churn ? '<span class="qw-chip" title="commits touching this folder in the last year">✏️ ' + it.churn + '</span>' : '');
+
+  let detail = '';
+  if (it.cut.edges.length) {
+    detail = '<details><summary style="font-size:11px;color:#d35400;">blocking edges (' + it.cut.edges.length + ')</summary>'
+      + '<div class="qw-edges">'
+      + it.cut.edges.map(e => {
+          const ev = (e.evidence || []).slice(0, 3).map(x => escapeHtml(x.split('/').pop())).join(', ');
+          return '<div style="padding:2px 0 2px 8px;color:var(--text-dim);">→ '
+            + '<code data-folder="' + escapeHtml(e.dst) + '">' + escapeHtml(e.dst) + '</code> '
+            + '(' + e.refs + ' ref' + (e.refs === 1 ? '' : 's') + ')'
+            + '<span class="qw-fix ' + escapeHtml(e.fix) + '" title="' + (QW_FIX_TITLE[e.fix] || '') + '">' + (QW_FIX_LABEL[e.fix] || escapeHtml(e.fix)) + '</span>'
+            + (ev ? '<div style="font-size:10px;padding-left:10px;color:var(--text-faint);">' + ev
+                  + ((e.evidence || []).length > 3 ? ' +' + (e.evidence.length - 3) + ' more' : '') + '</div>' : '')
+            + '</div>';
+        }).join('')
+      + '</div></details>';
+  }
+
+  const actBtn = it.extractable_now
+    ? '<button data-act="preview" data-folder="' + escapeHtml(it.folder) + '">🔍 Preview &amp; migrate</button>'
+    : '<button class="ghost" data-act="path" data-folder="' + escapeHtml(it.folder) + '">🎯 Path to extract</button>';
+
+  return '<li class="reco-row" data-qw-folder="' + escapeHtml(it.folder) + '" title="' + escapeHtml(it.folder) + '">'
+    + '<div class="reco-head"><span class="reco-rank">' + (idx + 1) + '</span>'
+    + '<span class="reco-name">' + (it.extractable_now ? '✅ ' : '🔒 ') + escapeHtml(it.folder) + '</span>'
+    + '<span class="reco-score" title="ROI = payoff ' + it.payoff + ' ÷ effort ' + it.effort + '">' + it.roi + '</span></div>'
+    + '<div>' + chips + '</div>'
+    + detail
+    + '<div class="step-actions">' + actBtn + '</div>'
+    + '</li>';
+}
+
+function renderQuickWins() {
+  const ul = document.getElementById('qwList');
+  if (!ul) return;
+  const items = quickWins.items || [];
+  const sum = quickWins.summary || {};
+  document.getElementById('qwSummary').innerHTML = items.length
+    ? '<div><b>' + (sum.extractable_now || 0) + '</b> folder(s) extractable today'
+      + ' · <b>' + (sum.absorbable || 0) + '</b> absorb into existing modules'
+      + ' · <b>' + (sum.cut_first || 0) + '</b> need cuts first</div>'
+      + '<div class="small" style="margin-top:4px;color:var(--text-dim)">'
+      + (sum.churned ? '✏️ ranked by churn-weighted payoff ÷ effort'
+                     : '📐 ranked by structural payoff ÷ effort (no git churn)')
+      + '</div>'
+    : '<div>No quick-win data in this payload — regenerate with the current tool version (index path).</div>';
+  const q = (document.getElementById('qwFilter').value || '').toLowerCase();
+  let rows = items.filter(it => !migrated.has(it.folder) && !excluded.has(it.folder));
+  if (q) rows = rows.filter(it => it.folder.toLowerCase().includes(q));
+  const CAP = 80;
+  ul.innerHTML = rows.slice(0, CAP).map((it, idx) => qwRowHtml(it, idx)).join('')
+    + (rows.length > CAP
+        ? '<li class="small" style="color:var(--text-faint);padding:6px;">…' + (rows.length - CAP) + ' more — type in the filter to narrow.</li>'
+        : '');
+  ul.querySelectorAll('.reco-row[data-qw-folder]').forEach(li => {
+    li.onclick = () => focusToFolder(li.getAttribute('data-qw-folder'));
+  });
+  ul.querySelectorAll('.qw-edges code[data-folder]').forEach(el => {
+    el.onclick = (ev) => { ev.stopPropagation(); focusToFolder(el.dataset.folder); };
+  });
+  ul.querySelectorAll('.step-actions button').forEach(b => {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const f = b.dataset.folder;
+      if (b.dataset.act === 'preview') openMigPreview([f], '⚡');
+      else setTarget(f);
+    };
+  });
+}
+(function () {
+  const qf = document.getElementById('qwFilter');
+  if (qf) qf.oninput = () => renderQuickWins();
 })();
 
 // ── Build mode → Improvements: build-cost history over time ──────────────────

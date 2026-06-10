@@ -139,8 +139,14 @@ class RenderHtmlOutputTest(unittest.TestCase):
 
     def test_data_has_expected_top_level_keys(self):
         data = _extract_data_json(self.html)
-        for key in ("tree", "edges", "plan", "packages", "files", "type_owners"):
+        for key in ("tree", "edges", "plan", "packages", "files", "type_owners",
+                    "quick_wins", "file_moves"):
             self.assertIn(key, data)
+
+    def test_quick_wins_panel_present(self):
+        # The Migration-mode Quick wins tab and its renderer ship in the template.
+        self.assertIn("panel-quickwins", self.html)
+        self.assertIn("function renderQuickWins", self.html)
 
     def test_payload_is_interned_in_the_raw_html(self):
         # The heavy sections ship as index arrays + a strings table; the UI
