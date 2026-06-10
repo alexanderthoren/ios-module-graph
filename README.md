@@ -71,7 +71,10 @@ The first run builds your project, indexes it, and opens
 
 `tree`/`list`/`all` reuse the resolved graph (`index_graph.json`) from the last
 run, so re-rendering is instant. It's rebuilt automatically when missing — the
-first run, or after `just clean`. **To force a rebuild from zero:**
+first run, or after `just clean`. The cached graph records which commit of your
+project it was indexed at; if the repo has moved on (or has uncommitted
+changes) the renderer prints a **stale-index warning** so you don't silently
+analyze an old world. **To force a rebuild from zero:**
 
 ```sh
 just clean && just tree
