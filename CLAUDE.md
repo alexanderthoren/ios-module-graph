@@ -22,6 +22,7 @@ just list     # migration plan    → out/<project>/migration_plan.md
 just all      # both
 just serve    # live mode: serve HTML, hot-reload on rebuild, cmd+click → Xcode
 just diff a b # structural delta between two saved index_graph.json snapshots
+just check g … # architecture gate: exit 1 when a graph violates rules (CI)
 just test     # run the Python test suite (stdlib unittest; alias: just tests)
 just test-js  # run the JS unit tests (Node's built-in runner; no npm deps)
 just clean    # wipe the current project's generated files; next run rebuilds
@@ -148,6 +149,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `index_loader.py` | `load_index_graph` — parse the USR-resolved `index_graph.json` |
 | `staleness.py` | `classify_staleness` (pure verdict matrix) + `warn_if_stale` — compare `GraphData.target_commit` against the target repo's current sha/dirty state, loud stderr banner when the cached `index_graph.json` is stale; silent when nothing can be verified |
 | `diff.py` | `compute_graph_diff` (folders/edges/cycles added-removed, edges annotated with explaining `pair_types`) + markdown/json renderers + `python3 -m modgraph.diff` CLI (`--exit-code` = git-diff convention); powers `just diff` |
+| `check.py` | `check_graph` (pure rule engine: `--max-cycles`, `--forbid 'SRC -> DST'` fnmatch globs, `--no-new-edges`/`--no-new-cycles` ratchets vs an `--against` baseline) + `python3 -m modgraph.check` CLI — exit 1 on violations, 2 on usage/schema errors; reuses `diff`'s core; powers `just check` |
 | `graph.py` | `_tarjan_sccs`, `compute_migration_plan` (SCC-aware, deterministic), `build_tree` |
 | `cycles.py` | `_feedback_arc_set`, `compute_cycle_breakers`, `compute_extraction_targets` |
 | `spm.py` | `_build_package_map`, `auto_detect_migrated_prefixes`, `is_migrated`, `_package_label` |

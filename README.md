@@ -245,6 +245,31 @@ reports diff cleanly themselves.
 
 ---
 
+## 🛡️ Architecture gate (CI)
+
+```sh
+just check out/MyApp/index_graph.json --max-cycles 0 --forbid 'Features/* -> Legacy/*'
+python3 -m modgraph.check new.json --against baseline.json --no-new-edges --no-new-cycles
+```
+
+Where `diff` reports, `check` **judges**: exit 1 plus a readable report when
+the graph violates the rules — a standing guardrail for teams mid-migration.
+
+- **Absolute rules** need only the current graph: `--max-cycles N`, and
+  repeatable `--forbid 'SRC -> DST'` (fnmatch globs over folder paths; `*`
+  crosses `/`). Every forbidden edge is reported with the type references that
+  cause it.
+- **Ratchet rules** tolerate existing coupling and fail only on *additions*
+  relative to a baseline (`--against old.json`): `--no-new-edges`,
+  `--no-new-cycles`.
+
+Generating `index_graph.json` requires a macOS build of the target project, so
+a practical setup is: a nightly job indexes `main` and stores the JSON as the
+baseline artifact; PR jobs index only the PR branch and run `check --against`
+it.
+
+---
+
 ## ⚙️ Build modes
 
 `BUILD_MODE` (env or CLI var) selects how the project is built to populate the

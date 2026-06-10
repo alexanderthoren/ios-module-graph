@@ -121,6 +121,15 @@ all:
 diff old new format="markdown":
     @python3 -m modgraph.diff "{{old}}" "{{new}}" --format "{{format}}"
 
+# Architecture gate: exit non-zero when a graph violates the given rules, e.g.
+#   just check out/MyApp/index_graph.json --max-cycles 0 --forbid 'Features/* -> Legacy/*'
+#   just check new.json --against baseline.json --no-new-edges --no-new-cycles
+[positional-arguments]
+check *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 -m modgraph.check "$@"
+
 # Run the Python test suite (stdlib unittest — no pip deps, no index build).
 alias tests := test
 test:
