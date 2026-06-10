@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from modgraph.churn import churn_by_module, commit_folder_sets
+from modgraph.churn import churn_by_folder, churn_by_module, commit_folder_sets
 
 # Two commits: one touches Core (two files) + Feature, one touches only docs.
 LOG = """\
@@ -65,6 +65,16 @@ class ChurnByModuleTest(unittest.TestCase):
 
     def test_no_commits_no_counts(self):
         self.assertEqual(churn_by_module([], self._module_of), {})
+
+
+class ChurnByFolderTest(unittest.TestCase):
+    def test_counts_commits_once_per_folder(self):
+        sets = [{"Core"}, {"Core", "Util"}, {"Feature"}]
+        counts = churn_by_folder(sets)
+        self.assertEqual(counts, {"Core": 2, "Util": 1, "Feature": 1})
+
+    def test_no_commits_no_counts(self):
+        self.assertEqual(churn_by_folder([]), {})
 
 
 if __name__ == "__main__":
