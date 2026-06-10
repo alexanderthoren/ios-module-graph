@@ -4355,7 +4355,15 @@ function computeWizardPlan(folderSet) {
   // only decorate each step with the per-folder target assignment (pure UI).
   const { deps } = wizComputeSccs(sourceSet);
   const wedges = edges.map(e => ({ src: e.src, dst: e.dst, w: (e.refs || e.value || 1) }));
-  return migrationPlanOrder(sourceSet, deps, wedges).map(s => ({
+  // ROI ranking (quick wins lead) when the payload ships per-folder scores —
+  // keeps the wizard's order aligned with the CLI's ROI-ranked plan.
+  const qwItems = (DATA.quick_wins && DATA.quick_wins.items) || [];
+  let scores = null;
+  if (qwItems.length) {
+    scores = {};
+    qwItems.forEach(i => { scores[i.folder] = { payoff: i.payoff, effort: i.effort }; });
+  }
+  return migrationPlanOrder(sourceSet, deps, wedges, scores).map(s => ({
     ...s,
     targets: s.folders.map(f => wiz.assign[f] || 'stay'),
   }));

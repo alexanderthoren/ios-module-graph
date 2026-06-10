@@ -116,14 +116,24 @@ function tarjanSccs(nodes, deps) {
 //   weightedEdges: [{src, dst, w}] used only for the "most-used" tiebreaker
 //              (total in-scope inbound reference weight per SCC).
 //
-// Returns ordered steps: { step, folders (sorted), is_cycle, size, unlocks,
-// inbound_weight }. Folders that cyclically depend bundle into one step.
+//   scores:    optional { folder: {payoff, effort} } — payoff already resolved
+//              by the caller to churn-weighted hot or structural combined
+//              (e.g. from the quick_wins payload). When present, the eligible
+//              frontier is ranked by per-SCC ROI first, mirroring Python's
+//              compute_migration_plan(scores=...). Rounding mirrors Python
+//              (payoff to 1 decimal, roi to 2) so the orders agree.
 //
-// NOTE: this matches Python on the primary signal (transitive reverse-reach) and
-// the SCC bundling, but the wizard adds `inbound_weight` ("most-used") as a
-// secondary key that Python does not have — so the two agree on step ORDER only
-// when reverse-reach alone determines it (and always agree on the set of steps).
-function migrationPlanOrder(sourceSet, deps, weightedEdges) {
+// Returns ordered steps: { step, folders (sorted), is_cycle, size, unlocks,
+// inbound_weight, wave, payoff, effort, roi }. Folders that cyclically depend
+// bundle into one step; `wave` = 1 + longest dependency chain beneath the SCC
+// (same wave ⇒ no deps between steps ⇒ parallelizable), matching Python.
+//
+// NOTE: this matches Python on the primary signals (ROI when scores are given,
+// then transitive reverse-reach) and the SCC bundling, but the wizard adds
+// `inbound_weight` ("most-used") as a tiebreaker that Python does not have — so
+// the two agree on step ORDER only when ROI/reverse-reach alone determine it
+// (and always agree on the set of steps).
+function migrationPlanOrder(sourceSet, deps, weightedEdges, scores) {
   const sccs = tarjanSccs(sourceSet, deps).map(c => c.slice().sort());
   const sccOf = {};
   sccs.forEach((c, i) => c.forEach(v => { sccOf[v] = i; }));
@@ -141,6 +151,7 @@ function migrationPlanOrder(sourceSet, deps, weightedEdges) {
   const migratedScc = new Set();
   const eligible = new Set();
   for (let i = 0; i < sccs.length; i++) if (remaining[i] === 0) eligible.add(i);
+  const wave = sccs.map(() => 1);
 
   // Transitive reverse-reach via reverse-topological DP (same direct + 1-hop
   // approximation as Python — double-counts in diamonds, order stays stable).
@@ -161,6 +172,32 @@ function migrationPlanOrder(sourceSet, deps, weightedEdges) {
       for (const w of sRdeps[v]) acc += 1 + reverseReach[w];
       reverseReach[v] = acc;
     }
+    // Wave = 1 + longest dependency chain beneath an SCC. topo lists
+    // dependencies before dependents, so one forward pass suffices.
+    for (const v of topo) {
+      let deepest = 0;
+      for (const d of sdeps[v]) deepest = Math.max(deepest, wave[d]);
+      wave[v] = 1 + deepest;
+    }
+  }
+
+  // Per-SCC ROI from the folder scores (mirrors Python: payoff and effort sum
+  // over members; payoff rounded to 1 decimal, roi to 2).
+  const sccPayoff = sccs.map(() => 0);
+  const sccEffort = sccs.map(() => 0);
+  const sccRoi = sccs.map(() => 0);
+  if (scores) {
+    sccs.forEach((c, i) => {
+      let p = 0, e = 0;
+      for (const f of c) {
+        const row = scores[f] || {};
+        p += row.payoff || 0;
+        e += row.effort || 0;
+      }
+      sccPayoff[i] = Math.round(p * 10) / 10;
+      sccEffort[i] = e;
+      sccRoi[i] = Math.round((p / Math.max(e, 1)) * 100) / 100;
+    });
   }
 
   const immediateUnlocks = i => {
@@ -187,17 +224,24 @@ function migrationPlanOrder(sourceSet, deps, weightedEdges) {
   while (eligible.size) {
     let pick = -1, best = null;
     for (const i of eligible) {
+      // Numeric ranks (higher wins) in priority order; the SCC's first folder
+      // name is the final ascending tie-break. ROI leads only when scores are
+      // present, exactly like Python.
       const key = [
+        ...(scores ? [sccRoi[i]] : []),
         reverseReach[i], inboundWeight[i], immediateUnlocks(i),
-        -sccs[i].length, sccs[i][0] || '',
+        -sccs[i].length,
       ];
-      const better = best === null
-        || key[0] > best[0]
-        || (key[0] === best[0] && key[1] > best[1])
-        || (key[0] === best[0] && key[1] === best[1] && key[2] > best[2])
-        || (key[0] === best[0] && key[1] === best[1] && key[2] === best[2] && key[3] > best[3])
-        || (key[0] === best[0] && key[1] === best[1] && key[2] === best[2] && key[3] === best[3] && key[4] < best[4]);
-      if (better) { best = key; pick = i; }
+      const name = sccs[i][0] || '';
+      let better = best === null;
+      if (!better) {
+        let decided = false;
+        for (let k = 0; k < key.length; k++) {
+          if (key[k] !== best.key[k]) { better = key[k] > best.key[k]; decided = true; break; }
+        }
+        if (!decided) better = name < best.name;
+      }
+      if (better) { best = { key, name }; pick = i; }
     }
     eligible.delete(pick);
     migratedScc.add(pick);
@@ -214,6 +258,10 @@ function migrationPlanOrder(sourceSet, deps, weightedEdges) {
     out.push({
       step: out.length + 1, folders: fs, is_cycle: fs.length > 1,
       size: fs.length, unlocks, inbound_weight: inboundWeight[pick],
+      wave: wave[pick],
+      payoff: scores ? sccPayoff[pick] : null,
+      effort: scores ? sccEffort[pick] : null,
+      roi: scores ? sccRoi[pick] : null,
     });
   }
   return out;

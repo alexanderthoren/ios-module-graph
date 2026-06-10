@@ -159,6 +159,42 @@ test('migrationPlanOrder: deterministic regardless of input order', () => {
   assert.deepStrictEqual(planFolders(a), planFolders(b));
 });
 
+test('migrationPlanOrder: scores rank the frontier by ROI', () => {
+  // X and Y tie on reach; Y's higher payoff-per-effort puts it first.
+  const steps = migrationPlanOrder(['C', 'X', 'Y'], { C: ['X', 'Y'] }, [], {
+    X: { payoff: 10, effort: 10 },
+    Y: { payoff: 50, effort: 1 },
+    C: { payoff: 0, effort: 1 },
+  });
+  assert.deepStrictEqual(planFolders(steps), [['Y'], ['X'], ['C']]);
+  assert.strictEqual(steps[0].roi, 50);
+  assert.strictEqual(steps[0].payoff, 50);
+  assert.strictEqual(steps[0].effort, 1);
+});
+
+test('migrationPlanOrder: roi never violates topology', () => {
+  // A scores huge but depends on B — B still goes first.
+  const steps = migrationPlanOrder(['A', 'B'], { A: ['B'] }, [], {
+    A: { payoff: 100, effort: 1 },
+    B: { payoff: 1, effort: 1 },
+  });
+  assert.deepStrictEqual(planFolders(steps), [['B'], ['A']]);
+});
+
+test('migrationPlanOrder: steps carry waves (dependency depth)', () => {
+  const steps = migrationPlanOrder(['A', 'B', 'C'], { C: ['A'] }, []);
+  const waves = {};
+  steps.forEach(s => { waves[s.folders[0]] = s.wave; });
+  assert.deepStrictEqual(waves, { A: 1, B: 1, C: 2 });
+});
+
+test('migrationPlanOrder: score fields are null without scores', () => {
+  const steps = migrationPlanOrder(['A'], {}, []);
+  assert.strictEqual(steps[0].roi, null);
+  assert.strictEqual(steps[0].payoff, null);
+  assert.strictEqual(steps[0].wave, 1);
+});
+
 // ── decodePayload ────────────────────────────────────────────────────────────
 
 test('decodePayload: expands interned sections to the original shapes', () => {
