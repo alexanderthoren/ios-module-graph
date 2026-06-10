@@ -115,7 +115,7 @@ just tree project_dir=/other/App workspace=Other.xcworkspace scheme=Other
 A toggle at the top switches the whole UI between three modes:
 
 - **🔍 Explore** — understand the codebase. Every folder is neutral-colored; migration state is hidden so it doesn't get in the way. Already-SPM folders stay in scope so you can see SPM-to-SPM coupling.
-- **🧭 Migration** — plan and execute the split. Adds a **Setup** wizard, a **Plan** tab, and per-node migration state (leaf / blocked / migrated / won't-modularize).
+- **🧭 Migration** — plan and execute the split. Adds a **Setup** wizard, a **Plan** tab, a **⚡ Quick wins** tab, and per-node migration state (leaf / blocked / migrated / won't-modularize).
 - **🏗️ Build** — find build-time wins. Forgets folders and shows the real compile units (SPM targets + the app target) with warm/cold cost lenses, a split-payoff ranking, and a build-cost history. See *Build mode* below.
 
 Tools available while exploring or planning:
@@ -126,6 +126,7 @@ Tools available while exploring or planning:
 - **🤖 Prompt generators** — once a step is scoped, generate a ready-to-paste **Claude prompt**:
   - *migration prompt* — describes every move in the step (including relocating tests into the new module's test target).
   - *investigation prompt* — when you don't yet know the destination, asks Claude to inspect the repo (with dependency context attached) and recommend the package, module name, and approach first.
+- **⚡ Quick wins** — every in-scope folder ranked by **ROI**: payoff (warm blast radius = unblocking power, cold critical-path contribution, weighted by git churn) over effort (files + refs to refactor + types going `public`). Rows extractable **today** carry the auto-picked **absorb-into-existing-module** destination (folding into an existing SPM module is the default outcome; a new target the exception). Blocked rows expand to the exact references to sever, each classified with a suggested fix — *move file*, *push the shared type down*, or *invert with a protocol*. A **Misplaced files** section on top lists single-file moves (the smallest PRs of all) that dissolve fake folder coupling, with a copy-paste agent prompt each. The plan list shows the same signals as 🌊 wave (parallelizable cohort) and ⚡ ROI badges per step.
 - **✂️ Divide into modules** — hover any folder big enough to split and hit **Divide**. It treats the folder's immediate subfolders as candidate sub-modules and shows a **public-API cost** table (how many types each sub-module would expose as `public`) and an **SCC-aware extraction order**. Each step has a **📊 Visualize** before/after graph and a **📋 Copy prompt** button that builds a ready-to-paste Claude prompt for that step. See *Divide a module* below.
 
 ---
