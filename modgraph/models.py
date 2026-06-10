@@ -30,6 +30,9 @@ class GraphData:
         type_kinds  type name -> symbol kind (class/struct/…); scanner has none.
         file_edges  file-to-file couplings the folder graph hides.
         type_edges  type-to-type couplings with containing-file info.
+        target_commit  {"sha", "dirty", "subject"} of the target repo at INDEX
+                    time (what the graph describes — HEAD may have moved since).
+                    ``None`` for non-git targets or pre-field JSON.
     """
 
     decls: dict[str, set[str]]
@@ -43,3 +46,4 @@ class GraphData:
     type_kinds: dict[str, str] = field(default_factory=dict)
     file_edges: list[dict] = field(default_factory=list)
     type_edges: list[dict] = field(default_factory=list)
+    target_commit: dict | None = None

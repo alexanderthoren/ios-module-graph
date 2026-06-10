@@ -107,7 +107,12 @@ the other. The contract is **versioned**: Swift emits `schema_version`
 (`schemaVersion` in `main.swift`) and `load_index_graph` validates it against
 `INDEX_SCHEMA_VERSION` up front, raising `IndexSchemaError` (with a regenerate /
 rebuild hint) on a mismatch instead of crashing on a missing key. Bump both
-constants in lockstep on any incompatible shape change.
+constants in lockstep on any incompatible shape change; additive **optional**
+fields don't need a bump. One such field: `target_commit` (`{sha, dirty,
+subject}` of the target repo captured **at index time** — what the cached graph
+describes, as opposed to wherever HEAD is at render time; omitted for non-git
+targets). Pure interpretation lives in `IndexGraphCore.targetCommit`, consumers
+read `GraphData.target_commit`.
 
 **Stage 2 — `modgraph/` (Python package, stdlib only).** Loads the resolved
 graph (`--from-index`), builds the folder-level dependency graph, computes an

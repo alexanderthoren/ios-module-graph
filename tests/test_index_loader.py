@@ -111,6 +111,9 @@ class LoadIndexGraphFullPayloadTest(unittest.TestCase):
         self.assertEqual(te["src_file"], "App/AppCoordinator.swift")
         self.assertEqual(te["dst_file"], "Core/CoreService.swift")
 
+    def test_target_commit_parsed(self):
+        self.assertEqual(self.gd.target_commit, fixtures.TARGET_COMMIT)
+
 
 class LoadIndexGraphMinimalPayloadTest(unittest.TestCase):
     """A minimal payload lacking the optional keys still loads, defaulting
@@ -119,8 +122,8 @@ class LoadIndexGraphMinimalPayloadTest(unittest.TestCase):
     def _minimal_dict(self) -> dict:
         # Only the keys load_index_graph indexes unconditionally:
         # folder_decls, files, edges, type_owners, pair_types.
-        # Omits the optional: type_kinds, file_edges, type_edges, and per-file
-        # ref_owners.
+        # Omits the optional: type_kinds, file_edges, type_edges, target_commit,
+        # and per-file ref_owners.
         return {
             "schema_version": index_loader.INDEX_SCHEMA_VERSION,
             "folder_decls": {"Core": ["CoreService"], "Util": ["UtilHelper"]},
@@ -157,6 +160,9 @@ class LoadIndexGraphMinimalPayloadTest(unittest.TestCase):
     def test_missing_ref_owners_defaults_empty(self):
         rec = self.gd.file_records[0]
         self.assertEqual(rec["ref_owners"], [])
+
+    def test_target_commit_defaults_none(self):
+        self.assertIsNone(self.gd.target_commit)
 
     def test_core_payload_still_parsed(self):
         self.assertEqual(self.gd.leaf_edges, {("Core", "Util"): 1})

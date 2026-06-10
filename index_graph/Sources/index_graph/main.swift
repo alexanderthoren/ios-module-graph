@@ -52,10 +52,15 @@ struct TypeEdge: Codable {
 // consumer (modgraph/index_loader.py). BUMP THIS whenever the emitted shape
 // changes incompatibly, and bump INDEX_SCHEMA_VERSION in index_loader.py to
 // match — the loader hard-fails on a mismatch instead of crashing cryptically.
+// Additive OPTIONAL fields (e.g. target_commit) are compatible: no bump.
 let schemaVersion = 1
 
 struct Graph: Codable {
     let schema_version: Int
+    // Target repo's git state when the index was read (nil → key omitted, e.g.
+    // a non-git target). The graph describes THIS commit, not whatever HEAD is
+    // when modgraph later re-renders from the cached JSON.
+    let target_commit: TargetCommit?
     let edges: [Edge]
     let pair_types: [PairTypes]
     let folder_decls: [String: [String]]
@@ -407,8 +412,16 @@ for path in allPaths {
     ))
 }
 
+// Best-effort git capture; targetCommit() rejects non-repo/empty-repo output.
+let targetCommitInfo = targetCommit(
+    sha: shell("git", "-C", repoRoot, "rev-parse", "HEAD"),
+    statusPorcelain: shell("git", "-C", repoRoot, "status", "--porcelain"),
+    subject: shell("git", "-C", repoRoot, "log", "-1", "--pretty=%s")
+)
+
 let graph = Graph(
     schema_version: schemaVersion,
+    target_commit: targetCommitInfo,
     edges: edges.sorted { $0.src == $1.src ? $0.dst < $1.dst : $0.src < $1.src },
     pair_types: pairList,
     folder_decls: folderDecls.mapValues { $0.sorted() },

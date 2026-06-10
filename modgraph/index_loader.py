@@ -97,6 +97,11 @@ def load_index_graph(json_path: Path) -> GraphData:
         for te in data.get("type_edges", [])
     ]
 
+    # Optional since schema v1: the target repo's git state at index time
+    # (absent for non-git targets and JSON from older readers).
+    tc = data.get("target_commit")
+    target_commit = dict(tc) if isinstance(tc, dict) else None
+
     print(f"  {len(leaf_edges)} edge(s), {len(all_folders)} folder(s), "
           f"{sum(len(v) for v in decls.values())} type decl(s), "
           f"{len(file_edges)} file edge(s), {len(type_edges)} type edge(s)", file=sys.stderr)
@@ -112,4 +117,5 @@ def load_index_graph(json_path: Path) -> GraphData:
         type_kinds=type_kinds,
         file_edges=file_edges,
         type_edges=type_edges,
+        target_commit=target_commit,
     )
