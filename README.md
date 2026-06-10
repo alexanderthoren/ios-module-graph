@@ -53,8 +53,8 @@ ENV
 just tree
 ```
 
-The first run builds your project, indexes it, and opens
-`dependency_graph.html`. Subsequent runs are instant.
+The first run builds your project, indexes it, and writes
+`out/MyApp/dependency_graph.html`. Subsequent runs are instant.
 
 ---
 
@@ -62,12 +62,17 @@ The first run builds your project, indexes it, and opens
 
 | Command | Output |
 |---------|--------|
-| `just tree` | interactive HTML graph → `dependency_graph.html` |
-| `just list` | migration task list → `migration_plan.md` |
+| `just tree` | interactive HTML graph → `out/<Project>/dependency_graph.html` |
+| `just list` | migration task list → `out/<Project>/migration_plan.md` |
 | `just all` | both |
 | `just serve` | live mode — serve the HTML, hot-reload on rebuild, `cmd`+click → Xcode |
 | `just test` | run the Python test suite (stdlib unittest) |
-| `just clean` | wipe generated files (forces a full rebuild next run) |
+| `just clean` | wipe the current project's generated files (forces a full rebuild next run) |
+
+Everything generated lands in a **per-project workspace** —
+`out/<project basename>/` (override with `OUT_DIR`) — so you can analyze several
+projects side by side without clobbering each other's cache or history. Files
+from a pre-`out/` checkout are migrated there automatically on the next run.
 
 `tree`/`list`/`all` reuse the resolved graph (`index_graph.json`) from the last
 run, so re-rendering is instant. It's rebuilt automatically when missing — the

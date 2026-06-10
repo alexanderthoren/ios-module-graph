@@ -54,16 +54,28 @@ swift_flags := env_var_or_default('SWIFT_BUILD_FLAGS', '')
 derived := env_var_or_default('DERIVED', project_dir / ".tmpBuildData")
 
 reader     := justfile_directory() / "index_graph/.build/release/index_graph"
-graph_json := justfile_directory() / "index_graph.json"
-html       := justfile_directory() / "dependency_graph.html"
-md         := justfile_directory() / "migration_plan.md"
+
+# Per-project output workspace: every generated artifact lives under
+# out/<project basename>, so several target projects can be analyzed side by
+# side without clobbering each other's cache/history. Same-basename projects
+# would still collide — point OUT_DIR (or out_dir=) somewhere explicit then.
+out_dir := env_var_or_default('OUT_DIR', justfile_directory() / "out" / file_name(project_dir))
+
+graph_json := out_dir / "index_graph.json"
+html       := out_dir / "dependency_graph.html"
+md         := out_dir / "migration_plan.md"
 # Real per-module compile times captured from the cold build via the Swift
 # compiler's -stats-output-dir. Build mode uses them as module cost when present,
 # else a type-count proxy. stats_dir holds the raw per-file frontend stats;
 # times_json is the aggregated {module: seconds} map modgraph reads.
-stats_dir   := justfile_directory() / ".swiftstats"
-times_json  := justfile_directory() / "build_times.json"
-floors_json := justfile_directory() / "build_floors.json"
+stats_dir   := out_dir / ".swiftstats"
+times_json  := out_dir / "build_times.json"
+floors_json := out_dir / "build_floors.json"
+# Build-cost history (Improvements tab). Survives `just clean` by design.
+history_jsonl := out_dir / "build_history.jsonl"
+# "Won't modularize" exclusions are project-specific too (the graph's Exclude
+# button tells the user to save the download to exactly this path).
+excluded_json := out_dir / ".modularization_excluded.json"
 
 # Show the three commands.
 _default:
@@ -76,7 +88,7 @@ tree:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --graph "{{html}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --history "{{history_jsonl}}" --excluded-file "{{excluded_json}}" --graph "{{html}}"
     echo "✓ {{html}}"
 
 # Migration task list, markdown. Rebuilds the index if missing.
@@ -84,7 +96,7 @@ list:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --list "{{md}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --history "{{history_jsonl}}" --excluded-file "{{excluded_json}}" --list "{{md}}"
     echo "✓ {{md}}"
 
 # Live mode: serve the HTML on localhost, hot-reload it whenever `just tree`
@@ -101,7 +113,7 @@ all:
     #!/usr/bin/env bash
     set -euo pipefail
     just _prep
-    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --graph "{{html}}" --list "{{md}}"
+    python3 -m modgraph "{{project_dir}}" --from-index "{{graph_json}}" --build-times "{{times_json}}" --history "{{history_jsonl}}" --excluded-file "{{excluded_json}}" --graph "{{html}}" --list "{{md}}"
     echo "✓ {{html}}  {{md}}"
 
 # Run the Python test suite (stdlib unittest — no pip deps, no index build).
@@ -130,15 +142,17 @@ test-e2e:
     cd {{justfile_directory()}} && MODGRAPH_E2E=1 python3 -m unittest tests.test_e2e_pipeline -v
 
 # Python outputs (HTML/markdown/__pycache__) + swift reader output and build
-# artifacts. Leaves the target project's own build untouched.
+# artifacts, for the CURRENT project's out/ workspace only. Leaves the target
+# project's own build untouched.
 #
-# NOTE: build_history.jsonl is intentionally NOT removed — it's the build-cost
-# history across extractions (Build mode → Improvements), the whole point of which
-# is to survive clean. Delete it by hand to reset the trend.
+# NOTE: build_history.jsonl and .modularization_excluded.json are intentionally
+# NOT removed — the history tracks build cost across extractions (Build mode →
+# Improvements) and the exclusions are user decisions; both must survive clean.
+# Delete them by hand to reset.
 #
 # Remove all generated files.
 clean:
-    @echo "→ removing generated files"
+    @echo "→ removing generated files ({{out_dir}})"
     rm -f "{{html}}" "{{md}}" "{{graph_json}}" "{{times_json}}" "{{floors_json}}"
     rm -rf "{{stats_dir}}"
     rm -rf "{{justfile_directory()}}/__pycache__"
@@ -149,14 +163,39 @@ clean:
 
 # Ensure index_graph.json is ready: reuse the existing one, or build it from a
 # fresh build of the target project when missing (first run / after `just clean`).
-_prep:
+_prep: _migrate_legacy
     #!/usr/bin/env bash
     set -euo pipefail
+    mkdir -p "{{out_dir}}"
     if [[ -f "{{graph_json}}" ]]; then
         echo "↺ reusing {{graph_json}} (run \`just clean\` to force a rebuild)"
     else
         echo "→ {{graph_json}} missing — building from the project…"
         just _index
+    fi
+
+# One-time upgrade shim: artifacts used to live at the repo root (single-project
+# regime). Move any that exist into out/<project> so the cache/history survive
+# the layout change. Only moves when the destination is missing; assumes the
+# legacy files belong to the currently configured project (if you switched
+# PROJECT_DIR at the same time, the stale-index warning will flag the mismatch).
+_migrate_legacy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    for f in index_graph.json dependency_graph.html migration_plan.md \
+             build_times.json build_floors.json build_history.jsonl \
+             .modularization_excluded.json; do
+        if [[ -f "$root/$f" && ! -e "{{out_dir}}/$f" ]]; then
+            mkdir -p "{{out_dir}}"
+            echo "→ migrating legacy $f → {{out_dir}}/"
+            mv "$root/$f" "{{out_dir}}/$f"
+        fi
+    done
+    if [[ -d "$root/.swiftstats" && ! -e "{{stats_dir}}" ]]; then
+        mkdir -p "{{out_dir}}"
+        echo "→ migrating legacy .swiftstats/ → {{out_dir}}/"
+        mv "$root/.swiftstats" "{{stats_dir}}"
     fi
 
 # Build the target project to populate its compiler index store, then resolve

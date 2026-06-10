@@ -1,3 +1,7 @@
+# Per-project output workspaces (the justfile routes all artifacts here).
+out/
+# Legacy root-level artifact names — still the defaults when driving
+# `python3 -m modgraph` directly without explicit paths.
 dependency_graph.html
 index_graph.json
 dependency_graph_index.html
