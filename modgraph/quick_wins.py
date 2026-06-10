@@ -14,9 +14,22 @@ D1/D2): for **every** source folder —
   members to everything.
 * **Destination (D2)** — absorbing into an **existing** SPM module is the
   default outcome. The auto-pick is the module with the most references
-  to/from the folder that (a) would not create a module-graph cycle and
-  (b) stays within the complexity bounds. A new module is proposed only when
-  nothing fits.
+  to/from the folder that (a) would not create a module-graph cycle,
+  (b) stays within the complexity bounds, (c) would not be **raised in build
+  level** by the folder's own module deps (layer inversion: feature-ish code
+  must not drag a low module upward), and (d) is not a **churn-hostile**
+  landing spot (a hot folder into a widely-depended-on module makes every
+  consumer pay the churn on warm rebuilds). A new module is proposed only
+  when nothing fits. Every vetoed candidate ships with its reason and
+  evidence (``rejected``) so the pick is auditable and overridable.
+* **Levels (study 2026-06-10, level-aware quick wins)** — each item carries
+  the folder's current build ``level``/``crit`` (from the folder scores) and
+  its ``landing_level``: the module-graph level its own module would occupy
+  if extracted today, given the migrated modules it references. Computed for
+  blocked (``cut_first``) folders too — "fix the cut-set and this lands at
+  LX" is the motivation for the cut. The surviving absorb pick is
+  level-preserving *by construction* (predicate c), so no delta is reported
+  on it; the deltas live in the rejections.
 * **Ranking (D1)** — items sorted by the folder's churn-weighted payoff over
   effort (``roi`` from :mod:`modgraph.scoring`): improving the warm build,
   the cold build, or unblocking the rest all raise payoff, so "core" folders
@@ -29,7 +42,8 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
-from .config import (ABSORB_MAX_FILES, ABSORB_MAX_PUBLIC, MOVE_FILE_MAX,
+from .config import (ABSORB_CHURN_HOT, ABSORB_MAX_FILES, ABSORB_MAX_PUBLIC,
+                     ABSORB_REJECTED_MAX, ABSORB_WARM_WIDE, MOVE_FILE_MAX,
                      SHARED_MIN_CONSUMERS)
 from .module_graph import APP_ID, module_of
 
@@ -85,10 +99,19 @@ def _reaches(fwd: dict[str, set[str]], start: str, goal: str) -> bool:
 
 def _absorb_candidate(folder: str, leaf_edges: dict, source_folders: set[str],
                       migrated_prefixes: list[str], module_labels: dict[str, str],
-                      module_fwd: dict[str, set[str]], row: dict) -> dict | None:
-    """Auto-picked existing-module destination, or None when nothing fits."""
+                      module_fwd: dict[str, set[str]], module_levels: dict[str, int],
+                      module_warm: dict[str, int], churn: int, churned: bool,
+                      row: dict) -> tuple[dict | None, list[dict]]:
+    """``(destination, rejected)`` — the auto-pick plus every vetoed candidate.
+
+    ``destination`` is ``None`` when nothing fits (size bounds exceeded, or
+    every candidate vetoed). Each ``rejected`` entry carries ``{module, label,
+    refs, reason, evidence}`` — ``module_cycle`` / ``raises_level`` /
+    ``churn_hostile`` — sorted heaviest-traffic first and capped at
+    ``ABSORB_REJECTED_MAX`` so a reviewer can audit (and override) the veto.
+    """
     if row.get("files", 0) > ABSORB_MAX_FILES or row.get("public", 0) > ABSORB_MAX_PUBLIC:
-        return None
+        return None, []
 
     # Reference weight between the folder and each SPM module, both directions.
     w_to: dict[str, int] = defaultdict(int)     # folder depends on module
@@ -103,18 +126,58 @@ def _absorb_candidate(folder: str, leaf_edges: dict, source_folders: set[str],
             if m != APP_ID:
                 w_from[m] += w
 
+    # Freeze: defaultdict subscripts below would otherwise insert zero-weight
+    # keys and pollute the dep set the level predicate iterates.
+    w_to, w_from = dict(w_to), dict(w_from)
     candidates = sorted(set(w_to) | set(w_from))
     valid: list[tuple[int, str]] = []
+    rejected: list[dict] = []
+
+    def veto(m: str, reason: str, evidence: list[str]) -> None:
+        rejected.append({
+            "module": m,
+            "label": module_labels.get(m, m),
+            "refs": w_to.get(m, 0) + w_from.get(m, 0),
+            "reason": reason,
+            "evidence": evidence,
+        })
+
     for m in candidates:
         # Absorbing `folder` into m adds m -> dep for each module it uses, and
         # consumer -> m for each module using it. Reject anything that would
         # close a module-graph cycle (modules must stay a DAG).
-        ok = all(not _reaches(module_fwd, dep, m) for dep in sorted(w_to) if dep != m) \
-            and all(not _reaches(module_fwd, m, c) for c in sorted(w_from) if c != m)
-        if ok:
-            valid.append((w_to[m] + w_from[m], m))
+        cyc = sorted(dep for dep in w_to if dep != m and _reaches(module_fwd, dep, m))
+        cyc += sorted(c for c in w_from if c != m and _reaches(module_fwd, m, c))
+        if cyc:
+            veto(m, "module_cycle",
+                 [module_labels.get(x, x) for x in cyc])
+            continue
+        # Layer inversion: m's level is 1 + max over its deps, so gaining a dep
+        # at or above its level necessarily raises it — and the level of every
+        # module stacked on m. Hard reject (Q1 of the study).
+        m_level = module_levels.get(m, 0)
+        raising = sorted(d for d in w_to
+                         if d != m and module_levels.get(d, 0) >= m_level)
+        if raising:
+            veto(m, "raises_level",
+                 [f"{module_labels.get(d, d)} is L{module_levels.get(d, 0)}, "
+                  f"destination is L{m_level}" for d in raising])
+            continue
+        # Churn hostility: hot folder x widely-depended-on destination means
+        # every transitive consumer pays the churn on warm rebuilds. No-ops
+        # without churn data (churned=False keeps "no data" != "untouched").
+        warm_m = module_warm.get(m, 0)
+        if churned and churn >= ABSORB_CHURN_HOT and warm_m >= ABSORB_WARM_WIDE:
+            veto(m, "churn_hostile",
+                 [f"folder churn {churn} commit(s)",
+                  f"destination has {warm_m} dependent module(s)"])
+            continue
+        valid.append((w_to.get(m, 0) + w_from.get(m, 0), m))
+
+    rejected.sort(key=lambda r: (-r["refs"], r["module"]))
+    rejected = rejected[:ABSORB_REJECTED_MAX]
     if not valid:
-        return None
+        return None, rejected
     refs, pick = max(valid, key=lambda t: (t[0], t[1]))
     return {
         "module": pick,
@@ -122,7 +185,8 @@ def _absorb_candidate(folder: str, leaf_edges: dict, source_folders: set[str],
         "refs": refs,
         "uses": w_to.get(pick, 0),
         "used_by": w_from.get(pick, 0),
-    }
+        "level": module_levels.get(pick, 0),
+    }, rejected
 
 
 def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict | None,
@@ -135,19 +199,42 @@ def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict |
     ``plan_edges`` the migration plan's edge set (both endpoints source
     folders); ``leaf_edges`` the full edge map (for references into already-
     migrated modules); ``module_graph`` the Build-mode graph (labels + edges
-    for the cycle check). ``pair_types``/``file_edges`` may be empty on the
-    regex-scan path — classification degrades to ``invert`` with no evidence.
+    for the cycle check, per-module ``level``/``warm`` for the layer and churn
+    predicates). ``pair_types``/``file_edges`` may be empty on the regex-scan
+    path — classification degrades to ``invert`` with no evidence.
     """
     rows = folder_scores.get("folders", {})
+    churned = folder_scores.get("summary", {}).get("churned", False)
     pair_types = pair_types or {}
     fbp = _files_by_pair(file_edges)
     consumers = _type_consumers(pair_types)
 
     module_labels = {n["id"]: n.get("label", n["id"])
                      for n in module_graph.get("nodes", [])}
+    module_levels = {n["id"]: n.get("level", 0)
+                     for n in module_graph.get("nodes", [])}
+    module_warm = {n["id"]: n.get("warm", 0)
+                   for n in module_graph.get("nodes", [])}
     module_fwd: dict[str, set[str]] = defaultdict(set)
     for e in module_graph.get("edges", []):
         module_fwd[e["from"]].add(e["to"])
+
+    # Modules each folder references (one pass): the folder's first-party deps
+    # *after* extraction, hence its landing level. Cut edges (to other source
+    # folders) are excluded by definition — the projection answers "where does
+    # this land once the cut-set is fixed".
+    mod_deps: dict[str, set[str]] = defaultdict(set)
+    for (a, b) in sorted(leaf_edges):
+        if a in source_folders and b not in source_folders:
+            m = module_of(b, migrated_prefixes)
+            if m != APP_ID:
+                mod_deps[a].add(m)
+
+    def landing_level(f: str) -> int:
+        deps = mod_deps.get(f)
+        if not deps:
+            return 0
+        return 1 + max(module_levels.get(m, 0) for m in sorted(deps))
 
     out_by_src: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for (a, b), w in sorted(plan_edges.items()):
@@ -167,10 +254,12 @@ def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict |
         extractable = not cut_edges
 
         destination = None
+        rejected: list[dict] = []
         if extractable:
-            destination = _absorb_candidate(
+            destination, rejected = _absorb_candidate(
                 f, leaf_edges, source_folders, migrated_prefixes,
-                module_labels, module_fwd, row)
+                module_labels, module_fwd, module_levels, module_warm,
+                row.get("churn", 0), churned, row)
         if extractable:
             action = "absorb" if destination else "new_module"
         else:
@@ -188,9 +277,13 @@ def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict |
             "public": row.get("public", 0),
             "churn": row.get("churn", 0),
             "warm": row.get("warm", 0),
+            "level": row.get("level", 0),
+            "crit": row.get("crit", False),
+            "landing_level": landing_level(f),
             "extractable_now": extractable,
             "action": action,
             "destination": destination,
+            "rejected": rejected,
             "cut": {"edges": cut_edges, "total_refs": cut_refs},
         })
 
@@ -200,6 +293,7 @@ def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict |
         "extractable_now": sum(1 for i in items if i["extractable_now"]),
         "absorbable": sum(1 for i in items if i["action"] == "absorb"),
         "cut_first": sum(1 for i in items if i["action"] == "cut_first"),
-        "churned": folder_scores.get("summary", {}).get("churned", False),
+        "vetoed": sum(1 for i in items if i["rejected"]),
+        "churned": churned,
     }
     return {"items": items, "summary": summary}

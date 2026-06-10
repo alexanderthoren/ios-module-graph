@@ -92,6 +92,44 @@ class AbsorbTaskTest(unittest.TestCase):
         self.assertIn("Move every file into `Lib`'s sources", text)
         self.assertNotIn("1. Create a new SPM target", text)
 
+    def test_level_rationale_carried_and_rendered(self):
+        qw = {"items": [{
+            "folder": "Core", "action": "absorb",
+            "level": 2, "landing_level": 1,
+            "destination": {"module": "Pkg/Sources/Lib", "label": "Lib",
+                            "refs": 4, "uses": 4, "used_by": 0, "level": 1},
+            "rejected": [{"module": "Pkg/Sources/Base", "label": "Base",
+                          "refs": 9, "reason": "raises_level",
+                          "evidence": ["Lib is L1, destination is L0"]}],
+        }]}
+        out = tasks.build_task_list(
+            [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1,
+            quick_wins=qw)
+        self.assertEqual(out[0]["level"], 2)
+        self.assertEqual(out[0]["landing_level"], 1)
+        self.assertEqual(out[0]["rejected_destinations"][0]["label"], "Base")
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.md"
+            tasks.write_task_list_markdown(out, sample_meta(), path)
+            text = path.read_text(encoding="utf-8")
+        self.assertIn("absorb into `Lib` (4 reference(s) to/from it already, L1)",
+                      text)
+        self.assertIn("**Build level:** L2 in the app target now; "
+                      "lands at L1 as its own module", text)
+        self.assertIn("`Base` — raises_level: Lib is L1, destination is L0",
+                      text)
+
+    def test_no_level_data_renders_no_level_lines(self):
+        out = tasks.build_task_list(
+            [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1,
+            quick_wins=quick_wins_for("Core", "Pkg/Sources/Lib"))
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.md"
+            tasks.write_task_list_markdown(out, sample_meta(), path)
+            text = path.read_text(encoding="utf-8")
+        self.assertNotIn("**Build level:**", text)
+        self.assertNotIn("vetoed", text)
+
 
 class WaveTest(unittest.TestCase):
     def _two_wave_tasks(self):

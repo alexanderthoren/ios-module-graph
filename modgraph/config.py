@@ -43,6 +43,15 @@ ABSORB_MAX_PUBLIC = 20   # types forced public — beyond this the API is its ow
 # consume it.
 MOVE_FILE_MAX = 2
 SHARED_MIN_CONSUMERS = 2
+# Level-aware absorb predicates (study 2026-06-10, level-aware quick wins):
+# a destination is vetoed when absorbing would raise its build level (layer
+# inversion — everything stacked on it pays), and hot folders must not land in
+# widely-depended-on modules (every consumer pays the churn on warm rebuilds).
+# Both are hard rejects; the reasons ship with the item so a reviewer can
+# override deliberately.
+ABSORB_CHURN_HOT = 5     # commits touching the folder in the churn window
+ABSORB_WARM_WIDE = 3     # modules transitively depending on the destination
+ABSORB_REJECTED_MAX = 4  # rejected-destination explanations kept per item
 # Misplaced-file detector (modgraph/file_affinity.py): suggest moving a file
 # only when one foreign folder holds at least MIN_REFS of its reference mass
 # AND dominates every alternative (own folder included) by DOMINANCE× —

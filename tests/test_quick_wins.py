@@ -127,16 +127,36 @@ class AbsorbTest(unittest.TestCase):
         self.assertEqual(item["action"], "new_module")
 
     def test_highest_traffic_module_wins(self):
+        # Traffic from consumers (w_from) keeps both candidates level-valid:
+        # absorbing A adds no new deps to either, so the heavier one wins.
         modules = {
             "nodes": [{"id": "app", "label": "App"},
                       {"id": "P/Sources/X", "label": "X"},
                       {"id": "P/Sources/Y", "label": "Y"}],
             "edges": [],
         }
-        edges = {("A", "P/Sources/X"): 1, ("A", "P/Sources/Y"): 4}
+        edges = {("P/Sources/X", "A"): 1, ("P/Sources/Y", "A"): 4}
         out = compute_quick_wins(flat_scores(["A"]), {}, {}, edges, {"A"},
                                  ["P/Sources"], [], modules)
         self.assertEqual(out["items"][0]["destination"]["module"], "P/Sources/Y")
+
+    def test_same_level_dep_pair_vetoes_both(self):
+        # A uses X and Y, both L0. Absorbing into either gives it a dep on the
+        # other at its own level — a genuine level raise. Both vetoed, new
+        # module is the honest outcome.
+        modules = {
+            "nodes": [{"id": "app", "label": "App"},
+                      {"id": "P/Sources/X", "label": "X", "level": 0},
+                      {"id": "P/Sources/Y", "label": "Y", "level": 0}],
+            "edges": [],
+        }
+        edges = {("A", "P/Sources/X"): 1, ("A", "P/Sources/Y"): 4}
+        out = compute_quick_wins(flat_scores(["A"]), {}, {}, edges, {"A"},
+                                 ["P/Sources"], [], modules)
+        item = out["items"][0]
+        self.assertEqual(item["action"], "new_module")
+        self.assertEqual({r["reason"] for r in item["rejected"]},
+                         {"raises_level"})
 
     def test_complexity_bounds_force_new_module(self):
         out = compute_quick_wins(
@@ -151,6 +171,147 @@ class AbsorbTest(unittest.TestCase):
         item = out["items"][0]
         self.assertTrue(item["extractable_now"])
         self.assertEqual(item["action"], "new_module")
+
+
+class LevelPredicateTest(unittest.TestCase):
+    """Layer-inversion veto (raises_level) + the rejected report."""
+
+    MODULES = {
+        "nodes": [{"id": "app", "label": "App"},
+                  {"id": "P/Sources/Low", "label": "Low", "level": 0},
+                  {"id": "P/Sources/High", "label": "High", "level": 2}],
+        "edges": [],
+    }
+
+    def run_case(self, edges):
+        return compute_quick_wins(flat_scores(["A"]), {}, {}, edges, {"A"},
+                                  ["P/Sources"], [], self.MODULES)["items"][0]
+
+    def test_low_destination_vetoed_high_picked(self):
+        # A uses Low(L0) and High(L2). Absorbing into Low would raise it to
+        # L3 (gains a dep on High); High already sits above Low — fine.
+        item = self.run_case({("A", "P/Sources/Low"): 5,
+                              ("A", "P/Sources/High"): 1})
+        self.assertEqual(item["destination"]["module"], "P/Sources/High")
+        self.assertEqual(item["destination"]["level"], 2)
+        self.assertEqual(len(item["rejected"]), 1)
+        rej = item["rejected"][0]
+        self.assertEqual(rej["module"], "P/Sources/Low")
+        self.assertEqual(rej["reason"], "raises_level")
+        self.assertEqual(rej["evidence"],
+                         ["High is L2, destination is L0"])
+        self.assertEqual(rej["refs"], 5)
+
+    def test_single_lower_dep_is_fine(self):
+        # A uses only Low; absorbing into High gains High a dep below its
+        # level — no raise. But A only references Low, so Low is the only
+        # candidate, and absorbing A (no other deps) into Low is also fine.
+        item = self.run_case({("A", "P/Sources/Low"): 3})
+        self.assertEqual(item["destination"]["module"], "P/Sources/Low")
+        self.assertEqual(item["rejected"], [])
+
+    def test_rejected_sorted_by_traffic_and_bounded(self):
+        # Six same-level modules all vetoed; report keeps the 4 heaviest,
+        # heaviest first.
+        nodes = [{"id": "app", "label": "App"}]
+        edges = {}
+        for i in range(6):
+            mid = f"P/Sources/M{i}"
+            nodes.append({"id": mid, "label": f"M{i}", "level": 0})
+            edges[("A", mid)] = i + 1
+        modules = {"nodes": nodes, "edges": []}
+        out = compute_quick_wins(flat_scores(["A"]), {}, {}, edges, {"A"},
+                                 ["P/Sources"], [], modules)
+        item = out["items"][0]
+        self.assertIsNone(item["destination"])
+        self.assertEqual([r["refs"] for r in item["rejected"]], [6, 5, 4, 3])
+
+
+class ChurnPredicateTest(unittest.TestCase):
+    """Hot folder x widely-depended-on destination veto (churn_hostile)."""
+
+    def modules(self, warm):
+        return {
+            "nodes": [{"id": "app", "label": "App"},
+                      {"id": "P/Sources/Wide", "label": "Wide",
+                       "level": 1, "warm": warm}],
+            "edges": [],
+        }
+
+    def scores(self, churn, churned):
+        s = flat_scores(["A"], A={"churn": churn})
+        s["summary"]["churned"] = churned
+        return s
+
+    def run_case(self, churn, churned, warm):
+        return compute_quick_wins(
+            self.scores(churn, churned), {}, {},
+            {("A", "P/Sources/Wide"): 3}, {"A"}, ["P/Sources"], [],
+            self.modules(warm))["items"][0]
+
+    def test_hot_folder_into_wide_module_vetoed(self):
+        item = self.run_case(churn=5, churned=True, warm=3)
+        self.assertEqual(item["action"], "new_module")
+        rej = item["rejected"][0]
+        self.assertEqual(rej["reason"], "churn_hostile")
+        self.assertEqual(rej["evidence"],
+                         ["folder churn 5 commit(s)",
+                          "destination has 3 dependent module(s)"])
+
+    def test_cold_folder_absorbs_into_wide_module(self):
+        item = self.run_case(churn=4, churned=True, warm=3)
+        self.assertEqual(item["action"], "absorb")
+
+    def test_hot_folder_into_narrow_module_absorbs(self):
+        item = self.run_case(churn=9, churned=True, warm=2)
+        self.assertEqual(item["action"], "absorb")
+
+    def test_predicate_noop_without_churn_data(self):
+        # churn 0 with churned=False means "no data", not "untouched" — the
+        # veto must not fire on data we don't have.
+        item = self.run_case(churn=0, churned=False, warm=9)
+        self.assertEqual(item["action"], "absorb")
+
+
+class LandingLevelTest(unittest.TestCase):
+    MODULES = {
+        "nodes": [{"id": "app", "label": "App"},
+                  {"id": "P/Sources/Low", "label": "Low", "level": 0},
+                  {"id": "P/Sources/High", "label": "High", "level": 2}],
+        "edges": [],
+    }
+
+    def test_no_module_deps_lands_at_zero(self):
+        out = compute_quick_wins(flat_scores(["A"]), {}, {}, {}, {"A"},
+                                 ["P/Sources"], [], self.MODULES)
+        self.assertEqual(out["items"][0]["landing_level"], 0)
+
+    def test_lands_one_above_deepest_module_dep(self):
+        out = compute_quick_wins(
+            flat_scores(["A"]), {}, {},
+            {("A", "P/Sources/Low"): 1, ("A", "P/Sources/High"): 1}, {"A"},
+            ["P/Sources"], [], self.MODULES)
+        self.assertEqual(out["items"][0]["landing_level"], 3)
+
+    def test_cut_first_folders_get_a_projection_too(self):
+        # A is blocked by its edge to B (cut_first), but its module deps
+        # already say where it lands once the cut is fixed.
+        plan_edges = {("A", "B"): 2}
+        leaf = {("A", "B"): 2, ("A", "P/Sources/High"): 1}
+        out = compute_quick_wins(
+            flat_scores(["A", "B"]), plan_edges, {}, leaf, {"A", "B"},
+            ["P/Sources"], [], self.MODULES)
+        a = next(i for i in out["items"] if i["folder"] == "A")
+        self.assertEqual(a["action"], "cut_first")
+        self.assertEqual(a["landing_level"], 3)
+        self.assertEqual(a["rejected"], [])
+
+    def test_items_carry_current_level_and_crit(self):
+        scores = flat_scores(["A"], A={"level": 4, "crit": True})
+        out = compute_quick_wins(scores, {}, {}, {}, {"A"},
+                                 [], [], NO_MODULES)
+        self.assertEqual(out["items"][0]["level"], 4)
+        self.assertTrue(out["items"][0]["crit"])
 
 
 class RankingTest(unittest.TestCase):

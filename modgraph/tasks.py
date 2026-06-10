@@ -72,6 +72,12 @@ def build_task_list(
                 "roi": step.get("roi"),
                 "folder": folder,
                 "destination": destination,
+                # Level rationale (quick_wins): current build level, where the
+                # folder lands if extracted, and which destinations the layer/
+                # churn predicates vetoed — so the markdown stays auditable.
+                "level": qw.get("level") if qw else None,
+                "landing_level": qw.get("landing_level") if qw else None,
+                "rejected_destinations": qw.get("rejected", []) if qw else [],
                 "files": sorted(files_by_folder.get(folder, [])),
                 "files_count": len(files_by_folder.get(folder, [])),
                 "refactor_edges": [],
@@ -192,8 +198,18 @@ def write_task_list_markdown(tasks: list[dict], meta: dict, out_path: Path) -> N
         lines.append(f"- **Plan step:** {t['plan_step']}")
         if t.get("destination"):
             d = t["destination"]
+            lvl = f", L{d['level']}" if d.get("level") is not None else ""
             lines.append(f"- **Destination:** absorb into `{d['label']}` "
-                         f"({d['refs']} reference(s) to/from it already)")
+                         f"({d['refs']} reference(s) to/from it already{lvl})")
+        if t.get("landing_level") is not None:
+            lines.append(f"- **Build level:** L{t.get('level', 0)} in the app "
+                         f"target now; lands at L{t['landing_level']} as its "
+                         f"own module")
+        if t.get("rejected_destinations"):
+            lines.append("- **Destinations vetoed by the layer/churn checks:**")
+            for r in t["rejected_destinations"]:
+                ev = "; ".join(r.get("evidence", [])) or "(no detail)"
+                lines.append(f"  - `{r['label']}` — {r['reason']}: {ev}")
         if t.get("roi") is not None:
             lines.append(f"- **ROI:** {t['roi']} "
                          f"(payoff {t['payoff']}, effort {t['effort']} — "

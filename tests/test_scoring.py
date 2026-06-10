@@ -47,6 +47,17 @@ class WarmAndColdTest(unittest.TestCase):
         self.assertEqual(rows["Feature"]["cold_score"], 2)
         self.assertEqual(rows["Core"]["cold_score"], 1)
 
+    def test_level_and_crit_reach_folder_rows(self):
+        # quick_wins consumes these for the level projection — they must
+        # survive the copy out of build_impact.
+        rows = toy_scores()["folders"]
+        self.assertEqual(rows["Core"]["level"], 0)   # {Core, Util} SCC
+        self.assertEqual(rows["Util"]["level"], 0)
+        self.assertEqual(rows["Feature"]["level"], 1)
+        self.assertEqual(rows["App"]["level"], 2)
+        self.assertTrue(all(isinstance(r["crit"], bool)
+                            for r in rows.values()))
+
     def test_isolated_folder_gets_zero_impact(self):
         decls = {"A": {"T1"}, "B": {"T2"}, "Iso": {"T3"}}
         tree = build_tree(set(decls), decls, root_label="X")
