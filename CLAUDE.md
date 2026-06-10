@@ -20,6 +20,7 @@ See `README.md` for user-facing usage. This file covers the internals.
 just tree     # HTML graph        → out/<project>/dependency_graph.html
 just list     # migration plan    → out/<project>/migration_plan.md
 just all      # both
+just refresh  # fast loop: INCREMENTAL build → re-index → re-render (no clean)
 just serve    # live mode: serve HTML, hot-reload on rebuild, cmd+click → Xcode
 just diff a b # structural delta between two saved index_graph.json snapshots
 just check g … # architecture gate: exit 1 when a graph violates rules (CI)
@@ -37,9 +38,22 @@ wrong-project mismatch). The Python CLI's *own* defaults still point at the
 repo root — the justfile passes every path explicitly, including `--history`
 and `--excluded-file`.
 
-`tree`/`list`/`all` reuse `index_graph.json` if present and rebuild it (full
-project build → index → resolve) only when missing. There is **no `--clean`
-flag** — force a rebuild with `just clean` then re-run.
+`tree`/`list`/`all` make a **three-way** decision in `_prep`: missing
+`index_graph.json` ⇒ a cold rebuild (full project build → index → resolve);
+present but the target repo *moved* (HEAD changed or working tree dirty) ⇒ an
+**incremental refresh** under the hood (`_index 0`); present and verifiably
+current (or unverifiable) ⇒ reused as-is. The staleness check is
+`python3 -m modgraph.staleness <graph_json> <project_dir>` (exit `STALE_EXIT`=10
+when stale, 0 otherwise — refresh fires only on a *definite* verdict, never on
+uncertainty), comparing the repo's current sha/dirty state against the
+`target_commit` the cached graph embeds. Set `AUTO_REFRESH=0` to disable the
+auto-refresh and keep the old warn-only reuse (CI / slow projects). There is
+**no `--clean` flag** — `just clean` always forces a full cold rebuild. `just
+refresh` is the same incremental path done explicitly: re-indexes from an
+*incremental* build (`_index fresh=0`): no scratch-dir wipe, plain `build`
+instead of `clean build`, stats not re-aggregated (kept from the last cold
+build), reader re-runs over the updated store. Deletions may linger in the
+store until a clean run.
 
 Build the Swift reader alone:
 
@@ -153,7 +167,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `models.py` | `GraphData` dataclass — the typed container both producers return |
 | `scanner.py` | regex-scan fallback path (`scan`, `strip_noise`, `should_skip_dir`, `collect_swift_files`, `compute_pair_types`) |
 | `index_loader.py` | `load_index_graph` — parse the USR-resolved `index_graph.json` |
-| `staleness.py` | `classify_staleness` (pure verdict matrix) + `warn_if_stale` — compare `GraphData.target_commit` against the target repo's current sha/dirty state, loud stderr banner when the cached `index_graph.json` is stale; silent when nothing can be verified |
+| `staleness.py` | `classify_staleness` (pure verdict matrix) + `warn_if_stale` — compare `GraphData.target_commit` against the target repo's current sha/dirty state, loud stderr banner when the cached `index_graph.json` is stale; silent when nothing can be verified. `main` / `python3 -m modgraph.staleness <graph_json> <project_dir>` — exit `STALE_EXIT`=10 only on a definite stale verdict (else 0), so the justfile's `_prep` can auto-trigger an incremental refresh (gated by `AUTO_REFRESH`) |
 | `diff.py` | `compute_graph_diff` (folders/edges/cycles added-removed, edges annotated with explaining `pair_types`) + markdown/json renderers + `python3 -m modgraph.diff` CLI (`--exit-code` = git-diff convention); powers `just diff` |
 | `check.py` | `check_graph` (pure rule engine: `--max-cycles`, `--forbid 'SRC -> DST'` fnmatch globs, `--no-new-edges`/`--no-new-cycles` ratchets vs an `--against` baseline) + `python3 -m modgraph.check` CLI — exit 1 on violations, 2 on usage/schema errors; reuses `diff`'s core; powers `just check` |
 | `graph.py` | `_tarjan_sccs`, `compute_migration_plan` (SCC-aware, deterministic), `build_tree` |
@@ -274,7 +288,9 @@ deterministic — the honest improvement signal — while **wall** (`est_wall_s`
 The tab renders headline before/after cards, per-metric inline-SVG sparklines, and
 a per-commit delta table (green = improved per each metric's good-direction), all
 client-side off the payload — no recompute in the browser. The intended loop:
-extract a module → `just clean && just tree` → check the Improvements tab.
+extract a module → `just clean && just tree` → check the Improvements tab
+(or `just refresh` for a quick structural look first — it keeps the old
+timings, so wall metrics only move on the next cold run).
 **Gotcha:** because the snapshot writes on every `main()`, the cli `MainTest`
 redirects `--history` into a temp file (see `tests/test_cli.py:setUp`) so the suite
 never writes to the repo root — keep that when adding `main()` tests.

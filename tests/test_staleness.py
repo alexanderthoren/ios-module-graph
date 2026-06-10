@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from modgraph.staleness import classify_staleness, warn_if_stale
+from modgraph.staleness import STALE_EXIT, classify_staleness, main, warn_if_stale
 from tests import fixtures
 
 SHA = fixtures.TARGET_COMMIT["sha"]                    # what the index embeds
@@ -107,6 +111,64 @@ class WarnIfStaleTest(unittest.TestCase):
             msg = warn_if_stale(_embedded(), "/proj", git_state=self._git_state(""))
         self.assertIsNone(msg)
         self.assertEqual(err.getvalue(), "")
+
+
+class MainCliTest(unittest.TestCase):
+    """The `python3 -m modgraph.staleness` entry the justfile branches on:
+    exit STALE_EXIT only on a definite stale verdict, 0 for everything else
+    (fresh / unverifiable / unreadable / bad args) so a refresh never fires on
+    uncertainty. _git_state is patched so no test needs a real repo."""
+
+    def _write_graph(self, target_commit) -> str:
+        d = tempfile.mkdtemp()
+        path = Path(d) / "index_graph.json"
+        path.write_text(json.dumps({"target_commit": target_commit}), encoding="utf-8")
+        return str(path)
+
+    def _run(self, json_path, git_state):
+        err = io.StringIO()
+        with mock.patch("modgraph.staleness._git_state", return_value=git_state), \
+                contextlib.redirect_stderr(err):
+            code = main([json_path, "/proj"])
+        return code, err.getvalue()
+
+    def test_moved_head_exits_stale(self):
+        path = self._write_graph(_embedded())
+        code, err = self._run(path, (OTHER_SHA, "subj", False))
+        self.assertEqual(code, STALE_EXIT)
+        self.assertIn("stale:", err)
+
+    def test_dirty_tree_exits_stale(self):
+        path = self._write_graph(_embedded())
+        code, _ = self._run(path, (SHA, "subj", True))
+        self.assertEqual(code, STALE_EXIT)
+
+    def test_current_exits_zero(self):
+        path = self._write_graph(_embedded())
+        code, err = self._run(path, (SHA, "subj", False))
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+
+    def test_missing_file_exits_zero(self):
+        code, _ = self._run("/no/such/index_graph.json", (OTHER_SHA, "subj", False))
+        self.assertEqual(code, 0)
+
+    def test_no_embedded_commit_exits_zero(self):
+        path = self._write_graph(None)
+        code, _ = self._run(path, (OTHER_SHA, "subj", False))
+        self.assertEqual(code, 0)
+
+    def test_git_unavailable_exits_zero(self):
+        # Even a would-be mismatch stays silent when HEAD can't be read.
+        path = self._write_graph(_embedded())
+        code, _ = self._run(path, ("", "", False))
+        self.assertEqual(code, 0)
+
+    def test_bad_args_exits_zero(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(main([]), 0)
+        self.assertIn("usage:", err.getvalue())
 
 
 if __name__ == "__main__":
