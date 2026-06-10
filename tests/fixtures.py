@@ -91,6 +91,13 @@ TYPE_EDGES: list[dict] = [
      "dst_file": "Core/CoreService.swift"},
 ]
 
+# Target repo's git state at index time (optional field since schema v1).
+TARGET_COMMIT: dict = {
+    "sha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+    "dirty": False,
+    "subject": "feat: toy commit",
+}
+
 
 def sample_index_dict() -> dict:
     """A complete index_graph.json payload for the toy project."""
@@ -104,6 +111,7 @@ def sample_index_dict() -> dict:
         "pair_types": [dict(p) for p in PAIR_TYPES],
         "file_edges": [dict(e) for e in FILE_EDGES],
         "type_edges": [dict(e) for e in TYPE_EDGES],
+        "target_commit": dict(TARGET_COMMIT),
     }
 
 
