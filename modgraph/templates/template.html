@@ -1025,7 +1025,9 @@
      script below calls. (Placeholder filled by render.py.) -->
 <script>__GRAPH_LOGIC_JS__</script>
 <script>
-const DATA = __PAYLOAD__;
+// decodePayload (graph_logic.js) expands the string-interned sections
+// back to the object shapes this script consumes; see render.py.
+const DATA = decodePayload(__PAYLOAD__);
 const tree = DATA.tree;
 const edges = DATA.edges;
 const files = DATA.files;

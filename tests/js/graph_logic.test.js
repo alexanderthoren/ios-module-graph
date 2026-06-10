@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
-  migrationPlanOrder,
+  migrationPlanOrder, decodePayload,
 } = require('../../modgraph/templates/graph_logic.js');
 
 // Just the ordered list of folder-groups from a plan (drops decoration).
@@ -157,4 +157,44 @@ test('migrationPlanOrder: deterministic regardless of input order', () => {
   const a = migrationPlanOrder(['A', 'B', 'C'], { A: ['B'], B: ['C'] }, []);
   const b = migrationPlanOrder(['C', 'A', 'B'], { B: ['C'], A: ['B'] }, []);
   assert.deepStrictEqual(planFolders(a), planFolders(b));
+});
+
+// ── decodePayload ────────────────────────────────────────────────────────────
+
+test('decodePayload: expands interned sections to the original shapes', () => {
+  const encoded = {
+    strings: ['App', 'Core', 'A.swift', 'AppT', 'CoreT', 'App/A.swift', 'Core/C.swift'],
+    edges: [[0, 1, 2]],
+    files: [[0, 2, [3], [4], [[4, 1]]]],
+    file_edges: [[5, 6, 1, [4]]],
+    type_edges: [[3, 4, 1, [4], 5, 6]],
+    plan: [{ step: 1 }],
+  };
+  const d = decodePayload(encoded);
+  assert.deepStrictEqual(d.edges, [{ src: 'App', dst: 'Core', w: 2 }]);
+  assert.deepStrictEqual(d.files, [{
+    folder: 'App', name: 'A.swift', decls: ['AppT'], refs: ['CoreT'],
+    ref_owners: [['CoreT', 'Core']],
+  }]);
+  assert.deepStrictEqual(d.file_edges, [{
+    src: 'App/A.swift', dst: 'Core/C.swift', w: 1, symbols: ['CoreT'],
+  }]);
+  assert.deepStrictEqual(d.type_edges, [{
+    src: 'AppT', dst: 'CoreT', w: 1, symbols: ['CoreT'],
+    src_file: 'App/A.swift', dst_file: 'Core/C.swift',
+  }]);
+  assert.deepStrictEqual(d.plan, [{ step: 1 }]);   // untouched key passes through
+  assert.strictEqual(d.strings, undefined);        // table consumed, not exposed
+});
+
+test('decodePayload: passes a payload without a strings table through', () => {
+  const plain = { edges: [{ src: 'A', dst: 'B', w: 1 }], plan: [] };
+  assert.strictEqual(decodePayload(plain), plain);
+});
+
+test('decodePayload: tolerates missing sections', () => {
+  const d = decodePayload({ strings: ['x'], edges: [], files: [],
+                            file_edges: [], type_edges: [] });
+  assert.deepStrictEqual(d.edges, []);
+  assert.deepStrictEqual(d.type_edges, []);
 });

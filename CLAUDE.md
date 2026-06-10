@@ -161,7 +161,7 @@ populate the store, builds the reader, runs the reader, then runs the renderer.
 | `build_times.py` | `aggregate_stats_dir`/`load_build_times` (per-module compile **work** = Σ wall) + `aggregate_floors_dir`/`load_build_floors` (per-module **serial floor** = longest single file) (+ CLI) — read from the Swift compiler's `-stats-output-dir`; feed Build mode's module cost + the from-scratch `cold_wall` |
 | `exclusions.py` | `load_exclusions`, `compute_blocked_by_excluded` |
 | `tasks.py` | `build_task_list`, `write_task_list_markdown`, `write_task_list_json` |
-| `render.py` | `render_html` — inject the JSON payload into `templates/template.html`; inlines the vendored vis-network bundle + `graph_logic.js` (placeholders), and escapes the payload safe for a `<script>` block (`_json_for_script`) |
+| `render.py` | `render_html` — inject the JSON payload into `templates/template.html`; inlines the vendored vis-network bundle + `graph_logic.js` (placeholders), escapes the payload safe for a `<script>` block (`_json_for_script`), and string-interns the heavy sections (`_intern_payload` — edges/files/file_edges/type_edges, ~70% of the HTML on big projects; decoded in the browser by `graph_logic.js` `decodePayload`) |
 | `cli.py` | `parse_args` + `main` orchestration |
 | `__main__.py` | `python3 -m modgraph` entry point → `cli.main` |
 | `serve.py` | live-mode HTTP server for `just serve` (`python3 -m modgraph.serve`); SSE hot-reload + `xed` bridge |
@@ -326,7 +326,12 @@ exist — do not "simplify" stage 1 back into pure text scanning.
   inlined file (`graph_logic.js`) — or it gets re-substituted; (2) the payload
   is escaped for a `<script>` block by `_json_for_script` (`<`/`>`/`&` → `\uXXXX`)
   so a crafted folder/type name can't break out of the script element — don't
-  swap it back to a bare `json.dumps`.
+  swap it back to a bare `json.dumps`; (3) the payload's heavy sections
+  (`edges`/`files`/`file_edges`/`type_edges`) ship **string-interned**
+  (`render._intern_payload`) and the template's `const DATA =
+  decodePayload(__PAYLOAD__)` expands them before any UI code runs — encoder
+  and decoder are exact mirrors, so change both together
+  (`tests/test_payload_parity.py` shells to Node and proves the round-trip).
 
 - **The output is self-contained — keep it that way.** No external asset URLs:
   vis-network is vendored (`templates/vendor/`) and inlined, the webfont CDN was

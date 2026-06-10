@@ -41,21 +41,74 @@ def _load_graph_logic() -> str:
 def _json_for_script(payload) -> str:
     """Serialize ``payload`` to JSON safe to inline inside an HTML ``<script>``.
 
-    The template embeds the payload as ``const DATA = __PAYLOAD__;`` inside a
+    The template embeds the payload as ``const DATA = …(__PAYLOAD__)`` inside a
     ``<script>`` block. A bare ``json.dumps`` is unsafe there: if any string in
     the payload (a folder name, type name, symbol, …) contains ``</script`` —
     or even just ``</`` — the HTML parser would close the script element early
     and corrupt the page. ``<`` / ``>`` / ``&`` only ever occur inside JSON
     string values (structural JSON has none), so escaping them to their
     ``\\uXXXX`` form keeps the JSON identical to a JS parser while making it
-    inert to the HTML parser.
+    inert to the HTML parser. Compact separators: the default ``", "``/``": "``
+    spaces are pure dead weight at payload scale.
     """
     return (
-        json.dumps(payload)
+        json.dumps(payload, separators=(",", ":"))
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
     )
+
+
+def _intern_payload(payload: dict) -> dict:
+    """String-intern the payload's heaviest sections to shrink the output file.
+
+    ``edges``/``files``/``file_edges``/``type_edges`` repeat the same folder
+    names, type names, file paths, and symbols thousands of times — on a large
+    project they are ~70% of the HTML. Each unique string is stored once in a
+    ``strings`` table and the records become flat arrays of indices:
+
+        edges       [src, dst, w]
+        files       [folder, name, [decls…], [refs…], [[ref_owner pair]…]]
+        file_edges  [src, dst, w, [symbols…]]
+        type_edges  [src, dst, w, [symbols…], src_file, dst_file]
+
+    The exact mirror lives in ``graph_logic.js`` ``decodePayload`` — the UI
+    decodes once at load and every consumer sees the original object shapes.
+    Change one side, change the other (the parity test in
+    ``tests/test_payload_parity.py`` proves the round-trip). Table order is
+    first-seen over already-deterministic inputs, so output stays byte-stable.
+    """
+    table: dict[str, int] = {}
+
+    def intern(s: str) -> int:
+        if s not in table:
+            table[s] = len(table)
+        return table[s]
+
+    enc = dict(payload)
+    enc["edges"] = [
+        [intern(e["src"]), intern(e["dst"]), e["w"]] for e in payload["edges"]
+    ]
+    enc["files"] = [
+        [intern(f["folder"]), intern(f["name"]),
+         [intern(d) for d in f["decls"]],
+         [intern(r) for r in f["refs"]],
+         [[intern(p) for p in pair] for pair in f.get("ref_owners", [])]]
+        for f in payload["files"]
+    ]
+    enc["file_edges"] = [
+        [intern(e["src"]), intern(e["dst"]), e["w"],
+         [intern(s) for s in e["symbols"]]]
+        for e in payload["file_edges"]
+    ]
+    enc["type_edges"] = [
+        [intern(e["src"]), intern(e["dst"]), e["w"],
+         [intern(s) for s in e["symbols"]],
+         intern(e["src_file"]), intern(e["dst_file"])]
+        for e in payload["type_edges"]
+    ]
+    enc["strings"] = list(table)
+    return enc
 
 
 def _escape_html_text(s: str) -> str:
@@ -125,7 +178,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         _load_template()
         .replace("__VIS_NETWORK_JS__", _load_vis_network())
         .replace("__GRAPH_LOGIC_JS__", _load_graph_logic())
-        .replace("__PAYLOAD__", _json_for_script(payload))
+        .replace("__PAYLOAD__", _json_for_script(_intern_payload(payload)))
         .replace("__ROOT_LABEL__", _escape_html_text(root_label))
     )
     out_path.write_text(html, encoding="utf-8")
