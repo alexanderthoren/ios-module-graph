@@ -18,19 +18,50 @@ from modgraph import graph, render
 from tests import fixtures
 
 
+def _decode_payload(data: dict) -> dict:
+    """Python mirror of graph_logic.js ``decodePayload``: expand the interned
+    sections back to the original object shapes, so assertions read the payload
+    the way the UI does after its decode step. The JS↔Python agreement itself
+    is proven by tests/test_payload_parity.py."""
+    if "strings" not in data:
+        return data
+    s = data["strings"]
+    out = {k: v for k, v in data.items() if k != "strings"}
+    out["edges"] = [{"src": s[a], "dst": s[b], "w": w}
+                    for a, b, w in data["edges"]]
+    out["files"] = [
+        {"folder": s[folder], "name": s[name],
+         "decls": [s[i] for i in decls], "refs": [s[i] for i in refs],
+         "ref_owners": [[s[i] for i in pair] for pair in owners]}
+        for folder, name, decls, refs, owners in data["files"]
+    ]
+    out["file_edges"] = [
+        {"src": s[a], "dst": s[b], "w": w, "symbols": [s[i] for i in syms]}
+        for a, b, w, syms in data["file_edges"]
+    ]
+    out["type_edges"] = [
+        {"src": s[a], "dst": s[b], "w": w, "symbols": [s[i] for i in syms],
+         "src_file": s[sf], "dst_file": s[df]}
+        for a, b, w, syms, sf, df in data["type_edges"]
+    ]
+    return out
+
+
 def _extract_data_json(html: str) -> dict:
-    """Pull the ``const DATA = {...};`` line out of the rendered HTML and parse
-    its JSON object (strip the ``const DATA = `` prefix and trailing ``;``)."""
+    """Pull ``const DATA = decodePayload({...});`` out of the rendered HTML,
+    parse the embedded JSON object, and expand the interned sections — i.e.
+    return the payload exactly as the UI sees it after its decode step."""
+    prefix = "const DATA = decodePayload("
     line = None
     for raw in html.splitlines():
-        if raw.startswith("const DATA = "):
+        if raw.startswith(prefix):
             line = raw
             break
     if line is None:
-        raise AssertionError("no `const DATA = ...;` line found in rendered HTML")
-    body = line[len("const DATA = "):]
-    assert body.endswith(";"), f"DATA line not terminated by ';': {line!r}"
-    return json.loads(body[:-1])
+        raise AssertionError("no `const DATA = decodePayload(...);` line found")
+    body = line[len(prefix):]
+    assert body.endswith(");"), f"DATA line not terminated by ');': {line!r}"
+    return _decode_payload(json.loads(body[:-2]))
 
 
 def _toy_inputs(root_label="ToyProj", out_path=None):
@@ -110,6 +141,57 @@ class RenderHtmlOutputTest(unittest.TestCase):
         data = _extract_data_json(self.html)
         for key in ("tree", "edges", "plan", "packages", "files", "type_owners"):
             self.assertIn(key, data)
+
+    def test_payload_is_interned_in_the_raw_html(self):
+        # The heavy sections ship as index arrays + a strings table; the UI
+        # expands them via decodePayload. Proof the encoding actually fired.
+        self.assertIn('"strings":[', self.html)
+
+
+class InternPayloadTest(unittest.TestCase):
+    """render._intern_payload: the string-interning encoder for the heavy
+    payload sections. Its exact mirror is graph_logic.js decodePayload."""
+
+    def _payload(self) -> dict:
+        return {
+            "edges": [{"src": "App", "dst": "Core", "w": 2}],
+            "files": [{"folder": "App", "name": "A.swift", "decls": ["AppT"],
+                       "refs": ["CoreT"], "ref_owners": [["CoreT", "Core"]]}],
+            "file_edges": [{"src": "App/A.swift", "dst": "Core/C.swift",
+                            "w": 1, "symbols": ["CoreT"]}],
+            "type_edges": [{"src": "AppT\tApp", "dst": "CoreT\tCore", "w": 1,
+                            "symbols": ["CoreT"], "src_file": "App/A.swift",
+                            "dst_file": "Core/C.swift"}],
+            "plan": [{"step": 1}],
+        }
+
+    def test_strings_table_has_no_duplicates(self):
+        enc = render._intern_payload(self._payload())
+        self.assertEqual(len(enc["strings"]), len(set(enc["strings"])))
+
+    def test_repeated_string_stored_once(self):
+        # "CoreT" occurs in files.refs, ref_owners, file_edges.symbols, and
+        # type_edges.symbols — one table entry serves all of them.
+        enc = render._intern_payload(self._payload())
+        self.assertEqual(enc["strings"].count("CoreT"), 1)
+
+    def test_edges_become_index_triples(self):
+        enc = render._intern_payload(self._payload())
+        s = enc["strings"]
+        self.assertEqual(enc["edges"], [[s.index("App"), s.index("Core"), 2]])
+
+    def test_untouched_sections_pass_through(self):
+        enc = render._intern_payload(self._payload())
+        self.assertEqual(enc["plan"], [{"step": 1}])
+
+    def test_round_trip_restores_the_original(self):
+        p = self._payload()
+        self.assertEqual(_decode_payload(render._intern_payload(p)), p)
+
+    def test_deterministic(self):
+        a = json.dumps(render._intern_payload(self._payload()))
+        b = json.dumps(render._intern_payload(self._payload()))
+        self.assertEqual(a, b)
 
 
 class RenderHtmlPayloadContentTest(unittest.TestCase):

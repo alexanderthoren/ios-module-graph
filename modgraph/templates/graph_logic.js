@@ -219,11 +219,40 @@ function migrationPlanOrder(sourceSet, deps, weightedEdges) {
   return out;
 }
 
+// ── payload decoding ─────────────────────────────────────────────────────────
+// The renderer string-interns the payload's heaviest sections (edges, files,
+// file_edges, type_edges): every name/path lives once in a `strings` table and
+// the records carry integer indices into it (see render.py `_intern_payload`).
+// This expands them back to the exact object shapes the rest of the UI was
+// written against, so only this one seam knows about the encoding. A payload
+// without a `strings` table (older renderer) passes through untouched.
+function decodePayload(data) {
+  if (!data || !data.strings) return data;
+  const S = data.strings;
+  const out = Object.assign({}, data);
+  delete out.strings;
+  out.edges = (data.edges || []).map(e => ({ src: S[e[0]], dst: S[e[1]], w: e[2] }));
+  out.files = (data.files || []).map(f => ({
+    folder: S[f[0]], name: S[f[1]],
+    decls: f[2].map(i => S[i]),
+    refs: f[3].map(i => S[i]),
+    ref_owners: f[4].map(pair => pair.map(i => S[i])),
+  }));
+  out.file_edges = (data.file_edges || []).map(e => ({
+    src: S[e[0]], dst: S[e[1]], w: e[2], symbols: e[3].map(i => S[i]),
+  }));
+  out.type_edges = (data.type_edges || []).map(e => ({
+    src: S[e[0]], dst: S[e[1]], w: e[2], symbols: e[3].map(i => S[i]),
+    src_file: S[e[4]], dst_file: S[e[5]],
+  }));
+  return out;
+}
+
 // Node-only: expose the helpers to the test runner. Guarded so the browser
 // (where `module` is undefined) skips it without error.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
-    migrationPlanOrder,
+    migrationPlanOrder, decodePayload,
   };
 }
