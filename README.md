@@ -22,7 +22,8 @@ compiler index store, resolves every type reference **by USR**, and gives you:
 - 🕸️ **An interactive HTML graph** — drill into folders, then into individual **types**, and see real reference edges.
 - 🗺️ **A migration plan** — a topologically-ordered, PR-sized path for extracting folders into SPM packages.
 - ✅ **Auto-detected progress** — folders already in SPM (any `Package.swift` subtree, found recursively) are marked done and stop blocking the plan.
-- 🔍 **Two modes** — *Explore* to understand the codebase, *Migration* to plan and execute the SPM split (with a guided **setup wizard**).
+- 🔍 **Three modes** — *Explore* to understand the codebase, *Migration* to plan and execute the SPM split (with a guided **setup wizard**), *Build* to see what every module costs your build and what to split next.
+- ⏱️ **Real compile times** — captured for free from the index build via the compiler's `-stats-output-dir`, so Build mode ranks split payoffs in measured seconds, not guesses.
 - 🌳 **Call-tree popups & type-level view** — open any folder/file/type in a focused reference tree, or drill a folder down to which of its types are extractable now vs. blocked.
 - 🎯 **Preview & retarget** — preview a migration step in the graph and reassign its folders to new or existing SPM packages/targets before you commit.
 - 🤖 **Ready-to-paste Claude prompts** — generate a migration prompt for the planned moves (code + tests), or an investigation prompt that asks Claude to recommend the destination package/module.
@@ -86,10 +87,11 @@ just tree project_dir=/other/App workspace=Other.xcworkspace scheme=Other
 
 ## 🧭 Modes & tools
 
-A toggle at the top switches the whole UI between two modes:
+A toggle at the top switches the whole UI between three modes:
 
 - **🔍 Explore** — understand the codebase. Every folder is neutral-colored; migration state is hidden so it doesn't get in the way. Already-SPM folders stay in scope so you can see SPM-to-SPM coupling.
 - **🧭 Migration** — plan and execute the split. Adds a **Setup** wizard, a **Plan** tab, and per-node migration state (leaf / blocked / migrated / won't-modularize).
+- **🏗️ Build** — find build-time wins. Forgets folders and shows the real compile units (SPM targets + the app target) with warm/cold cost lenses, a split-payoff ranking, and a build-cost history. See *Build mode* below.
 
 Tools available while exploring or planning:
 
@@ -131,6 +133,72 @@ Per extraction step you get:
 
 Requires the index path (the public-API cost needs the USR-resolved references),
 so the Divide action only appears when the graph was built from the index store.
+
+---
+
+## 🏗️ Build mode
+
+A folder is not a compile unit — only **SPM targets** and the **app target** are.
+Build mode forgets folders, collapses the graph to the modules the compiler
+actually builds, and shows what your build pays for each of them. It answers the
+inverse of Migration mode's question: not "what *can* move next?" but **"what
+should move next to make builds faster?"**
+
+Two lenses, toggleable in place:
+
+- **🔥 Warm** — *change cost*. Touch a module → how many modules recompile (its
+  transitive reverse-dependents). A worst-case upper bound, since Swift only
+  cascades rebuilds on public-interface changes.
+- **❄️ Cold** — *clean-build shape*. Modules grouped into parallelizable build
+  levels, with the **critical path** — the dependency chain that bounds the
+  clean-build wall — highlighted.
+
+Hover any module to light up its **rebuild set** (everything that recompiles when
+it changes). A side-effect of module granularity: folder-level cycles vanish —
+they're intra-module, and a module compiles atomically — so the graph reflects
+the real build topology.
+
+### Split plan
+
+Modules **ranked by the build-time payoff of splitting them**, scored on two
+levers: a *warm* lever (the summed compile cost of everything that recompiles
+when the module changes — splitting localizes edits) and a *cold* lever (the
+module's own compile cost *if* it sits on the critical path — splitting a big
+serial module lets its pieces build in parallel). Each row carries the matching
+action: SPM targets big enough to split link straight to **✂️ Divide**, the app
+target points at Migration mode, and flat modules get "stabilize the public
+API". Hovering a row highlights that module's rebuild set in the live graph.
+
+### Improvements
+
+Build cost **over time** — did the last extraction actually pay off? Every
+render appends one snapshot to `build_history.jsonl`, deduped and keyed to the
+target project's git commit, so you get one row per real change. The file
+**deliberately survives `just clean`** — tracking improvement *across*
+extractions is the point. The tab renders before/after headline cards,
+per-metric sparklines, and a per-commit delta table. Structural metrics
+(modules, edges, coupling, critical-path length) are deterministic — the honest
+improvement signal; wall-clock estimates are measured and noisy (flagged `~` —
+direction, not proof).
+
+The loop: extract a module → `just clean && just tree` → check Improvements.
+
+### Real compile times
+
+Module cost defaults to a declared-type-count proxy, but the index build
+captures **real per-module compile times for free**: it builds with the Swift
+compiler's `-stats-output-dir`, then aggregates the per-file wall times into
+`build_times.json` (plus a `build_floors.json` sidecar — each module's longest
+single file, its serial floor). When present, node sizes, split rankings, and
+the clean-build estimate are all in **measured seconds** (the UI labels
+"measured" vs "estimated").
+
+Three different numbers, deliberately kept apart: per-module **work** (summed
+CPU seconds across its files — parallelizes across cores, so *not* wall-clock),
+the estimated **clean-build wall** (`max(total work ÷ cores, longest dependency
+chain)`), and per-module **cold wall** (the from-scratch time to build the
+module *and* its transitive deps). The sidebar and tooltips spell out which is
+which.
 
 ---
 
