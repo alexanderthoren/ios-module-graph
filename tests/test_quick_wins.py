@@ -313,12 +313,48 @@ class LandingLevelTest(unittest.TestCase):
         self.assertEqual(out["items"][0]["level"], 4)
         self.assertTrue(out["items"][0]["crit"])
 
+    def test_pinned_by_is_the_deepest_module_dep(self):
+        out = compute_quick_wins(
+            flat_scores(["A"]), {}, {},
+            {("A", "P/Sources/Low"): 9, ("A", "P/Sources/High"): 1}, {"A"},
+            ["P/Sources"], [], self.MODULES)
+        pin = out["items"][0]["pinned_by"]
+        self.assertEqual(pin, {"module": "P/Sources/High", "label": "High",
+                               "level": 2})
+
+    def test_no_module_deps_means_no_pin(self):
+        out = compute_quick_wins(flat_scores(["A"]), {}, {}, {}, {"A"},
+                                 ["P/Sources"], [], self.MODULES)
+        self.assertIsNone(out["items"][0]["pinned_by"])
+
+    def test_summary_carries_app_level(self):
+        modules = {"nodes": [{"id": "app", "label": "App", "level": 8}],
+                   "edges": []}
+        out = compute_quick_wins(flat_scores(["A"]), {}, {}, {}, {"A"},
+                                 [], [], modules)
+        self.assertEqual(out["summary"]["app_level"], 8)
+
 
 class RankingTest(unittest.TestCase):
     def test_items_sorted_by_roi_desc(self):
         scores = flat_scores(["A", "B"], A={"roi": 1.0}, B={"roi": 9.0})
         out = compute_quick_wins(scores, {}, {}, {}, {"A", "B"}, [], [],
                                  NO_MODULES)
+        self.assertEqual([i["folder"] for i in out["items"]], ["B", "A"])
+
+    def test_lower_landing_breaks_roi_ties(self):
+        # Equal ROI, both extractable, no cuts: A lands at L3 (references
+        # High), B lands at L0 (references nothing) — the foundation builder
+        # ranks first.
+        modules = {
+            "nodes": [{"id": "app", "label": "App"},
+                      {"id": "P/Sources/High", "label": "High", "level": 2}],
+            "edges": [],
+        }
+        out = compute_quick_wins(
+            flat_scores(["A", "B"]), {}, {},
+            {("A", "P/Sources/High"): 1}, {"A", "B"},
+            ["P/Sources"], [], modules)
         self.assertEqual([i["folder"] for i in out["items"]], ["B", "A"])
 
     def test_smaller_cut_breaks_roi_ties(self):

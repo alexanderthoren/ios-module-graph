@@ -72,11 +72,15 @@ def build_task_list(
                 "roi": step.get("roi"),
                 "folder": folder,
                 "destination": destination,
-                # Level rationale (quick_wins): current build level, where the
-                # folder lands if extracted, and which destinations the layer/
-                # churn predicates vetoed — so the markdown stays auditable.
+                # Level rationale (quick_wins): where the folder lands if
+                # extracted, the dependency pinning that floor, and which
+                # destinations the layer/churn predicates vetoed — so the
+                # markdown stays auditable. ("level" is the folder-graph cold
+                # cohort among remaining app folders — a different scale from
+                # landing_level; carried for JSON consumers, not rendered.)
                 "level": qw.get("level") if qw else None,
                 "landing_level": qw.get("landing_level") if qw else None,
+                "pinned_by": qw.get("pinned_by") if qw else None,
                 "rejected_destinations": qw.get("rejected", []) if qw else [],
                 "files": sorted(files_by_folder.get(folder, [])),
                 "files_count": len(files_by_folder.get(folder, [])),
@@ -202,9 +206,19 @@ def write_task_list_markdown(tasks: list[dict], meta: dict, out_path: Path) -> N
             lines.append(f"- **Destination:** absorb into `{d['label']}` "
                          f"({d['refs']} reference(s) to/from it already{lvl})")
         if t.get("landing_level") is not None:
-            lines.append(f"- **Build level:** L{t.get('level', 0)} in the app "
-                         f"target now; lands at L{t['landing_level']} as its "
-                         f"own module")
+            d = t.get("destination")
+            lands = (d["level"] if d and d.get("level") is not None
+                     else t["landing_level"])
+            where = "inside the destination" if d else "as its own module"
+            lines.append(f"- **Build level:** compiles in the app target "
+                         f"today (top of the build graph); lands at L{lands} "
+                         f"{where} — L0 = no first-party deps, lower = more "
+                         f"foundational")
+            if t.get("pinned_by"):
+                p = t["pinned_by"]
+                lines.append(f"- **Level floor:** pinned by `{p['label']}` "
+                             f"(L{p['level']}) — cut that reference or split "
+                             f"that module to land lower")
         if t.get("rejected_destinations"):
             lines.append("- **Destinations vetoed by the layer/churn checks:**")
             for r in t["rejected_destinations"]:

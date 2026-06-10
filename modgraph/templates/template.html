@@ -2915,13 +2915,22 @@ function qwRowHtml(it, idx) {
       + ' outgoing reference(s) must be refactored before this folder can move. Expand for the exact edges.">'
       + '✂ cut ' + it.cut.total_refs + ' ref' + (it.cut.total_refs === 1 ? '' : 's') + ' first</span>';
   }
+  const appLvl = (quickWins.summary || {}).app_level;
+  const lands = (it.action === 'absorb' && it.destination && it.destination.level != null)
+    ? it.destination.level : it.landing_level;
   const chips = actionChip
-    + (it.landing_level != null
-        ? '<span class="qw-chip" title="Build level: longest first-party dependency chain beneath it. L'
-          + (it.level || 0) + ' inside the app target today; as its own module it lands at L' + it.landing_level
-          + ' (one above the deepest migrated module it references — L0 means it references none).'
+    + (lands != null
+        ? '<span class="qw-chip" title="Today this code compiles inside the app target'
+          + (appLvl != null ? ' — L' + appLvl + ', the top of the build graph' : '') + '. After this step it sits at L' + lands
+          + (it.action === 'absorb' ? ' inside ' + escapeHtml(it.destination.label) : ' as its own module')
+          + '. Lower is more foundational; L0 depends on no first-party module. '
+          + (it.pinned_by
+              ? 'Its floor is pinned by its dependency on ' + escapeHtml(it.pinned_by.label) + ' (L' + it.pinned_by.level + ') — cut that reference or split that module to land lower.'
+              : 'It references no migrated module — a true foundation candidate.')
           + (it.action === 'cut_first' ? ' Projection assumes the blocking edges below are cut.' : '') + '">'
-          + '🏗 L' + (it.level || 0) + '→L' + it.landing_level + '</span>'
+          + '🏗 lands L' + lands
+          + (it.pinned_by ? ' <span style="opacity:.65">· pinned by ' + escapeHtml(it.pinned_by.label) + '</span>' : '')
+          + '</span>'
         : '')
     + '<span class="qw-chip" title="files to move">' + it.files + ' file' + (it.files === 1 ? '' : 's') + '</span>'
     + (it.public ? '<span class="qw-chip" title="types referenced from other folders — must flip internal → public">' + it.public + ' public</span>' : '')
@@ -2989,6 +2998,9 @@ function renderQuickWins() {
       + '<div class="small" style="margin-top:4px;color:var(--text-dim)">'
       + (sum.churned ? '✏️ ranked by churn-weighted payoff ÷ effort'
                      : '📐 ranked by structural payoff ÷ effort (no git churn)')
+      + (sum.app_level != null
+          ? ' · 🏗 app target compiles at L' + sum.app_level + ' — every extraction moves code down from there; lower landings are more foundational'
+          : '')
       + '</div>'
     : '<div>No quick-win data in this payload — regenerate with the current tool version (index path).</div>';
   const q = (document.getElementById('qwFilter').value || '').toLowerCase();
@@ -3054,8 +3066,18 @@ function qwReviewPrompt(it) {
     L.push('- Action: cut ' + it.cut.total_refs + ' blocking reference(s) first (edges below), then extract.');
   }
   if (it.landing_level != null) {
-    L.push('- Build level: L' + (it.level || 0) + ' inside the app target today; lands at L'
-      + it.landing_level + ' as its own module (L0 = depends on no first-party module).');
+    const appLvl = (quickWins.summary || {}).app_level;
+    const lands = (it.action === 'absorb' && it.destination && it.destination.level != null)
+      ? it.destination.level : it.landing_level;
+    L.push('- Build level: compiles inside the app target today'
+      + (appLvl != null ? ' (L' + appLvl + ', the top of the build graph)' : '')
+      + '; lands at L' + lands
+      + (it.action === 'absorb' ? ' inside the destination' : ' as its own module')
+      + ' (L0 = depends on no first-party module; lower = more foundational).');
+    if (it.pinned_by) {
+      L.push('- Level floor: pinned by its dependency on `' + it.pinned_by.label + '` (L'
+        + it.pinned_by.level + ') — it cannot land lower until that reference is cut or that module is split.');
+    }
   }
   L.push('- Churn: ' + (it.churn || 0) + ' commit(s) touched it in the analysis window.'
     + (it.public ? ' Public surface: ' + it.public + ' type(s) flip internal → public.' : ''));

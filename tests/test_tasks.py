@@ -95,7 +95,9 @@ class AbsorbTaskTest(unittest.TestCase):
     def test_level_rationale_carried_and_rendered(self):
         qw = {"items": [{
             "folder": "Core", "action": "absorb",
-            "level": 2, "landing_level": 1,
+            "level": 2, "landing_level": 2,
+            "pinned_by": {"module": "Pkg/Sources/Base", "label": "Base",
+                          "level": 1},
             "destination": {"module": "Pkg/Sources/Lib", "label": "Lib",
                             "refs": 4, "uses": 4, "used_by": 0, "level": 1},
             "rejected": [{"module": "Pkg/Sources/Base", "label": "Base",
@@ -106,7 +108,8 @@ class AbsorbTaskTest(unittest.TestCase):
             [singleton_step(1, "Core")], [], "Root", "/root", [], 0, 1,
             quick_wins=qw)
         self.assertEqual(out[0]["level"], 2)
-        self.assertEqual(out[0]["landing_level"], 1)
+        self.assertEqual(out[0]["landing_level"], 2)
+        self.assertEqual(out[0]["pinned_by"]["label"], "Base")
         self.assertEqual(out[0]["rejected_destinations"][0]["label"], "Base")
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "plan.md"
@@ -114,8 +117,12 @@ class AbsorbTaskTest(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
         self.assertIn("absorb into `Lib` (4 reference(s) to/from it already, L1)",
                       text)
-        self.assertIn("**Build level:** L2 in the app target now; "
-                      "lands at L1 as its own module", text)
+        # Absorbed code lands at the destination's level, not its own-module
+        # landing — and the line never compares folder-graph level to module
+        # level (different scales).
+        self.assertIn("lands at L1 inside the destination", text)
+        self.assertNotIn("L2 in the app target", text)
+        self.assertIn("**Level floor:** pinned by `Base` (L1)", text)
         self.assertIn("`Base` — raises_level: Lib is L1, destination is L0",
                       text)
 

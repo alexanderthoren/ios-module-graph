@@ -23,13 +23,19 @@ D1/D2): for **every** source folder —
   when nothing fits. Every vetoed candidate ships with its reason and
   evidence (``rejected``) so the pick is auditable and overridable.
 * **Levels (study 2026-06-10, level-aware quick wins)** — each item carries
-  the folder's current build ``level``/``crit`` (from the folder scores) and
-  its ``landing_level``: the module-graph level its own module would occupy
-  if extracted today, given the migrated modules it references. Computed for
-  blocked (``cut_first``) folders too — "fix the cut-set and this lands at
-  LX" is the motivation for the cut. The surviving absorb pick is
-  level-preserving *by construction* (predicate c), so no delta is reported
-  on it; the deltas live in the rejections.
+  ``landing_level``: the module-graph level its own module would occupy if
+  extracted today (``1 + max(level of migrated modules it references)``,
+  ``0`` when it references none), plus ``pinned_by`` — the deepest such
+  module, i.e. the dependency that sets its floor. Computed for blocked
+  (``cut_first``) folders too — "fix the cut-set and this lands at LX" is
+  the motivation for the cut. The honest *before* is the app target itself
+  (the top of the module graph, shipped as ``summary["app_level"]``): every
+  extraction moves code down from there; ``landing_level`` says how far.
+  The folder-graph ``level``/``crit`` (cold cohort among *remaining app
+  folders*) also ship but are a different scale — do not compare the two.
+  The surviving absorb pick is level-preserving *by construction*
+  (predicate c), so an absorbed folder lands at the destination's level;
+  the would-be deltas live in the rejections.
 * **Ranking (D1)** — items sorted by the folder's churn-weighted payoff over
   effort (``roi`` from :mod:`modgraph.scoring`): improving the warm build,
   the cold build, or unblocking the rest all raise payoff, so "core" folders
@@ -230,11 +236,15 @@ def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict |
             if m != APP_ID:
                 mod_deps[a].add(m)
 
-    def landing_level(f: str) -> int:
+    def landing(f: str) -> tuple[int, dict | None]:
+        """(landing_level, pinned_by) — the deepest module dep sets the floor."""
         deps = mod_deps.get(f)
         if not deps:
-            return 0
-        return 1 + max(module_levels.get(m, 0) for m in sorted(deps))
+            return 0, None
+        lvl, pin = max((module_levels.get(m, 0), m) for m in sorted(deps))
+        return lvl + 1, {"module": pin,
+                         "label": module_labels.get(pin, pin),
+                         "level": lvl}
 
     out_by_src: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for (a, b), w in sorted(plan_edges.items()):
@@ -268,6 +278,7 @@ def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict |
         payoff = row.get("hot")
         if payoff is None:
             payoff = row.get("combined", 0.0)
+        land, pinned = landing(f)
         items.append({
             "folder": f,
             "roi": row.get("roi", 0.0),
@@ -279,7 +290,8 @@ def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict |
             "warm": row.get("warm", 0),
             "level": row.get("level", 0),
             "crit": row.get("crit", False),
-            "landing_level": landing_level(f),
+            "landing_level": land,
+            "pinned_by": pinned,
             "extractable_now": extractable,
             "action": action,
             "destination": destination,
@@ -287,13 +299,25 @@ def compute_quick_wins(folder_scores: dict, plan_edges: dict, pair_types: dict |
             "cut": {"edges": cut_edges, "total_refs": cut_refs},
         })
 
-    items.sort(key=lambda i: (-i["roi"], i["cut"]["total_refs"], i["folder"]))
+    def lands_at(i: dict) -> int:
+        # An absorbed folder lands at the destination's level (the pick is
+        # level-preserving); otherwise at its own-module landing.
+        d = i["destination"]
+        return d["level"] if d else i["landing_level"]
+
+    # ROI first; on ties the lower lander wins — same payoff-per-effort, but
+    # one builds the foundation and the other just relocates code.
+    items.sort(key=lambda i: (-i["roi"], lands_at(i),
+                              i["cut"]["total_refs"], i["folder"]))
     summary = {
         "total": len(items),
         "extractable_now": sum(1 for i in items if i["extractable_now"]),
         "absorbable": sum(1 for i in items if i["action"] == "absorb"),
         "cut_first": sum(1 for i in items if i["action"] == "cut_first"),
         "vetoed": sum(1 for i in items if i["rejected"]),
+        # The honest "before" for every landing: the app target tops the
+        # module graph — extracted code always moves down from here.
+        "app_level": module_levels.get(APP_ID, 0),
         "churned": churned,
     }
     return {"items": items, "summary": summary}
