@@ -59,10 +59,22 @@ def _tarjan_sccs(nodes: set[str], deps: dict[str, set[str]]) -> list[list[str]]:
     return sccs
 
 
-def compute_migration_plan(leaf_edges: dict, source_folders: set[str]):
+def compute_migration_plan(leaf_edges: dict, source_folders: set[str],
+                           scores: dict[str, dict] | None = None):
     """Condense the folder graph into SCCs, then produce a topologically-ordered
     migration plan over the condensation DAG. Each step is an SCC (one or more
     folders that must migrate together because they cyclically depend).
+
+    ``scores`` (optional) is the per-folder dict from
+    :func:`modgraph.scoring.compute_folder_scores` (its ``["folders"]``). When
+    present, the eligible frontier is ranked by **ROI** first — aggregated
+    payoff (churn-weighted ``hot`` when available, else the structural
+    ``combined``) over aggregated effort per SCC — so the plan front-loads
+    cheap, high-payoff steps. The topological constraint is untouched: only
+    the order *within* the eligible set changes. Without ``scores`` the
+    ordering is exactly the legacy structural one (which is what
+    graph_logic.js `migrationPlanOrder` mirrors — the JS wizard stays on the
+    structural key until the UI ships scores).
 
     Returns (plan, stuck_sccs) where:
       plan = [{
@@ -70,6 +82,7 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str]):
         size: int,
         is_cycle: bool,                          # True if SCC has >1 folder
         unlocks: [{step, folders, size}],        # SCCs that became eligible
+        payoff, effort, roi,                     # from `scores`; None without
       }]
       stuck_sccs = list of SCCs never reachable (shouldn't occur with full DAG
                    plan, but kept for symmetry).
@@ -101,6 +114,28 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str]):
                 scc_rdeps[sb].add(sa)
 
     n_sccs = len(sccs)
+
+    # Per-SCC ROI from the folder scores: payoff = Σ member hot (churn-weighted;
+    # falls back to the structural `combined`), effort = Σ member effort. A
+    # bundle migrates together, so its members' efforts genuinely add; summed
+    # payoff can double-count shared dependents across members, but it only
+    # ranks the frontier — the topological order stays exact.
+    scc_payoff: dict[int, float] = {}
+    scc_effort: dict[int, int] = {}
+    scc_roi: dict[int, float] = {}
+    if scores is not None:
+        for i in range(n_sccs):
+            payoff = 0.0
+            effort = 0
+            for f in sccs[i]:
+                row = scores.get(f) or {}
+                hot = row.get("hot")
+                payoff += hot if hot is not None else row.get("combined", 0.0)
+                effort += row.get("effort", 0)
+            scc_payoff[i] = round(payoff, 1)
+            scc_effort[i] = effort
+            scc_roi[i] = round(payoff / max(effort, 1), 2)
+
     remaining = {i: len(scc_deps.get(i, ())) for i in range(n_sccs)}
     eligible: set[int] = {i for i in range(n_sccs) if remaining[i] == 0}
     migrated: set[int] = set()
@@ -143,7 +178,8 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str]):
         )
 
     while eligible:
-        # Rank: highest transitive reverse-reach (unblocks most downstream), then
+        # Rank: highest ROI first when scores are present (quick wins lead),
+        # then highest transitive reverse-reach (unblocks most downstream), then
         # immediate unlocks (next-step momentum), then smaller SCC (easier first),
         # then the SCC's first folder name ascending. The full folder name (not
         # just its first character) is the final tie-break so the plan is fully
@@ -151,8 +187,9 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str]):
         # `min` over negated numeric ranks lets the string tie-break sort ascending.
         pick = min(
             eligible,
-            key=lambda i: (-reverse_reach[i], -immediate_unlocks(i), len(sccs[i]),
-                           sccs[i][0] if sccs[i] else ""),
+            key=lambda i: ((-scc_roi[i],) if scores is not None else ())
+                          + (-reverse_reach[i], -immediate_unlocks(i), len(sccs[i]),
+                             sccs[i][0] if sccs[i] else ""),
         )
         eligible.remove(pick)
         migrated.add(pick)
@@ -176,6 +213,9 @@ def compute_migration_plan(leaf_edges: dict, source_folders: set[str]):
             "size": len(sccs[pick]),
             "is_cycle": len(sccs[pick]) > 1,
             "unlocks": unlocked_now,
+            "payoff": scc_payoff.get(pick),
+            "effort": scc_effort.get(pick),
+            "roi": scc_roi.get(pick),
         })
 
     # Backfill the 'step' field on unlocks now that all steps exist.
