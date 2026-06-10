@@ -62,6 +62,19 @@ def churn_by_module(commit_sets: list[set[str]], module_of_fn) -> dict[str, int]
     return counts
 
 
+def churn_by_folder(commit_sets: list[set[str]]) -> dict[str, int]:
+    """Count, per folder, the commits that touched it (once per commit).
+
+    The folder-granularity sibling of :func:`churn_by_module`, for scoring
+    individual migration steps before they belong to any build unit.
+    """
+    counts: dict[str, int] = {}
+    for folders in commit_sets:
+        for f in folders:
+            counts[f] = counts.get(f, 0) + 1
+    return counts
+
+
 def compute_churn(project_dir, days: int = CHURN_DAYS) -> list[set[str]]:
     """Folder-sets of every commit in the window — ``[]`` on any git failure."""
     try:
