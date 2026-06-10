@@ -1,0 +1,81 @@
+# Build a public demo graph and publish it to GitHub Pages.
+#
+# Indexes a real open-source iOS app (IceCubesApp — heavily SPM-modularized, so
+# Explore shows SPM-to-SPM coupling and Build mode has real compile units) and
+# publishes the self-contained dependency_graph.html as the repo's Pages site.
+# Lets people evaluate the tool in ten seconds instead of running a 20-minute
+# first build.
+#
+# One-time repo setup: Settings → Pages → Source: "GitHub Actions".
+name: demo
+
+on:
+  schedule:
+    - cron: "17 5 * * 1" # weekly, Monday 05:17 UTC — a demo doesn't need nightly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Newest macOS image (arm64) — carries the newest Xcodes, which the demo
+    # app tends to require. `macos-latest` lags a major version behind (15).
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the demo app
+        uses: actions/checkout@v4
+        with:
+          repository: Dimillian/IceCubesApp
+          path: demo/IceCubesApp
+
+      - name: Install just
+        run: brew install just
+
+      # IceCubesApp refuses to build without a local config; the repo ships a
+      # template for exactly this (per its README).
+      - name: Prepare the demo app
+        run: cp demo/IceCubesApp/IceCubesApp.xcconfig.template demo/IceCubesApp/IceCubesApp.xcconfig
+
+      # IceCubesApp tracks recent Swift/SDKs — use the newest Xcode on the image.
+      - name: Select newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      # Full pipeline: build the app (populates the index store), build the
+      # Swift reader, resolve by USR, render the HTML. No .env in CI, so the
+      # env vars are the whole configuration.
+      - name: Build the dependency graph
+        env:
+          PROJECT_DIR: ${{ github.workspace }}/demo/IceCubesApp
+          SCHEME: IceCubesApp
+        run: just tree
+
+      - name: Stage the site
+        run: |
+          mkdir -p _site
+          cp out/IceCubesApp/dependency_graph.html _site/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
