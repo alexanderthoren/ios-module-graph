@@ -16,6 +16,7 @@ from .build_times import load_build_floors, load_build_times
 from .churn import CHURN_DAYS, compute_churn
 from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
+from .file_affinity import compute_file_moves
 from .quick_wins import compute_quick_wins
 from .render import render_html
 from .resources import collect_resources
@@ -345,6 +346,16 @@ def main() -> int:
         dest = (f"absorb into {top['destination']['label']}" if top["destination"]
                 else top["action"].replace("_", " "))
         print(f"  → Top quick win: {top['folder']} (roi {top['roi']}, {dest})")
+
+    # Misplaced files: the smallest PRs of all — moving a file whose references
+    # overwhelmingly bind to another folder dissolves fake coupling before any
+    # extraction. Advisory; index path only (empty without file_edges).
+    file_moves = compute_file_moves(file_edges, source_folders)
+    if file_moves["items"]:
+        head_move = file_moves["items"][0]
+        print(f"Misplaced files:   {file_moves['summary']['suggested_moves']} "
+              f"move suggestion(s) (top: {head_move['file']} → "
+              f"{head_move['to']}, {head_move['refs']} ref(s))")
     if recommendations["items"]:
         top = recommendations["items"][0]
         score = (f"hot {top['hot']}/100" if top.get("hot") is not None
@@ -382,7 +393,7 @@ def main() -> int:
             file_edges=file_edges, type_edges=type_edges,
             divisions=divisions, module_graph=module_graph,
             recommendations=recommendations, history=history,
-            resources=resources, quick_wins=quick_wins,
+            resources=resources, quick_wins=quick_wins, file_moves=file_moves,
         )
         print(f"\nWrote graph: {graph_path}")
 
