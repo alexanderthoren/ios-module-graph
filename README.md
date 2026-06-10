@@ -224,6 +224,27 @@ the port with `just serve port=9000`.
 
 ---
 
+## 🔬 Diff two graphs
+
+```sh
+just diff before.json out/MyApp/index_graph.json     # human-readable markdown
+python3 -m modgraph.diff old.json new.json --format json --exit-code
+```
+
+Compare two saved `index_graph.json` snapshots — main vs a PR branch, or before
+vs after an extraction — and get exactly what changed in the architecture:
+folders and edges added/removed (every new edge annotated with the **type
+references that explain it**), and **cycles formed or broken**. Each side is
+labelled with the commit it was indexed at, so the report says *which two
+states* it compares.
+
+Typical loop: copy `out/<Project>/index_graph.json` aside before a refactor,
+re-index afterwards, diff the two. `--exit-code` exits 1 on any structural
+change (git-diff convention) for scripting; the output is deterministic, so
+reports diff cleanly themselves.
+
+---
+
 ## ⚙️ Build modes
 
 `BUILD_MODE` (env or CLI var) selects how the project is built to populate the
