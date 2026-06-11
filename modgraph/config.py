@@ -59,6 +59,17 @@ ABSORB_REJECTED_MAX = 4  # rejected-destination explanations kept per item
 FILE_AFFINITY_MIN_REFS = 3
 FILE_AFFINITY_DOMINANCE = 2
 
+# Type-isolation engine (modgraph/isolate.py): within ONE module, the
+# single most-referenced declared type is the highest-leverage thing to pull
+# into its own sub-module — every outside consumer then depends on the small
+# new module instead of the whole parent. A type qualifies as an isolation
+# seed only when at least this many references reach it from *outside* the
+# module (below that, extracting it frees nobody); the analysis keeps the top
+# N seeds per module and shows a sample of the types each one drags along.
+ISOLATE_MIN_EXT_REFS = 3
+ISOLATE_TOP_N = 10
+ISOLATE_PULL_SAMPLE = 8
+
 DECL_RE = re.compile(
     r"\b(?:class|struct|enum|protocol|actor|typealias)\s+([A-Z][A-Za-z0-9_]*)"
 )

@@ -183,6 +183,59 @@ def divide_inputs():
     return DIVIDE_PREFIX, leaf_edges, pair_types, decls
 
 
+# --- isolate fixture: module "Mod" with one hot type to pull out --------------
+#
+# Module "Mod" (prefix), three subfolder units, and a deliberate spread of
+# extraction shapes. type_edges use the real USR token "Name\tfolder" on both
+# endpoints (matching what the Swift reader emits), unlike the tiny TYPE_EDGES
+# above. External referrers live under two SPM packages and the app so module_of
+# resolves to three distinct freed modules.
+#
+#   Mod/Core : Hub   — referenced 11× from OUTSIDE (3 distinct modules) + 4×
+#                       inside; drags NOTHING (a clean leaf hub — the prize).
+#   Mod/Glue : Glue  — referenced 4× from outside; drags Hub AND Helper, so
+#                       extracting it carries a third of the module.
+#   Mod/Util : Helper— referenced only INSIDE (ext_refs 0 → not a seed).
+#
+# Each unit is padded with type-only decls (no edges) so "Mod" clears the
+# dividable_modules gate (>=2 units, >=12 types) and compute_isolations offers it.
+ISOLATE_PREFIX = "Mod"
+ISOLATE_MIGRATED_PREFIXES = ["ExtP/Sources", "ExtQ/Sources"]
+ISOLATE_TYPE_KINDS: dict[str, str] = {
+    "Hub": "class", "Glue": "struct", "Helper": "enum",
+}
+# (src_token, dst_token, weight) — src uses dst.
+_ISO = [
+    # external -> Hub (the star): two SPM modules + the app target
+    ("Caller\tExtP/Sources/Feat", "Hub\tMod/Core", 5),
+    ("Widget\tExtQ/Sources/Wid", "Hub\tMod/Core", 4),
+    ("AppThing\tAppDir", "Hub\tMod/Core", 2),
+    # internal -> Hub
+    ("Glue\tMod/Glue", "Hub\tMod/Core", 3),
+    ("Helper\tMod/Util", "Hub\tMod/Core", 1),
+    # external -> Glue
+    ("Caller\tExtP/Sources/Feat", "Glue\tMod/Glue", 4),
+    # internal: Glue -> Helper (so Glue's closure pulls Helper too)
+    ("Glue\tMod/Glue", "Helper\tMod/Util", 2),
+]
+ISOLATE_TYPE_EDGES: list[dict] = [
+    {"src": s, "dst": d, "w": w, "symbols": [], "src_file": "", "dst_file": ""}
+    for (s, d, w) in _ISO
+]
+ISOLATE_DECLS: dict[str, set[str]] = {
+    "Mod/Core": {"Hub", "C1", "C2", "C3", "C4"},
+    "Mod/Glue": {"Glue", "G1", "G2", "G3", "G4"},
+    "Mod/Util": {"Helper", "U1", "U2", "U3", "U4"},
+}
+
+
+def isolate_inputs():
+    """Return ``(prefix, type_edges, type_kinds, migrated_prefixes, decls)``."""
+    return (ISOLATE_PREFIX, [dict(e) for e in ISOLATE_TYPE_EDGES],
+            dict(ISOLATE_TYPE_KINDS), list(ISOLATE_MIGRATED_PREFIXES),
+            {k: set(v) for k, v in ISOLATE_DECLS.items()})
+
+
 def make_swift_tree(base: Path) -> Path:
     """Create a small on-disk Swift project under *base* for scanner tests.
 

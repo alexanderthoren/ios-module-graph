@@ -18,6 +18,7 @@ from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
 from .module_splits import compute_module_splits
 from .file_affinity import compute_file_moves
+from .isolate import compute_isolations
 from .quick_wins import compute_quick_wins
 from .render import render_html
 from .resources import collect_resources
@@ -290,12 +291,29 @@ def main() -> int:
     # index path has accurate pair_types (the regex-scan path can't price the
     # public-API cost), so divisions stay empty there.
     divisions: dict[str, dict] = {}
+    isolations: dict[str, dict] = {}
     if resolved_pair_types is not None:
         from .divide import dividable_modules
         for prefix in dividable_modules(decls):
             divisions[prefix] = compute_division_plan(
                 prefix, leaf_edges, resolved_pair_types, decls
             )
+        # Type-isolation: per module, the single hottest type to pull into its
+        # own sub-module so outside consumers depend on it, not the whole parent.
+        # Needs the USR-resolved type_edges (empty on the regex-scan path).
+        isolations = compute_isolations(
+            decls, type_edges, type_kinds, migrated_prefixes
+        )
+        if isolations:
+            top_mod = max(
+                isolations.values(),
+                key=lambda a: a["candidates"][0]["total_refs"],
+            )
+            tc = top_mod["candidates"][0]
+            print(f"Type isolation:    {len(isolations)} module(s) with a "
+                  f"pull-out candidate (top: {tc['type']} in "
+                  f"{top_mod['module']} — {tc['ext_refs']} external ref(s) from "
+                  f"{tc['ext_modules']} module(s), drags {tc['pulls_total']})")
 
     # Build mode operates at real compile-unit granularity: the folder graph is
     # collapsed to SPM targets + the single xcodeproj app target, and scored for
@@ -410,7 +428,7 @@ def main() -> int:
             divisions=divisions, module_graph=module_graph,
             recommendations=recommendations, history=history,
             resources=resources, quick_wins=quick_wins, file_moves=file_moves,
-            module_splits=module_splits,
+            module_splits=module_splits, isolations=isolations,
         )
         print(f"\nWrote graph: {graph_path}")
 

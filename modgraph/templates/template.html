@@ -267,6 +267,9 @@
     .dv-bar.mid > span { background: #f59e0b; }
     .dv-bar.hi > span { background: #ef4444; }
     .dv-sample { color: var(--text-faint); font-size: 11px; }
+    .muted { color: var(--text-faint); }
+    .dv-tbl tr.is-drag td { border-bottom: 1px solid var(--border); padding: 2px 8px 7px 22px;
+      font-size: 11px; color: var(--text-faint); }
     .dv-step { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
       margin-bottom: 8px; background: var(--surface); }
     .dv-step.cycle { border-color: var(--red, #ef4444); }
@@ -982,6 +985,23 @@
         </div>
         <div class="ct-canvas" id="dsNet"></div>
         <div class="ds-legend" id="dsLegend"></div>
+      </div>
+    </div>
+
+    <div id="isolateOverlay" class="ct-overlay hidden">
+      <div class="ct-modal mp-modal dv-modal">
+        <div class="ct-head">
+          <span class="ttl" id="isTitle"></span>
+          <button class="ct-close" id="isClose" aria-label="Close isolation plan" title="Close (Esc)">
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+              <path d="M5 5 L15 15 M15 5 L5 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="mp-body" id="isBody"></div>
+        <div class="mp-foot">
+          <button class="ghost" id="isDone">Done</button>
+        </div>
       </div>
     </div>
 
@@ -3911,6 +3931,14 @@ function render() {
       if (actions) actions = actions.replace('</div>', divideBtn + '</div>');
       else actions = '<div class="np-actions">' + divideBtn + '</div>';
     }
+    // "Isolate" pulls the single most-referenced type out of this module into
+    // its own sub-module (precomputed for real modules with an external hub type).
+    const hasIsolation = !!(DATA.isolations && DATA.isolations[nodeId]);
+    if (hasIsolation) {
+      const isoBtn = '<button class="ghost" data-act="isolate">🎯 Isolate hot type</button>';
+      if (actions) actions = actions.replace('</div>', isoBtn + '</div>');
+      else actions = '<div class="np-actions">' + isoBtn + '</div>';
+    }
     pop.innerHTML =
       '<div class="np-header"><span class="np-swatch" style="background:' + swatch + ';"></span>'
         + '<span class="np-name">' + escapeHtml(n.name || nodeId) + '</span></div>'
@@ -3930,6 +3958,7 @@ function render() {
         else if (act === 'excl') toggleExclude(nodeId);
         else if (act === 'planmig') setRunway(nodeId);
         else if (act === 'divide') openDivide(nodeId);
+        else if (act === 'isolate') openIsolate(nodeId);
         else if (act === 'calltree') showCallTree({ kind: 'folder', key: nodeId, label: nodeId });
         pop.style.display = 'none'; popNodeId = null;
       };
@@ -5563,6 +5592,111 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape'
       && !document.getElementById('divideOverlay').classList.contains('hidden')
       && document.getElementById('divideStepOverlay').classList.contains('hidden')) closeDivide();
+});
+
+// ── Isolate a hot type ──────────────────────────────────────────────────────
+// Renders the server-precomputed isolation analysis for a module: its declared
+// types ranked by reference mass (external + internal), each with the closure it
+// would drag out, the modules it frees, and a ready-to-paste extraction prompt.
+// The headline move every modularization makes — pull the one type that is the
+// reason half the app depends on this module into its own small module.
+let isCurrent = null;
+function _isKindTag(kind) { return kind ? '<span class="tag">' + escapeHtml(kind) + '</span> ' : ''; }
+function renderIsolate(iso) {
+  document.getElementById('isTitle').textContent = '🎯 Isolate — ' + iso.module;
+  let h = '';
+  const top = iso.candidates[0];
+  h += '<div class="dv-sum">'
+    + '<b>' + iso.candidates.length + '</b> extractable type(s) · '
+    + 'module declares <b>' + iso.type_total + '</b> referenced type(s) · '
+    + '<b>' + iso.ext_total + '</b> reference(s) reach it from outside · '
+    + 'the top type alone carries <b>' + iso.summary.top_share + '%</b> of that fan-in'
+    + '</div>';
+  h += '<p class="np-hint" style="margin:2px 0 12px;">Ranked by total references (most-used first). '
+    + '<b>Frees</b> = distinct modules that could drop their dependency on the whole of <code>'
+    + escapeHtml(iso.module) + '</code>. <b>Drags</b> = types pulled along (what this type uses inside the module) — '
+    + 'a small drag is a clean extraction; a large one means you are splitting the module.</p>';
+
+  h += '<table class="dv-tbl"><thead><tr>'
+    + '<th>Type</th><th>Ext refs</th><th>Int refs</th><th>Frees</th>'
+    + '<th>Drags</th><th>Public</th><th>ROI</th><th></th></tr></thead><tbody>';
+  iso.candidates.forEach((c, ci) => {
+    h += '<tr>'
+      + '<td>' + _isKindTag(c.kind) + '<code>' + escapeHtml(c.type) + '</code></td>'
+      + '<td class="num"><b>' + c.ext_refs + '</b></td>'
+      + '<td class="num">' + c.int_refs + '</td>'
+      + '<td class="num">' + c.ext_modules + '</td>'
+      + '<td class="num">' + c.pulls_total + '</td>'
+      + '<td class="num">' + c.module_public + '</td>'
+      + '<td class="num">' + c.roi + '</td>'
+      + '<td><button class="ghost is-prompt" data-cand="' + ci + '">📋 Prompt</button></td>'
+      + '</tr>';
+    if (c.pulls && c.pulls.length) {
+      const drag = c.pulls.map(p => '<code>' + escapeHtml(p.type) + '</code>'
+        + (p.ext_refs ? ' <span class="muted">(' + p.ext_refs + ' ext)</span>' : '')).join(', ');
+      const more = c.pulls_total > c.pulls.length ? ' <span class="muted">+ ' + (c.pulls_total - c.pulls.length) + ' more</span>' : '';
+      h += '<tr class="is-drag"><td colspan="8"><span class="muted">drags:</span> ' + drag + more + '</td></tr>';
+    }
+  });
+  h += '</tbody></table>';
+  document.getElementById('isBody').innerHTML = h;
+  document.getElementById('isBody').querySelectorAll('.is-prompt').forEach(b => {
+    b.onclick = () => isCopyPrompt(parseInt(b.dataset.cand, 10), b);
+  });
+}
+function isExtractPrompt(c) {
+  const mod = isCurrent.module;
+  const newName = c.type + 'Module';
+  const drag = (c.pulls || []).map(p => p.type);
+  const dragLine = drag.length
+    ? drag.join(', ') + (c.pulls_total > drag.length ? ', … (' + (c.pulls_total - drag.length) + ' more — move the full set ' + c.type + ' transitively uses inside this module)' : '')
+    : '(nothing — ' + c.type + ' is a clean leaf)';
+  return [
+    'Extract `' + c.type + '` (' + (c.kind || 'type') + ') out of module `' + mod + '` into its own SPM module.',
+    '',
+    'Why: `' + c.type + '` is referenced ' + c.ext_refs + '× from OUTSIDE this module, by ' + c.ext_modules
+      + ' other module(s). They depend on the whole of `' + mod + '` just to reach it. Isolating `' + c.type
+      + '` lets each of them depend on a small dedicated module instead.',
+    '',
+    'Move with it (the drag closure — ' + c.pulls_total + ' type(s) `' + c.type + '` transitively uses inside the module):',
+    '  ' + dragLine,
+    '',
+    'Steps:',
+    '1. Create a new SPM target `' + newName + '` (rename as you see fit).',
+    '2. Move `' + c.type + '` and the dragged types above into it.',
+    '3. Raise their public surface (~' + c.module_public + ' type(s)) from `internal` to `public`.',
+    '4. Add `' + newName + '` as a dependency of `' + mod + '` and of the ' + c.ext_modules
+      + ' consuming module(s); update their imports.',
+    '5. Build. Verify the consuming modules no longer need to depend on all of `' + mod + '` for these types.',
+    '',
+    'Behaviour-preserving: this is a move + access-level change, no logic edits.',
+  ].join('\n');
+}
+function isCopyPrompt(ci, btn) {
+  const c = isCurrent && isCurrent.candidates[ci];
+  if (!c) return;
+  _dvCopy(isExtractPrompt(c));
+  if (btn) { const old = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = old; }, 1400); }
+}
+function openIsolate(folderId) {
+  const iso = DATA.isolations && DATA.isolations[folderId];
+  if (!iso) return;
+  isCurrent = iso;
+  renderIsolate(iso);
+  document.getElementById('isolateOverlay').classList.remove('hidden');
+}
+function closeIsolate() {
+  document.getElementById('isolateOverlay').classList.add('hidden');
+  isCurrent = null;
+}
+document.getElementById('isClose').onclick = closeIsolate;
+document.getElementById('isDone').onclick = closeIsolate;
+document.getElementById('isolateOverlay').addEventListener('click', (ev) => {
+  if (ev.target.id === 'isolateOverlay') closeIsolate();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape'
+      && !document.getElementById('isolateOverlay').classList.contains('hidden')) closeIsolate();
 });
 
 // ── Per-step before/after preview ───────────────────────────────────────────
