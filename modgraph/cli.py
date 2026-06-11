@@ -18,6 +18,7 @@ from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
 from .module_splits import compute_module_splits
 from .file_affinity import compute_file_moves
+from .advisor import compute_advice
 from .isolate import compute_isolations
 from .quick_wins import compute_quick_wins
 from .render import render_html
@@ -397,6 +398,18 @@ def main() -> int:
         print(f"  → Top split candidate: {top['label']} "
               f"({score}, {top['action'].lower()})")
 
+    # The unified advisor merges every advice stream above into ONE ordered
+    # feed (waves 0-4) with an explicit stop line — the front door the HTML
+    # opens on; the per-stream tabs stay as drill-downs.
+    advice = compute_advice(quick_wins, file_moves, isolations,
+                            module_splits, recommendations, module_graph)
+    asum = advice["summary"]
+    print(f"Advisor:           {asum['actions']} action(s) in "
+          f"{len(asum['waves'])} wave(s), {asum['deferred']} deferred")
+    if advice["actions"]:
+        head_action = advice["actions"][0]
+        print(f"  → First move: {head_action['title']}")
+
     # Auto-record a build-cost snapshot keyed to the target project's git commit.
     # Survives `just clean`, deduped against the last row, so successive
     # extractions accumulate one comparable point each. Powers Build mode's
@@ -429,6 +442,7 @@ def main() -> int:
             recommendations=recommendations, history=history,
             resources=resources, quick_wins=quick_wins, file_moves=file_moves,
             module_splits=module_splits, isolations=isolations,
+            advice=advice,
         )
         print(f"\nWrote graph: {graph_path}")
 

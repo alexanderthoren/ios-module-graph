@@ -136,7 +136,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 folder_package=None, packages=None, file_edges=None, type_edges=None,
                 divisions=None, module_graph=None, recommendations=None,
                 history=None, resources=None, quick_wins=None, file_moves=None,
-                module_splits=None, isolations=None):
+                module_splits=None, isolations=None, advice=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -192,6 +192,10 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         # that module ranked for pull-into-own-module, each with the closure it
         # drags + modules it frees. See modgraph/isolate.py. Index path only.
         "isolations": isolations or {},
+        # The unified advisor feed: one wave-ordered action list + deferred
+        # items with reasons (the stop line is the boundary between the two).
+        # See modgraph/advisor.py. {"actions": [...], "deferred": [...]}.
+        "advice": advice or {"actions": [], "deferred": [], "summary": {}},
     }
     html = (
         _load_template()

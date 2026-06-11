@@ -70,6 +70,21 @@ ISOLATE_MIN_EXT_REFS = 3
 ISOLATE_TOP_N = 10
 ISOLATE_PULL_SAMPLE = 8
 
+# Unified advisor (modgraph/advisor.py): the arbiter that merges every advice
+# stream into one ordered feed with an explicit stop line.
+# - TAIL_PCT: an action whose payoff falls under this % of its kind's best is
+#   deferred ("diminishing returns"), not ranked at the bottom of the feed.
+# - CUT_MAX: a blocked folder is still worth queueing when its whole cut-set
+#   is at most this many refs (small manual surgery); above it, deferred.
+# - ISOLATE_SHARE: one type carrying at least this % of a module's external
+#   fan-in decides the surgery in favor of isolating that type.
+# - JOIN_MAX_TYPES: an SPM module at most this big with exactly one SPM
+#   consumer is a boundary without benefit — advise folding it in.
+ADVISOR_TAIL_PCT = 10
+ADVISOR_CUT_MAX = 10
+ADVISOR_ISOLATE_SHARE = 50
+ADVISOR_JOIN_MAX_TYPES = 10
+
 DECL_RE = re.compile(
     r"\b(?:class|struct|enum|protocol|actor|typealias)\s+([A-Z][A-Za-z0-9_]*)"
 )
