@@ -689,6 +689,7 @@
       <div class="mode" data-mode="build">🏗️ Build</div>
     </div>
     <div class="tabs">
+      <div class="tab" data-tab="advisor" data-mode="migration">🧠 Advisor</div>
       <div class="tab" data-tab="wizard" data-mode="migration">🧭 Setup</div>
       <div class="tab" data-tab="plan" data-mode="migration">🎯 Plan</div>
       <div class="tab" data-tab="quickwins" data-mode="migration">⚡ Quick wins</div>
@@ -743,6 +744,27 @@
           <span class="h-val" id="buildValHead" title="">Level</span>
         </div>
         <ul id="buildRank"></ul>
+      </div>
+
+      <!-- MIGRATION ADVISOR TAB: the unified feed (payload.advice).
+           One plan merged from every engine; arbitration happened in Python
+           (modgraph/advisor.py) — this panel only renders and links. -->
+      <div class="panel" id="panel-advisor">
+        <div class="small">One plan from every engine — file moves, quick wins,
+          isolations, splits, joins — sequenced in <b>waves</b> (work top to
+          bottom) with <b>one decision per subject</b>. The feed ends at the
+          <b>stop line</b>: below it, effort outweighs payoff and each deferred
+          item says why. Rows link to the detailed views.</div>
+        <div id="advSummary" class="info"></div>
+        <ul id="advList"></ul>
+        <div id="advStop" style="display:none;"></div>
+        <details id="advDeferredWrap" style="display:none;margin:6px 0;">
+          <summary style="font-size:12px;font-weight:600;cursor:pointer;"></summary>
+          <div class="small" style="margin:4px 0;color:var(--text-dim)">What the
+            engine looked at and set aside — each with the reason. Auditable and
+            overridable: the detailed tabs still show everything.</div>
+          <div id="advDeferred" class="qw-edges" style="max-height:300px;"></div>
+        </details>
       </div>
 
       <!-- MIGRATION QUICK-WINS TAB -->
@@ -1161,6 +1183,7 @@ const recommendations = DATA.recommendations || { items: [], summary: {} };
 const quickWins = DATA.quick_wins || { items: [], summary: {} };
 const fileMoves = DATA.file_moves || { items: [], summary: {} };
 const moduleSplits = DATA.module_splits || { items: [], summary: {} };
+const advice = DATA.advice || { actions: [], deferred: [], summary: {} };
 // Build-cost snapshots over time (oldest→newest), one per real change, keyed to
 // the target project's git commit. Powers Build mode → Improvements tab.
 const history = DATA.history || [];
@@ -2449,7 +2472,8 @@ function switchTab(name) {
   // Render the activated tab's content. The plan/wizard panels are data-driven
   // (persisted wizPlan / runway / target), so revealing the panel isn't enough —
   // it must be re-rendered or a fresh load shows stale/empty content.
-  if (name === 'plan') renderPlan();
+  if (name === 'advisor') renderAdvisor();
+  else if (name === 'plan') renderPlan();
   else if (name === 'wizard') renderWizard();
   else if (name === 'quickwins') renderQuickWins();
   else if (name === 'build') renderBuild();
@@ -3255,6 +3279,144 @@ function renderFileMoves() {
     };
   });
 }
+
+// ── Advisor: the unified feed (payload.advice) ────────────────────────────────
+// All arbitration happened in Python (modgraph/advisor.py); this renders the
+// wave-ordered actions and links each one to the specialized view that
+// executes it. The stop line is the actions/deferred boundary.
+const ADV_WAVES = {
+  0: '📁 Wave 0 — Move misplaced files',
+  1: '⚡ Wave 1 — Extract what\'s ready',
+  2: '🔓 Wave 2 — Unblock and extract',
+  3: '🪓 Wave 3 — Module surgery',
+  4: '🫱 Wave 4 — Fold needless boundaries',
+};
+const ADV_REASON = {
+  tail: 'diminishing returns', blocked_cut: 'big cut first',
+  stabilize_api: 'no seam — narrow API', unused: 'verify usage',
+};
+
+// Fold prompt for a join action: the one advisor action with no detail view.
+function advisorJoinPrompt(a) {
+  return 'Fold the SPM module `' + a.subject + '` into `' + a.details.into
+    + '` in this repository. ' + a.why + ' Move its sources into the consumer '
+    + 'target, merge the Package.swift entries, drop `public` where nothing '
+    + 'external needs it anymore, and verify the project builds and tests '
+    + 'pass. If the module exists for a reason the dependency graph cannot '
+    + 'see (dynamic loading, app extensions, a license boundary), say so '
+    + 'instead of folding it.';
+}
+
+function advCopy(b, text, restore) {
+  navigator.clipboard.writeText(text).then(() => {
+    b.textContent = '✓ copied'; setTimeout(() => { b.textContent = restore; }, 1200);
+  });
+}
+
+function advActionButtons(a) {
+  const k = a.kind;
+  if (k === 'move_file') return '<button class="ghost" data-aa="move">📋 Move prompt</button>';
+  if (k === 'absorb' || k === 'new_module')
+    return '<button class="ghost" data-aa="preview">⚡ Preview</button>'
+         + '<button class="ghost" data-aa="review">📝 Review prompt</button>';
+  if (k === 'cut_then_extract')
+    return '<button class="ghost" data-aa="target">🎯 Plan path</button>'
+         + '<button class="ghost" data-aa="review">📝 Review prompt</button>';
+  if (k === 'split_module')
+    return (DATA.divisions && DATA.divisions[a.subject]
+            ? '<button class="ghost" data-aa="divide">✂️ Divide</button>' : '')
+         + ((moduleSplits.items || []).some(s => s.module === a.subject)
+            ? '<button class="ghost" data-aa="splitprompt">📝 Review prompt</button>' : '');
+  if (k === 'isolate_type')
+    return '<button class="ghost" data-aa="isolate">🎯 Isolate</button>';
+  if (k === 'join_module')
+    return '<button class="ghost" data-aa="join">📋 Fold prompt</button>';
+  return '';
+}
+
+function advRowHtml(a, idx) {
+  const chips = [];
+  if (a.roi != null) chips.push('<span class="qw-chip" title="payoff ' + a.payoff + ' ÷ effort ' + a.effort + '">roi ' + a.roi + '</span>');
+  else chips.push('<span class="qw-chip">payoff ' + a.payoff + ' · effort ' + a.effort + '</span>');
+  if (a.after && a.after.length) chips.push('<span class="qw-chip" title="do after: ' + escapeHtml(a.after.join(', ')) + '">after ' + a.after.length + ' move(s)</span>');
+  if (a.unblocks && a.unblocks.length) chips.push('<span class="qw-chip" title="folders this move unblocks for extraction">unblocks ' + escapeHtml(a.unblocks.join(', ')) + '</span>');
+  // Clicking a row focuses its subject in the tree; file rows focus the folder.
+  const focusId = a.kind === 'move_file' ? (a.details.src || a.subject) : a.subject;
+  const alt = a.details && a.details.alternative
+    ? '<div class="small" style="color:var(--text-faint);">↔ ' + escapeHtml(a.details.alternative) + '</div>' : '';
+  return '<li class="reco-row" data-adv="' + idx + '" data-focus="' + escapeHtml(focusId) + '">'
+    + '<div><b>' + escapeHtml(a.title) + '</b> ' + chips.join(' ') + '</div>'
+    + '<div class="small" style="color:var(--text-dim);">' + escapeHtml(a.why) + '</div>'
+    + alt
+    + '<div class="step-actions">' + advActionButtons(a) + '</div>'
+    + '</li>';
+}
+
+function renderAdvisor() {
+  const ul = document.getElementById('advList');
+  if (!ul) return;
+  const sum = advice.summary || {};
+  // Hide rows whose subject the user already migrated/excluded this session.
+  const live = (advice.actions || []).filter(a =>
+    !migrated.has(a.subject) && !excluded.has(a.subject));
+  document.getElementById('advSummary').innerHTML = live.length
+    ? '<div><b>' + live.length + '</b> action(s) in <b>'
+      + new Set(live.map(a => a.wave)).size + '</b> wave(s) · <b>'
+      + (sum.deferred || 0) + '</b> deferred below the stop line</div>'
+      + '<div class="small" style="margin-top:4px;color:var(--text-dim)">Waves respect dependencies; within a wave, best payoff-per-effort first.</div>'
+    : '<div>' + escapeHtml(sum.stop || 'No advice in this payload — regenerate with the current tool version (index path).') + '</div>';
+  let lastWave = null;
+  ul.innerHTML = live.map((a, i) => {
+    const head = a.wave !== lastWave
+      ? '<li class="small" style="list-style:none;margin:10px 0 2px;font-weight:700;color:var(--text-dim);">' + (ADV_WAVES[a.wave] || ('Wave ' + a.wave)) + '</li>'
+      : '';
+    lastWave = a.wave;
+    return head + advRowHtml(a, i);
+  }).join('');
+  const stopEl = document.getElementById('advStop');
+  if (live.length) {
+    stopEl.style.display = '';
+    stopEl.innerHTML = '<div style="margin:12px 0 6px;padding:7px 10px;border:1px dashed var(--border);border-radius:6px;color:var(--text-dim);font-size:12px;">🛑 <b>Stop line.</b> ' + escapeHtml(sum.stop || '') + '</div>';
+  } else stopEl.style.display = 'none';
+  const wrapEl = document.getElementById('advDeferredWrap');
+  const defEl = document.getElementById('advDeferred');
+  const ds = advice.deferred || [];
+  if (!ds.length) { wrapEl.style.display = 'none'; } else {
+    wrapEl.style.display = '';
+    wrapEl.querySelector('summary').textContent =
+      '🗂 Deferred (' + ds.length + ') — looked at, set aside, with reasons';
+    defEl.innerHTML = ds.map(d =>
+      '<div style="padding:3px 0;border-bottom:1px solid var(--border);">'
+      + '<b>' + escapeHtml(d.title) + '</b>'
+      + ' <span class="qw-chip">' + escapeHtml(ADV_REASON[d.reason] || d.reason) + '</span>'
+      + ' <span style="color:var(--text-faint);">' + escapeHtml(d.why) + '</span></div>').join('');
+  }
+  ul.querySelectorAll('.reco-row[data-adv]').forEach(li => {
+    li.onclick = () => focusToFolder(li.getAttribute('data-focus'));
+  });
+  ul.querySelectorAll('.step-actions button').forEach(b => {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const a = live[Number(b.closest('[data-adv]').dataset.adv)];
+      const act = b.dataset.aa;
+      if (act === 'preview') openMigPreview([a.subject], '🧠');
+      else if (act === 'target') setTarget(a.subject);
+      else if (act === 'divide') openDivide(a.subject);
+      else if (act === 'isolate') openIsolate(a.subject);
+      else if (act === 'review') {
+        const it = (quickWins.items || []).find(i => i.folder === a.subject);
+        if (it) advCopy(b, qwReviewPrompt(it), '📝 Review prompt');
+      } else if (act === 'splitprompt') {
+        const sp = (moduleSplits.items || []).find(x => x.module === a.subject);
+        if (sp) advCopy(b, qwSplitPrompt(sp), '📝 Review prompt');
+      } else if (act === 'move') {
+        const m = (fileMoves.items || []).find(x => x.file === a.subject);
+        advCopy(b, m ? fileMovePrompt(m) : a.why, '📋 Move prompt');
+      } else if (act === 'join') advCopy(b, advisorJoinPrompt(a), '📋 Fold prompt');
+    };
+  });
+}
+
 (function () {
   const qf = document.getElementById('qwFilter');
   if (qf) qf.oninput = () => renderQuickWins();
