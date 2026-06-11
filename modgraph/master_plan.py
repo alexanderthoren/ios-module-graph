@@ -61,10 +61,32 @@ def _under(folder: str, prefix: str) -> bool:
     return folder == prefix or folder.startswith(prefix + "/")
 
 
+# Folder names that are layer vocabulary, not domain vocabulary — a module
+# named after one would say nothing ("ViewModel", "Actions"). Prefix parent
+# segments until the name carries the feature.
+_GENERIC_SEGMENTS = {
+    "viewmodel", "viewmodels", "view", "views", "actions", "model", "models",
+    "state", "reducers", "helpers", "utils", "common", "core", "extensions",
+    "managers", "services", "protocols", "types", "sources",
+}
+
+
 def _module_name(folder: str) -> str:
-    """A Swift-module-ish name from a folder id: last segment, alnum only."""
-    seg = folder.rstrip("/").rsplit("/", 1)[-1]
-    name = re.sub(r"[^A-Za-z0-9]", "", seg)
+    """A Swift-module-ish name from a folder id, alnum only.
+
+    The last segment names the module; generic layer segments get their
+    parent prefixed (``Features/Login/ViewModel`` → ``LoginViewModel``) so
+    the suggested package says what it is, not what layer it is."""
+    segs = [re.sub(r"[^A-Za-z0-9]", "", s)
+            for s in folder.rstrip("/").split("/")]
+    segs = [s for s in segs if s]
+    if not segs:
+        return "Module"
+    name = segs[-1]
+    i = len(segs) - 2
+    while name.lower() in _GENERIC_SEGMENTS and i >= 0:
+        name = segs[i] + name
+        i -= 1
     return name or "Module"
 
 

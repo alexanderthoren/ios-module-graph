@@ -269,6 +269,14 @@ class MasterPlanTest(unittest.TestCase):
         self.assertFalse(cov["met"])
         self.assertIn("P", cov["current"])
 
+    def test_generic_folder_names_get_parent_prefixed(self):
+        from modgraph.master_plan import _module_name
+        self.assertEqual(_module_name("App/Features/Login/ViewModel"),
+                         "LoginViewModel")
+        self.assertEqual(_module_name("Fever/Features/PlanDetail/Actions"),
+                         "PlanDetailActions")
+        self.assertEqual(_module_name("App/Search"), "Search")
+
     def test_scan_path_degrades_to_single_module(self):
         kw = _kwargs()
         kw["pair_types"] = None
