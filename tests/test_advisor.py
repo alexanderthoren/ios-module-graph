@@ -80,6 +80,7 @@ def _inputs():
         "R": _iso("R", share=60),            # alternative on R's split
         "T": _iso("T", share=70, roi=5.0),   # dominant -> isolate action
         "Feat": _iso("Feat", share=55),      # app subtree, no quick win
+        "W": _iso("W", share=30, roi=0.3),   # roi under the tail -> deferred
     }
     module_splits = {"items": [
         {"module": "R", "label": "R", "level": 2, "min_intrinsic": 0,
@@ -103,8 +104,10 @@ def _inputs():
             {"id": "U", "kind": "spm", "label": "U", "types": 25},
             {"id": "S", "kind": "spm", "label": "S", "types": 2},
             {"id": "V", "kind": "spm", "label": "V", "types": 3},
+            {"id": "W", "kind": "spm", "label": "W", "types": 20},
         ],
         "edges": [
+            {"from": "app", "to": "W", "w": 2},
             {"from": "app", "to": "P", "w": 5},
             {"from": "app", "to": "R", "w": 5},
             {"from": "app", "to": "T", "w": 5},
@@ -146,6 +149,10 @@ class AdvisorTest(unittest.TestCase):
         self.assertEqual(b["kind"], "cut_then_extract")
         self.assertEqual(b["after"], ["move:B/F.swift"])
 
+    def test_wave2_unblocked_title_says_move_not_cut(self):
+        self.assertEqual(self.by_id["qw:B"]["title"],
+                         "Move 1 file(s), then extract B")
+
     def test_move_mirrors_unblocks(self):
         self.assertEqual(self.by_id["move:B/F.swift"]["unblocks"], ["B"])
 
@@ -183,6 +190,30 @@ class AdvisorTest(unittest.TestCase):
         t = self.by_id["mod:T"]
         self.assertEqual(t["kind"], "isolate_type")
         self.assertIn("Isolate Hub", t["title"])
+
+    def test_low_roi_isolation_deferred(self):
+        self.assertNotIn("mod:W", self.by_id)
+        d = next(d for d in self.deferred if d["id"] == "mod:W")
+        self.assertEqual(d["reason"], "tail")
+        self.assertIn("closure it drags", d["why"])
+
+    def test_split_without_releasable_falls_to_isolation(self):
+        qw, fm, iso, ms, reco, mg = _inputs()
+        ms["items"][0]["releasable"] = []   # R's split frees nobody
+        advice = compute_advice(qw, fm, iso, ms, reco, mg)
+        r = next(a for a in advice["actions"] if a["id"] == "mod:R")
+        self.assertEqual(r["kind"], "isolate_type")  # R's iso share 60 >= 50
+
+    def test_split_without_releasable_no_iso_uses_division(self):
+        qw, fm, iso, ms, reco, mg = _inputs()
+        ms["items"].append({
+            "module": "U", "label": "U", "level": 2, "min_intrinsic": 0,
+            "spread": 2, "low_units": ["U/Core"], "units": [], "consumers": 2,
+            "releasable": [], "public_cost": 1, "public_sample": [],
+            "score": 0.0})
+        advice = compute_advice(qw, fm, iso, ms, reco, mg)
+        u = next(a for a in advice["actions"] if a["id"] == "mod:U")
+        self.assertIn("~4 sub-modules", u["title"])
 
     def test_wave3_ordered_by_leverage(self):
         ids = [a["id"] for a in self.actions if a["wave"] == 3]

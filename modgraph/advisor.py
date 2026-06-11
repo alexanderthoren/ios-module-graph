@@ -187,16 +187,17 @@ def compute_advice(quick_wins: dict, file_moves: dict,
                 after = [move_actions[p]["id"] for p in evidence]
         if after or cut["total_refs"] <= ADVISOR_CUT_MAX:
             if after:
+                title = f"Move {len(after)} file(s), then extract {f}"
                 why = (f"Blocked only by {len(after)} misplaced file(s) "
                        f"already queued in wave 0 — extract right after "
                        f"they move.")
             else:
+                title = f"Cut {cut['total_refs']} ref(s), then extract {f}"
                 why = (f"{len(cut_edges)} blocking edge(s), "
                        f"{cut['total_refs']} ref(s) to cut "
                        f"({_cut_mix(cut_edges)}) — small enough to be worth "
                        f"the payoff.")
-            a = _action(f"qw:{f}", "cut_then_extract", 2, f,
-                        f"Cut {cut['total_refs']} ref(s), then extract {f}",
+            a = _action(f"qw:{f}", "cut_then_extract", 2, f, title,
                         why, payoff=payoff, effort=it.get("effort", 0),
                         roi=it.get("roi", 0.0), folder=f,
                         cut_refs=cut["total_refs"])
@@ -250,6 +251,26 @@ def compute_advice(quick_wins: dict, file_moves: dict,
             effort=top["module_size"] + top["module_public"],
             roi=top["roi"], module=mid, type=top["type"])
 
+    # Isolations get their own ROI-relative tail: a seed whose drag closure
+    # outweighs the fan-in it frees should not ride the feed on share alone.
+    iso_best_roi = max((i["candidates"][0]["roi"]
+                        for i in isolations.values()), default=0.0)
+    iso_floor = iso_best_roi * ADVISOR_TAIL_PCT / 100.0
+
+    def _iso_or_defer(mid: str, iso: dict, leverage: float,
+                      native: float) -> None:
+        top = iso["candidates"][0]
+        if top["roi"] < iso_floor:
+            deferred.append(_deferred(
+                f"mod:{mid}", "isolate_type", mid,
+                f"Isolate {top['type']} out of {mid}", "tail",
+                f"isolation roi {top['roi']} is under {ADVISOR_TAIL_PCT}% of "
+                f"the best ({iso_best_roi}) — the closure it drags outweighs "
+                f"the fan-in it frees, for now."))
+            return
+        wave3.append((leverage, native, mid, _isolate_action(mid, iso)))
+        surgery_modules.add(mid)
+
     for mid in subjects:
         split_it = split_by_id.get(mid)
         iso = isolations.get(mid)
@@ -265,11 +286,12 @@ def compute_advice(quick_wins: dict, file_moves: dict,
             # An app subtree (not yet a module). Its isolation is an
             # alternative to the folder's own quick win when one was emitted.
             if iso and mid not in emitted_folders:
-                a = _isolate_action(mid, iso)
-                wave3.append((0.0, float(iso["ext_total"]), mid, a))
+                _iso_or_defer(mid, iso, 0.0, float(iso["ext_total"]))
             continue
 
-        if split_it:
+        # A split with no releasable consumer frees nobody — fall through to
+        # the isolation/division branches instead of shipping a no-op action.
+        if split_it and split_it["releasable"]:
             a = _action(
                 f"mod:{mid}", "split_module", 3, mid,
                 f"Split the L{split_it['min_intrinsic']} core out of {label}",
@@ -290,9 +312,8 @@ def compute_advice(quick_wins: dict, file_moves: dict,
             wave3.append((leverage, float(split_it["score"]), mid, a))
             surgery_modules.add(mid)
         elif iso and iso["summary"]["top_share"] >= ADVISOR_ISOLATE_SHARE:
-            wave3.append((leverage, float(iso["candidates"][0]["roi"]), mid,
-                          _isolate_action(mid, iso)))
-            surgery_modules.add(mid)
+            _iso_or_defer(mid, iso, leverage,
+                          float(iso["candidates"][0]["roi"]))
         elif reco and reco.get("dividable") and leverage >= surgery_tail:
             a = _action(
                 f"mod:{mid}", "split_module", 3, mid,
@@ -312,9 +333,8 @@ def compute_advice(quick_wins: dict, file_moves: dict,
             wave3.append((leverage, leverage, mid, a))
             surgery_modules.add(mid)
         elif iso:
-            wave3.append((leverage, float(iso["candidates"][0]["roi"]), mid,
-                          _isolate_action(mid, iso)))
-            surgery_modules.add(mid)
+            _iso_or_defer(mid, iso, leverage,
+                          float(iso["candidates"][0]["roi"]))
         elif reco and leverage >= surgery_tail:
             deferred.append(_deferred(
                 f"mod:{mid}", "stabilize_api", mid,
