@@ -18,7 +18,7 @@ from .index_loader import load_index_graph
 from .module_graph import compute_module_graph
 from .module_splits import compute_module_splits
 from .file_affinity import compute_file_moves
-from .advisor import compute_advice
+from .master_plan import compute_master_plan
 from .isolate import compute_isolations
 from .quick_wins import compute_quick_wins
 from .render import render_html
@@ -398,18 +398,6 @@ def main() -> int:
         print(f"  → Top split candidate: {top['label']} "
               f"({score}, {top['action'].lower()})")
 
-    # The unified advisor merges every advice stream above into ONE ordered
-    # feed (waves 0-4) with an explicit stop line — the front door the HTML
-    # opens on; the per-stream tabs stay as drill-downs.
-    advice = compute_advice(quick_wins, file_moves, isolations,
-                            module_splits, recommendations, module_graph)
-    asum = advice["summary"]
-    print(f"Advisor:           {asum['actions']} action(s) in "
-          f"{len(asum['waves'])} wave(s), {asum['deferred']} deferred")
-    if advice["actions"]:
-        head_action = advice["actions"][0]
-        print(f"  → First move: {head_action['title']}")
-
     # Auto-record a build-cost snapshot keyed to the target project's git commit.
     # Survives `just clean`, deduped against the last row, so successive
     # extractions accumulate one comparable point each. Powers Build mode's
@@ -428,6 +416,28 @@ def main() -> int:
         pass
     history = load_history(history_path)
 
+    # The master plan IS Migration mode: a detection-driven Setup checklist
+    # plus ONE ordered plan that wraps the advisor's arbiter and decorates
+    # every action with a shape decision (API/impl pair vs single module vs
+    # absorb), a build-grounded why with simulated deltas, a verify block,
+    # and the equilibrium criteria that define "done". Computed after the
+    # history load so the measurement-baseline setup item can see it.
+    master_plan = compute_master_plan(
+        quick_wins, file_moves, isolations, module_splits, recommendations,
+        module_graph, pair_types=resolved_pair_types, type_kinds=type_kinds,
+        leaf_edges=leaf_edges, migrated_prefixes=migrated_prefixes,
+        decls=decls, resources=resources, history=history,
+        excluded_count=len(excluded),
+    )
+    msum_plan = master_plan["summary"]
+    print(f"Master plan:       {msum_plan['actions']} step(s) in "
+          f"{len(msum_plan['waves'])} phase(s), {msum_plan['deferred']} "
+          f"deferred, {msum_plan['setup_items']} setup item(s)"
+          + (", equilibrium MET" if msum_plan["equilibrium_met"] else ""))
+    if master_plan["steps"]:
+        head_step = master_plan["steps"][0]
+        print(f"  → First move: {head_step['title']}")
+
     if graph_path is not None:
         graph_path = graph_path.expanduser().resolve()
         graph_path.parent.mkdir(parents=True, exist_ok=True)
@@ -442,7 +452,7 @@ def main() -> int:
             recommendations=recommendations, history=history,
             resources=resources, quick_wins=quick_wins, file_moves=file_moves,
             module_splits=module_splits, isolations=isolations,
-            advice=advice,
+            master_plan=master_plan,
         )
         print(f"\nWrote graph: {graph_path}")
 

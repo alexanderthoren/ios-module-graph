@@ -85,6 +85,23 @@ ADVISOR_CUT_MAX = 10
 ADVISOR_ISOLATE_SHARE = 50
 ADVISOR_JOIN_MAX_TYPES = 10
 
+# Master plan (modgraph/master_plan.py): Migration mode's whole surface —
+# a detection-driven Setup checklist plus ONE plan whose steps carry an
+# explicit module *shape* decision (API/impl pair vs single module vs absorb).
+# - API_MIN_CONSUMERS: distinct consumer modules at which an extraction ships
+#   as an API + implementation pair (consumers depend on the protocol surface,
+#   not the implementation, so impl edits stop cascading).
+# - API_SURFACE_SAMPLE: api-surface type names shipped per step (full count
+#   always kept alongside).
+# Equilibrium criteria — the measurable definition of "done":
+# - EQ_APP_SHARE_PCT: the app target holds at most this % of all declared
+#   types (everything else lives in packages; the app is a composition root).
+# - EQ_WARM_MAX_PCT: no module's warm blast radius exceeds this % of modules.
+API_MIN_CONSUMERS = 2
+API_SURFACE_SAMPLE = 24
+EQ_APP_SHARE_PCT = 20
+EQ_WARM_MAX_PCT = 30
+
 DECL_RE = re.compile(
     r"\b(?:class|struct|enum|protocol|actor|typealias)\s+([A-Z][A-Za-z0-9_]*)"
 )

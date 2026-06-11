@@ -136,7 +136,7 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
                 folder_package=None, packages=None, file_edges=None, type_edges=None,
                 divisions=None, module_graph=None, recommendations=None,
                 history=None, resources=None, quick_wins=None, file_moves=None,
-                module_splits=None, isolations=None, advice=None):
+                module_splits=None, isolations=None, master_plan=None):
     edges_list = [
         {"src": a, "dst": b, "w": w} for (a, b), w in leaf_edges.items()
     ]
@@ -194,8 +194,15 @@ def render_html(tree, leaf_edges, multi_decl_types, file_records, type_owners,
         "isolations": isolations or {},
         # The unified advisor feed: one wave-ordered action list + deferred
         # items with reasons (the stop line is the boundary between the two).
-        # See modgraph/advisor.py. {"actions": [...], "deferred": [...]}.
-        "advice": advice or {"actions": [], "deferred": [], "summary": {}},
+        # See modgraph/master_plan.py (wraps modgraph/advisor.py): Migration
+        # mode's whole data source — Setup checklist + the one plan with shape
+        # decisions, simulated deltas, verify blocks and equilibrium criteria.
+        # {"setup": [...], "steps": [...], "deferred": [...],
+        #  "equilibrium": {...}, "summary": {...}}.
+        "master_plan": master_plan or {"setup": [], "steps": [], "deferred": [],
+                                       "equilibrium": {"criteria": [],
+                                                       "met": False},
+                                       "summary": {}},
     }
     html = (
         _load_template()
