@@ -27,7 +27,7 @@ from .scanner import compute_pair_types, scan
 from .scoring import compute_folder_scores
 from .spm import _build_package_map, auto_detect_migrated_prefixes, is_migrated
 from .staleness import warn_if_stale
-from .tasks import build_task_list, write_task_list_json, write_task_list_markdown
+from .tasks import write_master_plan_json, write_master_plan_markdown
 
 
 def parse_args() -> argparse.Namespace:
@@ -457,13 +457,10 @@ def main() -> int:
         print(f"\nWrote graph: {graph_path}")
 
     if list_path is not None:
+        # The list is the file-shaped twin of the HTML's Plan tab — both read
+        # the same master plan, so the CLI and the UI can never disagree.
         list_path = list_path.expanduser().resolve()
         list_path.parent.mkdir(parents=True, exist_ok=True)
-        tasks = build_task_list(
-            plan, file_records, root_label, str(root),
-            migrated_prefixes, len(initial_migrated), len(all_source_folders),
-            quick_wins=quick_wins,
-        )
         meta = {
             "root_label": root_label,
             "root_path": str(root),
@@ -472,12 +469,13 @@ def main() -> int:
             "source_total": len(all_source_folders),
             "excluded_count": len(excluded),
             "blocked_reasons": {k: sorted(v) for k, v in blocked_reasons.items()},
-            "tasks_total": len(tasks),
+            "steps_total": len(master_plan["steps"]),
         }
         if args.list_format == "json":
-            write_task_list_json(tasks, meta, list_path)
+            write_master_plan_json(master_plan, meta, list_path)
         else:
-            write_task_list_markdown(tasks, meta, list_path)
-        print(f"Wrote list:  {list_path}  ({len(tasks)} task(s), format={args.list_format})")
+            write_master_plan_markdown(master_plan, meta, list_path)
+        print(f"Wrote list:  {list_path}  ({len(master_plan['steps'])} step(s), "
+              f"format={args.list_format})")
 
     return 0
