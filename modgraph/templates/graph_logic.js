@@ -315,11 +315,181 @@ function resourcesUnder(map, folder) {
   return out;
 }
 
+// ── master-plan step prompt ──────────────────────────────────────────────────
+// One self-contained, executable instruction per master-plan step (the 📝
+// button on a Plan card). Pure: everything it says comes from the step record
+// plus an explicit ctx — no DOM, no payload globals — so it is unit-tested
+// under Node. ctx (all optional):
+//   files: [names]      — source files of a folder subject
+//   move:  file_moves item (symbols evidence) for move_file steps
+//   cut:   quick-win cut {edges:[{dst,refs,fix,evidence}],total_refs} for
+//          cut_then_extract steps
+function masterStepPrompt(step, ctx) {
+  ctx = ctx || {};
+  const sh = step.shape || {};
+  const what = step.what || {};
+  const why = step.why || {};
+  const verify = step.verify || {};
+  const L = [];
+  const guard = 'This change must be **behavior-preserving**: move code, adjust '
+    + 'access levels, rewire imports, introduce protocols — never edit logic. '
+    + 'Keep it one reviewable PR. The dependency graph cannot judge domain '
+    + 'cohesion or naming — if this move is semantically wrong, say so and '
+    + 'stop instead of executing it.';
+  const resources = (what.resources || []);
+  const resLine = what.resources_count
+    ? 'Move the ' + what.resources_count + ' bundle resource(s) along ('
+      + resources.join(', ') + (what.resources_count > resources.length ? ', …' : '')
+      + '), declare them in Package.swift, and switch their Bundle.main '
+      + 'lookups to Bundle.module.'
+    : null;
+  const pushVerify = () => {
+    L.push('');
+    L.push('## Verify');
+    (verify.commands || []).forEach(c => L.push('- `' + c + '`'));
+    const exp = verify.expect || {};
+    const keys = Object.keys(exp);
+    if (keys.length) {
+      L.push('');
+      L.push('Expected movement:');
+      keys.forEach(k => L.push('- ' + k + ': ' + exp[k]));
+    }
+  };
+  const pushFiles = () => {
+    if ((ctx.files || []).length) {
+      L.push('');
+      L.push('## Files to move');
+      ctx.files.forEach(f => L.push('- `' + f + '`'));
+    }
+  };
+  const pushCut = () => {
+    if (step.kind === 'cut_then_extract' && ctx.cut && (ctx.cut.edges || []).length) {
+      L.push('');
+      L.push('## First: cut the ' + ctx.cut.total_refs + ' blocking reference(s)');
+      ctx.cut.edges.forEach(e => {
+        L.push('- → `' + e.dst + '` (' + e.refs + ' ref(s)) — fix: ' + e.fix
+          + ((e.evidence || []).length ? ' (' + e.evidence.join(', ') + ')' : ''));
+      });
+      L.push('Fix meanings: move_file = the file belongs in the target folder; '
+        + 'shared_primitive = push the type down into a shared foundation '
+        + 'package; invert = own a protocol (it belongs in the API package '
+        + 'this step creates) and let the target conform.');
+    }
+  };
+
+  L.push('# ' + step.title);
+  L.push('');
+  if (why.narrative) L.push(why.narrative);
+  if (sh.rule) L.push('Shape decision: ' + sh.rule + '.');
+
+  if (sh.mode === 'move_file') {
+    const m = ctx.move || {};
+    L.push('');
+    L.push('## Steps');
+    L.push('1. `git mv ' + (m.file || step.subject) + ' ' + (sh.destination || m.to)
+      + '/` (keep history).');
+    L.push('2. Update imports/target membership the move requires — nothing else.'
+      + ((m.symbols || []).length ? ' Evidence: its references to '
+         + m.symbols.join(', ') + ' bind there.' : ''));
+  } else if (sh.mode === 'absorb') {
+    pushCut();
+    pushFiles();
+    L.push('');
+    L.push('## Steps');
+    L.push('1. Move the folder\'s ' + (what.files || 0) + ' file(s) into the existing '
+      + 'module `' + sh.destination + '` (its own target).');
+    if (resLine) L.push('2. ' + resLine);
+    L.push((resLine ? '3' : '2') + '. Mark only the types the compiler demands '
+      + 'as public — no speculative API.');
+    L.push((resLine ? '4' : '3') + '. Point the app target (and any consumer) at '
+      + '`' + sh.destination + '` where it previously found these types.');
+  } else if (sh.mode === 'api_impl') {
+    pushCut();
+    pushFiles();
+    const surface = sh.api_surface || [];
+    const protocols = sh.protocols_for || [];
+    const values = surface.filter(t => protocols.indexOf(t) < 0);
+    L.push('');
+    L.push('## Steps — ship as an API/implementation pair');
+    L.push('1. Create the library target `' + sh.api_module + '`: it holds the '
+      + 'cross-module surface and depends on nothing first-party (other API '
+      + 'packages at most).');
+    if (values.length) {
+      L.push('   - Move these value types/protocols into `' + sh.api_module + '` whole: '
+        + values.map(t => '`' + t + '`').join(', ')
+        + (sh.api_surface_count > surface.length ? ', …(' + sh.api_surface_count + ' total)' : '') + '.');
+    }
+    if (protocols.length) {
+      L.push('   - For each of ' + protocols.map(t => '`' + t + '`').join(', ')
+        + ' (reference types with behavior): introduce a protocol in `'
+        + sh.api_module + '` mirroring its externally-used members.');
+    }
+    L.push('2. Create the implementation target `' + sh.impl_module + '` with the '
+      + 'remaining ' + (what.files || 0) + ' file(s); it depends on `'
+      + sh.api_module + '` plus other modules\' API packages — never their '
+      + 'implementations. Conform each class to its new protocol.');
+    if (resLine) L.push('3. ' + resLine);
+    L.push((resLine ? '4' : '3') + '. Rewire every consumer to import `'
+      + sh.api_module + '` only' + (sh.consumers ? ' (' + sh.consumers
+      + ' consumer module(s), current or future)' : '') + '.');
+    L.push((resLine ? '5' : '4') + '. Bind at the composition root: the app\'s '
+      + 'entry point instantiates `' + sh.impl_module + '`\'s classes and hands '
+      + 'them out as `' + sh.api_module + '` protocols. Only the composition '
+      + 'root imports `' + sh.impl_module + '`.');
+  } else if (sh.mode === 'single_module') {
+    pushCut();
+    pushFiles();
+    L.push('');
+    L.push('## Steps');
+    L.push('1. Create the library target `' + sh.impl_module + '` and move the '
+      + 'folder\'s ' + (what.files || 0) + ' file(s) into it.');
+    if (resLine) L.push('2. ' + resLine);
+    L.push((resLine ? '3' : '2') + '. Mark only the types the compiler demands '
+      + 'as public — no speculative API.');
+    L.push((resLine ? '4' : '3') + '. Add the dependency where the code was '
+      + 'consumed and rewire imports. (No API split: ' + (sh.rule || 'one '
+      + 'consumer') + ' — create the pair later only if consumers multiply.)');
+  } else if (sh.mode === 'isolate') {
+    L.push('');
+    L.push('## Steps');
+    L.push('1. Create the module `' + sh.impl_module + '` and move the type plus '
+      + 'its drag closure (' + (what.types || 0) + ' type(s) total — the Isolate '
+      + 'view lists every member).');
+    L.push('2. Flip the ' + (sh.api_surface_count || 0) + ' externally-referenced '
+      + 'type(s) to public.');
+    L.push('3. Rewire the ' + (sh.consumers || 0) + ' external module(s) to '
+      + 'depend on `' + sh.impl_module + '` instead of `' + step.subject + '`.');
+  } else if (sh.mode === 'split') {
+    L.push('');
+    L.push('## Steps');
+    L.push('1. Open the Divide view for `' + step.subject + '` — it has the '
+      + 'per-unit split plan (units, order, public surface).');
+    L.push('2. One new target per unit, dependency-ordered; flip only the types '
+      + 'the remaining units reference to public.');
+    L.push('3. Retarget consumers that only touch a split-off unit to the new '
+      + 'smaller module.');
+  } else if (sh.mode === 'join') {
+    L.push('');
+    L.push('## Steps');
+    L.push('1. Move `' + step.subject + '`\'s sources into `' + sh.destination
+      + '`\'s target and merge the Package.swift entries.');
+    L.push('2. Drop `public` where nothing external needs it anymore.');
+    L.push('3. If the module exists for a reason the dependency graph cannot '
+      + 'see (dynamic loading, app extensions, a license boundary), say so '
+      + 'instead of folding it.');
+  }
+
+  L.push('');
+  L.push(guard);
+  pushVerify();
+  return L.join('\n');
+}
+
 // Node-only: expose the helpers to the test runner. Guarded so the browser
 // (where `module` is undefined) skips it without error.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     escapeHtml, fmtDur, buildRebuildClosure, buildDependencyClosure, tarjanSccs,
-    migrationPlanOrder, decodePayload, resourcesUnder,
+    migrationPlanOrder, decodePayload, resourcesUnder, masterStepPrompt,
   };
 }

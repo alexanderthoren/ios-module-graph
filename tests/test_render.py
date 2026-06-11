@@ -140,21 +140,18 @@ class RenderHtmlOutputTest(unittest.TestCase):
     def test_data_has_expected_top_level_keys(self):
         data = _extract_data_json(self.html)
         for key in ("tree", "edges", "plan", "packages", "files", "type_owners",
-                    "quick_wins", "file_moves", "module_splits"):
+                    "quick_wins", "file_moves", "module_splits", "master_plan"):
             self.assertIn(key, data)
 
-    def test_quick_wins_panel_present(self):
-        # The Migration-mode Quick wins tab and its renderer ship in the template.
-        self.assertIn("panel-quickwins", self.html)
-        self.assertIn("function renderQuickWins", self.html)
-
-    def test_module_splits_section_and_review_prompts_present(self):
-        # Level-aware additions: split-candidates section + the two review
-        # prompt builders (per-row move review, per-module split review).
-        self.assertIn("qwSplitsWrap", self.html)
-        self.assertIn("function renderModuleSplits", self.html)
-        self.assertIn("function qwReviewPrompt", self.html)
-        self.assertIn("function qwSplitPrompt", self.html)
+    def test_migration_mode_is_setup_plus_plan_only(self):
+        # Migration mode ships exactly two surfaces: the Setup tab (checklist +
+        # scope wizard) and the Plan tab (the master-plan feed). The old
+        # Advisor / Quick wins panels must not resurface.
+        self.assertIn("setupChecklist", self.html)
+        self.assertIn("function renderMasterFeed", self.html)
+        self.assertIn("function masterStepPrompt", self.html)
+        self.assertNotIn("panel-quickwins", self.html)
+        self.assertNotIn("panel-advisor", self.html)
 
     def test_payload_is_interned_in_the_raw_html(self):
         # The heavy sections ship as index arrays + a strings table; the UI

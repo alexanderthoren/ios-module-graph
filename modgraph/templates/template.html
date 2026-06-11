@@ -139,7 +139,6 @@
     .reco-reason { font-size: 11px; color: var(--text-dim); line-height: 1.45; margin-top: 4px; }
     /* Quick wins (Migration mode): rows reuse .reco-row; chips classify the
        per-folder outcome and each blocking edge's suggested fix. */
-    #qwList { list-style: none; padding: 0; margin: 8px 0 0; }
     .qw-chip { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px;
       border-radius: 9px; margin: 3px 4px 0 0; border: 1px solid var(--border);
       color: var(--text-dim); background: var(--surface-2); cursor: help; }
@@ -689,10 +688,8 @@
       <div class="mode" data-mode="build">🏗️ Build</div>
     </div>
     <div class="tabs">
-      <div class="tab" data-tab="advisor" data-mode="migration">🧠 Advisor</div>
       <div class="tab" data-tab="wizard" data-mode="migration">🧭 Setup</div>
       <div class="tab" data-tab="plan" data-mode="migration">🎯 Plan</div>
-      <div class="tab" data-tab="quickwins" data-mode="migration">⚡ Quick wins</div>
       <div class="tab" data-tab="build" data-mode="build">🏗️ Build impact</div>
       <div class="tab" data-tab="recommend" data-mode="build">🪓 Split plan</div>
       <div class="tab" data-tab="improve" data-mode="build">📈 Improvements</div>
@@ -746,61 +743,6 @@
         <ul id="buildRank"></ul>
       </div>
 
-      <!-- MIGRATION ADVISOR TAB: the unified feed (payload.advice).
-           One plan merged from every engine; arbitration happened in Python
-           (modgraph/advisor.py) — this panel only renders and links. -->
-      <div class="panel" id="panel-advisor">
-        <div class="small">One plan from every engine — file moves, quick wins,
-          isolations, splits, joins — sequenced in <b>waves</b> (work top to
-          bottom) with <b>one decision per subject</b>. The feed ends at the
-          <b>stop line</b>: below it, effort outweighs payoff and each deferred
-          item says why. Rows link to the detailed views.</div>
-        <div id="advSummary" class="info"></div>
-        <ul id="advList"></ul>
-        <div id="advStop" style="display:none;"></div>
-        <details id="advDeferredWrap" style="display:none;margin:6px 0;">
-          <summary style="font-size:12px;font-weight:600;cursor:pointer;"></summary>
-          <div class="small" style="margin:4px 0;color:var(--text-dim)">What the
-            engine looked at and set aside — each with the reason. Auditable and
-            overridable: the detailed tabs still show everything.</div>
-          <div id="advDeferred" class="qw-edges" style="max-height:300px;"></div>
-        </details>
-      </div>
-
-      <!-- MIGRATION QUICK-WINS TAB -->
-      <div class="panel" id="panel-quickwins">
-        <div class="small">Every in-scope folder ranked by <b>ROI</b> — payoff (warm
-          blast radius = unblocking power, cold critical path, churn) over effort
-          (files + refs to refactor + types going public). Rows marked
-          <b>extractable today</b> can ship now: absorb into the suggested existing
-          module, or cut a new target. Blocked rows list the exact references to
-          sever first, each with a suggested fix.</div>
-        <div id="qwSummary" class="info"></div>
-        <!-- Misplaced files (payload.file_moves): the smallest PRs of all —
-             moving one file dissolves fake folder coupling before extraction. -->
-        <details id="qwMovesWrap" style="display:none;margin:6px 0;">
-          <summary style="font-size:12px;font-weight:600;cursor:pointer;"></summary>
-          <div class="small" style="margin:4px 0;color:var(--text-dim)">Files whose
-            references overwhelmingly bind to another folder. Moving one is the
-            smallest possible PR: it can kill a folder edge, shrink a cut-set, or
-            break a cycle. Advisory — confirm the move makes semantic sense.</div>
-          <div id="qwMoves" class="qw-edges" style="max-height:260px;"></div>
-        </details>
-        <!-- Composite-module splits (payload.module_splits): existing SPM modules
-             whose level spread says a low-level core is trapped inside. -->
-        <details id="qwSplitsWrap" style="display:none;margin:6px 0;">
-          <summary style="font-size:12px;font-weight:600;cursor:pointer;"></summary>
-          <div class="small" style="margin:4px 0;color:var(--text-dim)">Modules whose
-            build level is pinned by one heavy unit while the rest needs far less.
-            Splitting the low units into their own module lets consumers that only
-            touch them drop their dependency height. Advisory — the unit boundary
-            must also make domain sense (📝 copies a review prompt).</div>
-          <div id="qwSplits" class="qw-edges" style="max-height:260px;"></div>
-        </details>
-        <input id="qwFilter" type="text" class="hier-filter" value="" placeholder="Filter folders…" autocomplete="off" />
-        <ul id="qwList"></ul>
-      </div>
-
       <!-- BUILD SPLIT-PLAN TAB -->
       <div class="panel" id="panel-recommend">
         <div class="small">Modules ranked by the <b>build-time payoff</b> of separating
@@ -827,12 +769,23 @@
         <div id="impTableWrap"></div>
       </div>
 
-      <!-- MIGRATION WIZARD TAB -->
+      <!-- MIGRATION SETUP TAB: one-time prerequisites (detection-driven, from
+           payload.master_plan.setup) + the scope picker that parameterizes a
+           custom wizard plan. -->
       <div class="panel" id="panel-wizard">
-        <h3 style="margin-top: 4px;">What are you migrating?</h3>
+        <h3 style="margin-top: 4px;">Project setup</h3>
+        <div class="small" style="margin-bottom: 6px;">
+          One-time prerequisites the graph says this project is missing.
+          Check items off as you land them — the Plan tab assumes they exist.
+        </div>
+        <div id="setupChecklist"></div>
+
+        <h3 style="margin-top: 14px;">Scope (optional)</h3>
         <div class="small" style="margin-bottom: 10px;">
-          Pick where code is moving <b>from</b>, where it should land,
-          and we'll spit out an ordered step-by-step plan respecting your real dependency graph.
+          The <b>Plan</b> tab already orders everything worth doing. Use this
+          only to scope a custom plan: pick where code is moving <b>from</b>,
+          where it should land, and compute a step-by-step plan for exactly
+          that move.
         </div>
 
         <h2>1 · Source <span class="small" style="font-weight:500;">(extract folders out of)</span></h2>
@@ -1183,7 +1136,12 @@ const recommendations = DATA.recommendations || { items: [], summary: {} };
 const quickWins = DATA.quick_wins || { items: [], summary: {} };
 const fileMoves = DATA.file_moves || { items: [], summary: {} };
 const moduleSplits = DATA.module_splits || { items: [], summary: {} };
-const advice = DATA.advice || { actions: [], deferred: [], summary: {} };
+// Migration mode's whole data source (modgraph/master_plan.py): a detection-
+// driven Setup checklist + ONE plan whose steps carry shape decisions
+// (API/impl pair vs single module vs absorb), build-grounded whys with
+// simulated deltas, verify blocks, and the equilibrium criteria.
+const masterPlan = DATA.master_plan ||
+  { setup: [], steps: [], deferred: [], equilibrium: { criteria: [], met: false }, summary: {} };
 // Build-cost snapshots over time (oldest→newest), one per real change, keyed to
 // the target project's git commit. Powers Build mode → Improvements tab.
 const history = DATA.history || [];
@@ -2162,207 +2120,278 @@ function stepScoreBadges(s) {
 }
 
 function renderPlan() {
+  // Target-driven plan (clicked a node's 🎯) renders the prerequisite path;
+  // everything else lands on the master-plan feed. (The patched dispatcher
+  // near the bottom of the file additionally routes runway/wizard plans.)
   if (migrationTarget) { renderTargetPlan(); return; }
-  // Normal (global) plan mode — restore the default chrome.
+  renderMasterFeed();
+}
+
+// ── Master plan feed: Migration mode's Plan tab ──────────────────────────────
+// All intelligence (arbitration, shape decisions, simulated deltas, verify
+// expectations, equilibrium criteria) was computed in Python
+// (modgraph/master_plan.py); this only renders, tracks done-state, and copies
+// per-step prompts (masterStepPrompt lives in graph_logic.js, unit-tested).
+const PLAN_PHASES = {
+  0: '📁 Phase 0 — Move misplaced files',
+  1: '⚡ Phase 1 — Extract what\'s ready',
+  2: '🔓 Phase 2 — Unblock and extract',
+  3: '🪓 Phase 3 — Module surgery',
+  4: '🫱 Phase 4 — Fold needless boundaries',
+};
+const PLAN_REASON = {
+  tail: 'diminishing returns', blocked_cut: 'big cut first',
+  stabilize_api: 'no seam — narrow API', unused: 'verify usage',
+};
+const SHAPE_BADGE = {
+  api_impl: '🧩 API + impl', single_module: '📦 single module',
+  absorb: '🧲 absorb', move_file: '📁 file move', isolate: '🎯 isolate',
+  split: '✂️ split', join: '🫱 fold',
+};
+const EXTRACT_KINDS = new Set(['absorb', 'new_module', 'cut_then_extract']);
+const PLANDONE_KEY = 'modgraph-plandone::' + (DATA.root_path || '');
+let planDone = new Set();
+try { planDone = new Set(JSON.parse(localStorage.getItem(PLANDONE_KEY) || '[]')); } catch (e) {}
+function savePlanDone() {
+  try { localStorage.setItem(PLANDONE_KEY, JSON.stringify([...planDone].sort())); } catch (e) {}
+}
+function copyPrompt(b, text, restore) {
+  navigator.clipboard.writeText(text).then(() => {
+    b.textContent = '✓ copied'; setTimeout(() => { b.textContent = restore; }, 1200);
+  });
+}
+// ctx for the pure prompt builder: files of folder subjects, evidence rows.
+function masterStepCtx(s) {
+  const ctx = {};
+  if (s.kind === 'move_file') {
+    ctx.move = (fileMoves.items || []).find(m => m.file === s.subject) || null;
+  } else if (EXTRACT_KINDS.has(s.kind)) {
+    ctx.files = (filesByFolder[s.subject] || []).map(f => f.name);
+    const qw = (quickWins.items || []).find(i => i.folder === s.subject);
+    if (qw) ctx.cut = qw.cut;
+  }
+  return ctx;
+}
+// Done rows stay visible; rows whose subject the user migrated/excluded via
+// other views disappear like they always did.
+function planStepLive(s) {
+  if (planDone.has(s.id)) return true;
+  return !migrated.has(s.subject) && !excluded.has(s.subject);
+}
+function planStepEligible(s) {
+  return (s.after || []).every(id => planDone.has(id));
+}
+function equilibriumHtml() {
+  const eq = masterPlan.equilibrium || { criteria: [], met: false };
+  const sum = masterPlan.summary || {};
+  const rows = (eq.criteria || []).map(c =>
+    '<div style="display:flex;gap:6px;align-items:baseline;padding:2px 0;">'
+    + '<span>' + (c.met ? '✅' : '⬜') + '</span>'
+    + '<span style="flex:1;"><b>' + escapeHtml(c.label) + '</b>'
+    + ' <span class="small" style="color:var(--text-dim);">' + escapeHtml(c.current)
+    + ' · target ' + escapeHtml(c.target) + '</span></span></div>').join('');
+  return '<h3>' + (eq.met ? '🏁 Equilibrium reached' : '🎯 The plan') + '</h3>'
+    + '<div class="info">' + (eq.met
+        ? 'Neither splitting nor joining pays right now. Re-render after real changes and re-check.'
+        : '<b>' + (sum.actions || 0) + '</b> step(s) in <b>'
+          + Object.keys(sum.waves || {}).length + '</b> phase(s) · <b>'
+          + (sum.deferred || 0) + '</b> deferred below the stop line'
+          + ((sum.setup_items || 0)
+              ? ' · <b>' + sum.setup_items + '</b> setup item(s) → <a href="#" id="planGoSetup">Setup tab</a>'
+              : ''))
+    + '</div>'
+    + '<details style="margin-top:6px;"' + (eq.met ? ' open' : '') + '>'
+    + '<summary style="font-size:12px;font-weight:600;cursor:pointer;">Equilibrium — the definition of done</summary>'
+    + '<div style="font-size:12px;margin-top:4px;">' + rows + '</div></details>';
+}
+function masterStepHtml(s) {
+  const sh = s.shape || {}, what = s.what || {}, why = s.why || {};
+  const done = planDone.has(s.id);
+  const eligible = planStepEligible(s);
+  const chips = ['<span class="qw-chip" title="' + escapeHtml(sh.rule || '') + '">'
+    + escapeHtml(SHAPE_BADGE[sh.mode] || sh.mode || '') + '</span>'];
+  if (why.roi != null) chips.push('<span class="qw-chip" title="payoff ' + why.payoff
+    + ' ÷ effort ' + why.effort + '">roi ' + why.roi + '</span>');
+  if (why.churn) chips.push('<span class="qw-chip" title="commits touching it in the analysis window">✏️ ' + why.churn + '</span>');
+  if (why.crit) chips.push('<span class="qw-chip" title="on the cold critical path — extracting it shortens the clean-build floor">🧊 crit</span>');
+  if (why.cold_delta_s) chips.push('<span class="qw-chip" title="estimated compile work leaving the app target">~' + why.cold_delta_s + 's</span>');
+  if (!done && !eligible) chips.push('<span class="qw-chip" title="waiting on: '
+    + escapeHtml((s.after || []).join(', ')) + '">🔒 blocked</span>');
+  else if ((s.after || []).length) chips.push('<span class="qw-chip" title="sequenced after: '
+    + escapeHtml(s.after.join(', ')) + '">after ' + s.after.length + '</span>');
+  if ((s.unblocks || []).length) chips.push('<span class="qw-chip" title="what this unblocks">unblocks '
+    + escapeHtml(s.unblocks.join(', ')) + '</span>');
+  let shapeLine = '';
+  if (sh.mode === 'api_impl') {
+    shapeLine = '<div class="small">→ ships as <b>' + escapeHtml(sh.api_module || '')
+      + '</b> (the API: protocols + value types'
+      + (sh.api_surface_count ? ', ' + sh.api_surface_count + ' public type(s)' : '')
+      + ') + <b>' + escapeHtml(sh.impl_module || '')
+      + '</b> (the implementation, bound at the composition root)</div>';
+  } else if (sh.mode === 'single_module') {
+    shapeLine = '<div class="small">→ ships as the single module <b>'
+      + escapeHtml(sh.impl_module || '') + '</b> (no API split — see the shape badge for why)</div>';
+  } else if (sh.mode === 'absorb' || sh.mode === 'join') {
+    shapeLine = '<div class="small">→ into <b>' + escapeHtml(sh.destination || '') + '</b></div>';
+  }
+  const whatBits = [];
+  if (what.files) whatBits.push(what.files + ' file(s)');
+  if (what.types) whatBits.push(what.types + ' type(s)');
+  if (what.resources_count) whatBits.push(what.resources_count + ' resource(s)');
+  const exp = (s.verify || {}).expect || {};
+  const expKeys = Object.keys(exp);
+  const verifyHtml = '<details style="margin-top:3px;"><summary style="font-size:11px;cursor:pointer;color:var(--text-dim);">Verify</summary>'
+    + '<div style="font-size:11px;margin:3px 0;">'
+    + ((s.verify || {}).commands || []).map(c => '<div><code>' + escapeHtml(c) + '</code></div>').join('')
+    + (expKeys.length ? '<div style="margin-top:3px;color:var(--text-dim);">Expect: '
+        + expKeys.map(k => escapeHtml(k) + ' ' + escapeHtml(String(exp[k]))).join(' · ') + '</div>' : '')
+    + '</div></details>';
+  const alt = s.details && s.details.alternative
+    ? '<div class="small" style="color:var(--text-faint);">↔ ' + escapeHtml(s.details.alternative) + '</div>' : '';
+  const B = [];
+  if (EXTRACT_KINDS.has(s.kind)) B.push('<button class="ghost" data-pa="preview">⚡ Preview</button>');
+  if (s.kind === 'cut_then_extract') B.push('<button class="ghost" data-pa="target">🎯 Plan path</button>');
+  if (s.kind === 'split_module' && DATA.divisions && DATA.divisions[s.subject]) B.push('<button class="ghost" data-pa="divide">✂️ Divide</button>');
+  if (s.kind === 'isolate_type') B.push('<button class="ghost" data-pa="isolate">🎯 Isolate</button>');
+  B.push('<button class="ghost" data-pa="prompt">📝 Prompt</button>');
+  B.push(done ? '<button class="ghost" data-pa="undo">↩ Undo</button>'
+              : '<button data-pa="done">✓ Done</button>');
+  return '<div>' + (done ? '✓ ' : '') + '<b>' + escapeHtml(s.title) + '</b> ' + chips.join(' ') + '</div>'
+    + '<div class="small" style="color:var(--text-dim);">' + escapeHtml(why.narrative || '') + '</div>'
+    + shapeLine
+    + (whatBits.length ? '<div class="small" style="color:var(--text-faint);" title="'
+        + escapeHtml((what.resources || []).join(', ')) + '">moves: ' + whatBits.join(' · ') + '</div>' : '')
+    + alt
+    + verifyHtml
+    + '<div class="step-actions">' + B.join('') + '</div>';
+}
+function masterStepEl(s) {
+  const div = document.createElement('div');
+  const done = planDone.has(s.id);
+  div.className = 'step' + (done ? ' done' : '') + (!done && planStepEligible(s) ? ' next' : '');
+  div.innerHTML = masterStepHtml(s);
+  div.querySelectorAll('.step-actions button').forEach(b => {
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      const act = b.dataset.pa;
+      if (act === 'preview') openMigPreview([s.subject], '🎯');
+      else if (act === 'target') setTarget(s.subject);
+      else if (act === 'divide') openDivide(s.subject);
+      else if (act === 'isolate') openIsolate(s.subject);
+      else if (act === 'prompt') copyPrompt(b, masterStepPrompt(s, masterStepCtx(s)), '📝 Prompt');
+      else if (act === 'done' || act === 'undo') {
+        if (act === 'done') planDone.add(s.id); else planDone.delete(s.id);
+        savePlanDone();
+        // Extraction steps mirror into the migrated set so the graph and
+        // every other view stay consistent with per-folder marking.
+        if (EXTRACT_KINDS.has(s.kind)) {
+          const fs = tree[s.subject] ? [...descendantsOf(s.subject)] : [s.subject];
+          if (act === 'done') fs.forEach(f => migrated.add(f));
+          else fs.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
+          _invalidateBlockedCache();
+        }
+        renderMasterFeed();
+        render();
+      }
+    };
+  });
+  // Row click previews the subject in the graph; never mutates state.
+  div.addEventListener('click', (ev) => {
+    if (ev.target.closest('details') || ev.target.closest('.step-actions')) return;
+    const focusId = s.kind === 'move_file' ? ((s.details && s.details.src) || s.subject) : s.subject;
+    if (tree[focusId]) focusToFolder(focusId);
+  });
+  return div;
+}
+function renderMasterFeed() {
   document.getElementById('targetBanner').style.display = 'none';
-  document.getElementById('planListHeading').textContent = 'Recommended order';
-  document.getElementById('planFilter').style.display = '';
+  document.getElementById('planFilter').style.display = 'none';
+  document.getElementById('stuckDetails').style.display = 'none';
+  const globalActions = document.querySelector('#panel-plan .rec-global-actions');
+  if (globalActions) globalActions.style.display = 'none';
+  document.getElementById('planListHeading').textContent = '';
   const rec = document.getElementById('recCard');
   rec.style.display = '';
-  const nextStep = plan.find(s => !stepIsDone(s) && isStepEligible(s));
-  if (!nextStep) {
-    if (plan.length === 0) {
-      rec.innerHTML = '<h3>No actionable plan</h3><div class="info">No SCCs to process.</div>';
-    } else {
-      rec.innerHTML = '<h3>🎉 All ' + plan.length + ' steps applied</h3><div class="info">Every folder is migrated.</div>';
-    }
-  } else {
-    const isStart = !plan.some(s => stepIsDone(s));
-    const isCycle = nextStep.is_cycle;
-    const headline = isCycle
-      ? '⚠ Migrate a tightly-coupled bundle (' + nextStep.size + ' folders)'
-      : nextStep.folders[0];
-    rec.innerHTML =
-      '<h3>' + (isStart ? '🚀 Start here' : '➡️ Next step') + ' — step ' + nextStep.step + ' of ' + plan.length + '</h3>' +
-      '<div class="card-headline">' + escapeHtml(headline) + '</div>' +
-      ((nextStep.wave != null || nextStep.roi != null)
-        ? '<div style="margin:4px 0;">' + stepScoreBadges(nextStep) + '</div>' : '') +
-      (isCycle
-        ? (
-            '<div class="info" style="background:#fdf2e9;padding:8px;border-radius:4px;border-left:3px solid #e67e22;margin: 6px 0;">' +
-              '<b>⚠ Big cycle (' + nextStep.size + ' folders, ~' + (nextStep.fas_estimate || 0) + ' edges form the cycle).</b> ' +
-              'Migrating the whole bundle in one PR is not safe. ' +
-              'Instead, <b>extract one folder at a time</b> by refactoring its outgoing references to other cycle members. ' +
-              'The tool ranked the easiest-to-extract folders below.' +
-            '</div>' +
-            (nextStep.extractions && nextStep.extractions.length > 0
-              ? '<div class="info"><b>🔧 Lightest folder extractions (smallest PR first):</b><ol style="margin: 4px 0; padding-left: 18px;">' +
-                nextStep.extractions.slice(0, 5).map(ext => {
-                  const sample = ext.edges.slice(0, 2).map(e => escapeHtml(e.dst.split('/').slice(-2).join('/')) + ' (' + e.refs + ')').join(', ');
-                  return '<li><code>' + escapeHtml(ext.folder) + '</code> ' +
-                    '<span style="color:#7f8c8d;">— ' + ext.outgoing_refs + ' ref' + (ext.outgoing_refs === 1 ? '' : 's') + ' across ' + ext.outgoing_count + ' edge' + (ext.outgoing_count === 1 ? '' : 's') + ' to refactor</span>' +
-                    (sample ? '<div style="font-size: 11px; color: #555; padding-left: 8px;">touches: ' + sample + (ext.edges.length > 2 ? ', +' + (ext.edges.length - 2) + ' more' : '') + '</div>' : '') +
-                    '</li>';
-                }).join('') +
-                (nextStep.extractions.length > 5 ? '<li>…and ' + (nextStep.extractions.length - 5) + ' more in the step card below</li>' : '') +
-                '</ol></div>'
-              : '<div class="info">No extraction candidates computed.</div>')
-          )
-        : '') +
-      '<div class="info">' +
-        (nextStep.unlocks.length === 0
-          ? 'Migrating this <b>unlocks nothing new</b> — it\'s a sink in the DAG (other folders depend on it but it depends on nothing — or only on already-migrated things).'
-          : 'Migrating this <b>unlocks ' + nextStep.unlocks.length + ' bundle(s)</b>:<ul style="margin: 4px 0; padding-left: 18px;">' +
-            nextStep.unlocks.slice(0, 8).map(u => '<li>' + (u.size === 1 ? escapeHtml(u.folders[0]) : '⚠ cycle of ' + u.size + ' folders (' + escapeHtml(u.folders.slice(0,3).join(', ')) + (u.size>3?'…':'') + ')') + '</li>').join('') +
-            (nextStep.unlocks.length > 8 ? '<li>…and ' + (nextStep.unlocks.length - 8) + ' more</li>' : '') +
-            '</ul>') +
-      '</div>' +
-      '<div class="card-actions">' +
-        '<button id="recMigrate">✓ ' + (isCycle ? 'Mark bundle complete (' + nextStep.size + ')' : 'Mark migrated') + '</button>' +
-        '<button class="ghost" id="recReveal">Show in graph</button>' +
-      '</div>';
-    document.getElementById('recMigrate').onclick = () => applyStep(nextStep);
-    document.getElementById('recReveal').onclick = () => {
-      // Focus the node in the graph; leave the current tab alone so the
-      // user keeps their Plan-mode context.
-      focusToFolder(nextStep.folders[0]);
-    };
-  }
+  rec.innerHTML = equilibriumHtml();
+  const goSetup = document.getElementById('planGoSetup');
+  if (goSetup) goSetup.onclick = (ev) => { ev.preventDefault(); switchTab('wizard'); };
 
-  // Plan list
-  const filter = (document.getElementById('planFilter').value || '').toLowerCase();
   const wrap = document.getElementById('planList');
   wrap.innerHTML = '';
-  // Locked steps (deps not yet migrated) are hidden — they aren't actionable,
-  // so showing a long list of greyed-out rows is noise. A counter at the bottom
-  // tells the user how many remain and what's blocking them.
-  let lockedCount = 0;
-  plan.forEach(s => {
-    const hay = s.folders.join(' ') + ' ' + s.unlocks.map(u => u.folders.join(' ')).join(' ');
-    if (filter && !hay.toLowerCase().includes(filter)) return;
-    const isDone = stepIsDone(s);
-    const isEligible = isStepEligible(s);
-    if (!isDone && !isEligible) { lockedCount++; return; }
-    const isNext = !isDone && (!nextStep || s.step === nextStep.step);
-    const div = document.createElement('div');
-    div.className = 'step' + (isDone ? ' done' : '') + (isNext ? ' next' : '');
-    const unlocksTxt = stepUnlocksText(s);
-    const folderListHtml = s.size === 1
-      ? '<b>' + escapeHtml(s.folders[0]) + '</b>'
-      : '<b>⚠ Cycle bundle (' + s.size + ' folders)</b>';
-    let inner =
-      '<span class="stepNum">#' + s.step + '</span>' +
-      stepScoreBadges(s) +
-      (isDone ? '✓ ' : '') + folderListHtml +
-      (unlocksTxt
-        ? '<div class="unlocks">→ unlocks: <span class="u">' + escapeHtml(unlocksTxt) + '</span></div>'
-        : '<div class="unlocks">no downstream unlocks</div>');
-    if (s.size > 1) {
-      inner += '<details style="margin-top: 4px;"><summary style="font-size:11px;">view ' + s.size + ' members</summary>'
-            + '<ul style="font-size:11px;max-height:200px;overflow:auto;">'
-            + s.folders.map(f => '<li data-folder="' + escapeHtml(f) + '">' + escapeHtml(f) + '</li>').join('')
-            + '</ul></details>';
-      if (s.extractions && s.extractions.length > 0) {
-        inner += '<details style="margin-top: 4px;" open><summary style="font-size:11px;color:#d35400;font-weight:600;">🔧 Lightest folder extractions (' + s.extractions.length + ' candidates, smallest PR first)</summary>'
-          + '<div style="font-size:11px;max-height:340px;overflow:auto;margin-top: 4px;">'
-          + s.extractions.map((ext, i) => {
-              const edgesHtml = ext.edges.slice(0, 8).map(e => {
-                const typesTxt = e.types.length === 0 ? '' : ' — ' + escapeHtml(e.types.join(', ')) + (e.types.length === 8 ? '…' : '');
-                return '<div style="padding: 2px 0 2px 12px; color: #555;">→ <code data-folder="' + escapeHtml(e.dst) + '">' + escapeHtml(e.dst) + '</code> <span style="color:#7f8c8d;">(' + e.refs + ' ref' + (e.refs === 1 ? '' : 's') + ')</span>' + typesTxt + '</div>';
-              }).join('');
-              return '<div style="border-left:3px solid #e67e22;padding:6px 8px;margin:4px 0;background:#fef5e7;">'
-                + '<div><b>#' + (i+1) + '</b> Extract <code data-folder="' + escapeHtml(ext.folder) + '">' + escapeHtml(ext.folder) + '</code></div>'
-                + '<div style="color:#7f8c8d;font-size:10px;padding-left:8px;">'
-                + 'refactor ' + ext.outgoing_refs + ' ref' + (ext.outgoing_refs === 1 ? '' : 's') + ' across ' + ext.outgoing_count + ' outgoing edge' + (ext.outgoing_count === 1 ? '' : 's') + ' • '
-                + ext.incoming_count + ' folder' + (ext.incoming_count === 1 ? '' : 's') + ' depend on this'
-                + '</div>'
-                + (edgesHtml ? '<div style="margin-top: 3px; font-size: 11px;">' + edgesHtml + (ext.edges.length > 8 ? '<div style="color:#7f8c8d;padding-left:12px;">…+' + (ext.edges.length - 8) + ' more edge(s)</div>' : '') + '</div>' : '')
-                + '</div>';
-            }).join('')
-          + '</div></details>';
-      }
-      if (s.breakers && s.breakers.length > 0) {
-        inner += '<details style="margin-top: 4px;"><summary style="font-size:11px;color:#7f8c8d;">🌐 Global cycle-break sequence (informational — ~' + (s.fas_estimate || 0) + ' edges form the cycle)</summary>'
-          + '<div style="font-size:11px;max-height:240px;overflow:auto;margin-top: 4px;">'
-          + s.breakers.slice(0, 30).map((b, i) => {
-              const typesTxt = b.types.length === 0 ? '' : b.types.slice(0, 5).join(', ') + (b.types.length > 5 ? ', +' + (b.types.length - 5) + ' more' : '');
-              const after = b.remaining_cycles === 0
-                ? '<span style="color:#1e874b;">✓ cycle resolved</span>'
-                : 'still ' + b.remaining_cycles + ' cycle(s), biggest=' + b.biggest_cycle;
-              return '<div style="border-left:2px solid #bdc3c7;padding:3px 6px;margin:2px 0;">'
-                + '<b>#' + (i+1) + '</b> <code data-folder="' + escapeHtml(b.src) + '">' + escapeHtml(b.src) + '</code> → <code data-folder="' + escapeHtml(b.dst) + '">' + escapeHtml(b.dst) + '</code> <span style="color:#7f8c8d;">(' + b.refs + ' ref' + (b.refs === 1 ? '' : 's') + (typesTxt ? ': ' + escapeHtml(typesTxt) : '') + ')</span> '
-                + '<span style="color:#7f8c8d;font-size:10px;">after: ' + after + '</span>'
-                + '</div>';
-            }).join('')
-          + (s.breakers.length > 30 ? '<div style="color:#7f8c8d;">…' + (s.fas_estimate - 30) + ' more edges</div>' : '')
-          + '</div></details>';
-      }
-    }
-    // Action bar: explicit "complete" button so tapping the row never mutates
-    // state — the row itself just previews the step in the graph.
-    const actionHtml = isDone
-      ? '<button class="ghost" data-act="uncomplete">↩ Unmark</button>'
-      : '<button data-act="complete">✓ Mark complete</button>'
-        + (s.step > 1 ? ' <button class="ghost" data-act="completeUpTo">⏩ Mark all up to here</button>' : '');
-    inner += '<div class="step-actions">' + actionHtml + '</div>';
-    div.innerHTML = inner;
-    // Member / breaker-endpoint clicks → inspect.
-    div.querySelectorAll('[data-folder]').forEach(el => {
-      el.onclick = (ev) => {
-        ev.stopPropagation();
-        ev.preventDefault();
-        focusToFolder(el.dataset.folder);
-      };
-      el.style.cursor = 'pointer';
-    });
-    // Explicit action buttons handle state mutation; row click only previews.
-    div.querySelectorAll('.step-actions button').forEach(b => {
-      b.onclick = (ev) => {
-        ev.stopPropagation();
-        const act = b.dataset.act;
-        if (act === 'complete') applyStep(s);
-        else if (act === 'completeUpTo') applyUpTo(s);
-        else if (act === 'uncomplete') {
-          s.folders.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
-          renderPlan();
-          render();
-        }
-      };
-    });
-    // Row click → preview step in the graph. Keep the current tab so the user
-    // stays in Plan view; tab switching is opt-in via the Hierarchy tab itself.
-    div.addEventListener('click', (ev) => {
-      if (ev.target.closest('details') && !ev.target.closest('summary')) return;
-      if (ev.target.closest('.step-actions')) return;
-      if (ev.target.closest('[data-folder]')) return;
-      focusToFolder(s.folders[0]);
-    });
-    wrap.appendChild(div);
-  });
-  if (lockedCount > 0) {
-    const lockedRow = document.createElement('div');
-    lockedRow.className = 'info';
-    lockedRow.style.cssText = 'margin-top:8px;padding:8px 10px;border-radius:6px;color:var(--text-faint);font-size:12px;background:var(--surface);';
-    lockedRow.innerHTML = '🔒 <b>' + lockedCount + '</b> locked step(s) hidden — finish the steps above to unlock them.';
-    wrap.appendChild(lockedRow);
+  const steps = (masterPlan.steps || []).filter(planStepLive);
+  if (!steps.length) {
+    wrap.innerHTML = '<div class="info">'
+      + escapeHtml((masterPlan.summary || {}).stop
+          || 'No plan in this payload — regenerate with the current tool version (index path).')
+      + '</div>';
+    updateMigrationCounts();
+    return;
   }
-
-  // Stuck (shouldn't happen with full DAG plan)
-  const stuckFlat = [].concat(...stuck);
-  document.getElementById('stuckCount').textContent = stuckFlat.length;
-  document.getElementById('stuckInfo').innerHTML = stuckFlat.length > 0
-    ? '  <span class="stuck">' + stuckFlat.length + ' folder(s) unreachable.</span>' : '';
-  const sl = document.getElementById('stuckList');
-  sl.innerHTML = '';
-  stuckFlat.slice(0, 200).forEach(s => {
-    const li = document.createElement('li');
-    li.className = 'stuck';
-    li.textContent = s;
-    li.onclick = () => { focusToFolder(s); };
-    sl.appendChild(li);
+  let lastPhase = null;
+  steps.forEach(s => {
+    if (s.phase !== lastPhase) {
+      const h = document.createElement('div');
+      h.className = 'small';
+      h.style.cssText = 'margin:10px 0 2px;font-weight:700;color:var(--text-dim);';
+      h.textContent = PLAN_PHASES[s.phase] || ('Phase ' + s.phase);
+      wrap.appendChild(h);
+      lastPhase = s.phase;
+    }
+    wrap.appendChild(masterStepEl(s));
   });
-
+  const stop = document.createElement('div');
+  stop.style.cssText = 'margin:12px 0 6px;padding:7px 10px;border:1px dashed var(--border);border-radius:6px;color:var(--text-dim);font-size:12px;';
+  stop.innerHTML = '🛑 <b>Stop line.</b> ' + escapeHtml((masterPlan.summary || {}).stop || '');
+  wrap.appendChild(stop);
+  const ds = masterPlan.deferred || [];
+  if (ds.length) {
+    const det = document.createElement('details');
+    det.innerHTML = '<summary style="font-size:12px;font-weight:600;cursor:pointer;">🗂 Deferred ('
+      + ds.length + ') — looked at, set aside, with reasons</summary>'
+      + '<div class="qw-edges" style="max-height:300px;">' + ds.map(d =>
+        '<div style="padding:3px 0;border-bottom:1px solid var(--border);"><b>' + escapeHtml(d.title) + '</b>'
+        + ' <span class="qw-chip">' + escapeHtml(PLAN_REASON[d.reason] || d.reason) + '</span>'
+        + ' <span style="color:var(--text-faint);">' + escapeHtml(d.why) + '</span></div>').join('')
+      + '</div>';
+    wrap.appendChild(det);
+  }
   updateMigrationCounts();
+}
+
+// ── Setup checklist (payload.master_plan.setup) on the Setup tab ─────────────
+// Detection-driven one-time prerequisites; check-off persists per project.
+const SETUPDONE_KEY = 'modgraph-setupdone::' + (DATA.root_path || '');
+let setupDone = new Set();
+try { setupDone = new Set(JSON.parse(localStorage.getItem(SETUPDONE_KEY) || '[]')); } catch (e) {}
+function renderSetupChecklist() {
+  const el = document.getElementById('setupChecklist');
+  if (!el) return;
+  const items = masterPlan.setup || [];
+  if (!items.length) {
+    el.innerHTML = '<div class="info">✅ Nothing to set up — packages, conventions and a measured baseline were all detected.</div>';
+    return;
+  }
+  el.innerHTML = items.map((it, i) => {
+    const done = setupDone.has(it.id);
+    return '<div class="info" style="margin:6px 0;' + (done ? 'opacity:.55;' : '') + '">'
+      + '<label style="display:flex;gap:8px;align-items:baseline;cursor:pointer;">'
+      + '<input type="checkbox" data-su="' + i + '"' + (done ? ' checked' : '') + '>'
+      + '<span style="flex:1;"><b>' + escapeHtml(it.title) + '</b>'
+      + '<div class="small" style="color:var(--text-dim);">' + escapeHtml(it.why) + '</div>'
+      + '<details style="margin-top:3px;"><summary style="font-size:11px;cursor:pointer;">How</summary>'
+      + '<ol style="font-size:11px;margin:4px 0;padding-left:18px;">'
+      + (it.how || []).map(h => '<li>' + escapeHtml(h) + '</li>').join('') + '</ol>'
+      + '<div class="small" style="color:var(--text-faint);">Done when: ' + escapeHtml(it.done_when || '') + '</div>'
+      + '</details></span></label></div>';
+  }).join('');
+  el.querySelectorAll('input[data-su]').forEach(cb => {
+    cb.onchange = () => {
+      const it = items[Number(cb.dataset.su)];
+      if (cb.checked) setupDone.add(it.id); else setupDone.delete(it.id);
+      try { localStorage.setItem(SETUPDONE_KEY, JSON.stringify([...setupDone].sort())); } catch (e) {}
+      renderSetupChecklist();
+    };
+  });
 }
 
 function updateMigrationCounts() {
@@ -2472,10 +2501,8 @@ function switchTab(name) {
   // Render the activated tab's content. The plan/wizard panels are data-driven
   // (persisted wizPlan / runway / target), so revealing the panel isn't enough —
   // it must be re-rendered or a fresh load shows stale/empty content.
-  if (name === 'advisor') renderAdvisor();
-  else if (name === 'plan') renderPlan();
+  if (name === 'plan') renderPlan();
   else if (name === 'wizard') renderWizard();
-  else if (name === 'quickwins') renderQuickWins();
   else if (name === 'build') renderBuild();
   else if (name === 'recommend') renderRecommend();
   else if (name === 'improve') renderImprovements();
@@ -2941,486 +2968,6 @@ const QW_VETO_TITLE = {
   churn_hostile: 'This folder churns and the destination is widely depended on — every consumer would pay the churn on warm rebuilds. Hot code belongs high, with few dependents.',
 };
 
-function qwRowHtml(it, idx) {
-  let actionChip;
-  if (it.action === 'absorb') {
-    const d = it.destination;
-    actionChip = '<span class="qw-chip absorb" title="Extractable today. Auto-picked destination: '
-      + escapeHtml(d.label) + ' already exchanges ' + d.refs + ' reference(s) with this folder ('
-      + d.uses + ' it uses, ' + d.used_by + ' using it).'
-      + (d.level != null ? ' Sits at L' + d.level + ' — the absorb keeps it there (level-preserving by construction).' : '')
-      + ' Folding in beats creating a new target.">'
-      + '📦 absorb → ' + escapeHtml(d.label) + (d.level != null ? ' (L' + d.level + ')' : '') + '</span>';
-  } else if (it.action === 'new_module') {
-    actionChip = '<span class="qw-chip newmod" title="Extractable today, but no existing module fits '
-      + '(no traffic, complexity bounds, or a vetoed pick — see the vetoed list) — create a new SPM target.">🆕 new module</span>';
-  } else {
-    actionChip = '<span class="qw-chip cut" title="Blocked: ' + it.cut.total_refs
-      + ' outgoing reference(s) must be refactored before this folder can move. Expand for the exact edges.">'
-      + '✂ cut ' + it.cut.total_refs + ' ref' + (it.cut.total_refs === 1 ? '' : 's') + ' first</span>';
-  }
-  const appLvl = (quickWins.summary || {}).app_level;
-  const lands = (it.action === 'absorb' && it.destination && it.destination.level != null)
-    ? it.destination.level : it.landing_level;
-  const chips = actionChip
-    + (lands != null
-        ? '<span class="qw-chip" title="Today this code compiles inside the app target'
-          + (appLvl != null ? ' — L' + appLvl + ', the top of the build graph' : '') + '. After this step it sits at L' + lands
-          + (it.action === 'absorb' ? ' inside ' + escapeHtml(it.destination.label) : ' as its own module')
-          + '. Lower is more foundational; L0 depends on no first-party module. '
-          + (it.pinned_by
-              ? 'Its floor is pinned by its dependency on ' + escapeHtml(it.pinned_by.label) + ' (L' + it.pinned_by.level + ') — cut that reference or split that module to land lower.'
-              : 'It references no migrated module — a true foundation candidate.')
-          + (it.action === 'cut_first' ? ' Projection assumes the blocking edges below are cut.' : '') + '">'
-          + '🏗 lands L' + lands
-          + (it.pinned_by ? ' <span style="opacity:.65">· pinned by ' + escapeHtml(it.pinned_by.label) + '</span>' : '')
-          + '</span>'
-        : '')
-    + '<span class="qw-chip" title="files to move">' + it.files + ' file' + (it.files === 1 ? '' : 's') + '</span>'
-    + (it.public ? '<span class="qw-chip" title="types referenced from other folders — must flip internal → public">' + it.public + ' public</span>' : '')
-    + (it.churn ? '<span class="qw-chip" title="commits touching this folder in the last year">✏️ ' + it.churn + '</span>' : '');
-
-  let detail = '';
-  if (it.cut.edges.length) {
-    detail = '<details><summary style="font-size:11px;color:#d35400;">blocking edges (' + it.cut.edges.length + ')</summary>'
-      + '<div class="qw-edges">'
-      + it.cut.edges.map(e => {
-          const ev = (e.evidence || []).slice(0, 3).map(x => escapeHtml(x.split('/').pop())).join(', ');
-          return '<div style="padding:2px 0 2px 8px;color:var(--text-dim);">→ '
-            + '<code data-folder="' + escapeHtml(e.dst) + '">' + escapeHtml(e.dst) + '</code> '
-            + '(' + e.refs + ' ref' + (e.refs === 1 ? '' : 's') + ')'
-            + '<span class="qw-fix ' + escapeHtml(e.fix) + '" title="' + (QW_FIX_TITLE[e.fix] || '') + '">' + (QW_FIX_LABEL[e.fix] || escapeHtml(e.fix)) + '</span>'
-            + (ev ? '<div style="font-size:10px;padding-left:10px;color:var(--text-faint);">' + ev
-                  + ((e.evidence || []).length > 3 ? ' +' + (e.evidence.length - 3) + ' more' : '') + '</div>' : '')
-            + '</div>';
-        }).join('')
-      + '</div></details>';
-  }
-
-  let vetoed = '';
-  if ((it.rejected || []).length) {
-    vetoed = '<details><summary style="font-size:11px;color:var(--text-dim);">vetoed destinations (' + it.rejected.length + ')</summary>'
-      + '<div class="qw-edges">'
-      + it.rejected.map(r =>
-          '<div style="padding:2px 0 2px 8px;color:var(--text-dim);">⛔ <b>' + escapeHtml(r.label) + '</b> '
-          + '(' + r.refs + ' ref' + (r.refs === 1 ? '' : 's') + ')'
-          + '<span class="qw-fix" title="' + (QW_VETO_TITLE[r.reason] || '') + '">' + (QW_VETO_LABEL[r.reason] || escapeHtml(r.reason)) + '</span>'
-          + ((r.evidence || []).length
-              ? '<div style="font-size:10px;padding-left:10px;color:var(--text-faint);">' + r.evidence.map(escapeHtml).join('; ') + '</div>'
-              : '')
-          + '</div>').join('')
-      + '</div></details>';
-  }
-
-  const actBtn = (it.extractable_now
-    ? '<button data-act="preview" data-folder="' + escapeHtml(it.folder) + '">🔍 Preview &amp; migrate</button>'
-    : '<button class="ghost" data-act="path" data-folder="' + escapeHtml(it.folder) + '">🎯 Path to extract</button>')
-    + '<button class="ghost" data-act="review" data-ridx="' + idx + '" '
-    + 'title="Copy an architecture-review prompt: all the graph evidence for this move, addressed to a reviewer (human or Claude) whose job is judgment — REJECT is a first-class answer.">📝 Review prompt</button>';
-
-  return '<li class="reco-row" data-qw-folder="' + escapeHtml(it.folder) + '" title="' + escapeHtml(it.folder) + '">'
-    + '<div class="reco-head"><span class="reco-rank">' + (idx + 1) + '</span>'
-    + '<span class="reco-name">' + (it.extractable_now ? '✅ ' : '🔒 ') + escapeHtml(it.folder) + '</span>'
-    + '<span class="reco-score" title="ROI = payoff ' + it.payoff + ' ÷ effort ' + it.effort + '">' + it.roi + '</span></div>'
-    + '<div>' + chips + '</div>'
-    + detail
-    + vetoed
-    + '<div class="step-actions">' + actBtn + '</div>'
-    + '</li>';
-}
-
-function renderQuickWins() {
-  const ul = document.getElementById('qwList');
-  if (!ul) return;
-  const items = quickWins.items || [];
-  const sum = quickWins.summary || {};
-  document.getElementById('qwSummary').innerHTML = items.length
-    ? '<div><b>' + (sum.extractable_now || 0) + '</b> folder(s) extractable today'
-      + ' · <b>' + (sum.absorbable || 0) + '</b> absorb into existing modules'
-      + ' · <b>' + (sum.cut_first || 0) + '</b> need cuts first'
-      + (sum.vetoed ? ' · <b>' + sum.vetoed + '</b> with layer/churn-vetoed destinations' : '') + '</div>'
-      + '<div class="small" style="margin-top:4px;color:var(--text-dim)">'
-      + (sum.churned ? '✏️ ranked by churn-weighted payoff ÷ effort'
-                     : '📐 ranked by structural payoff ÷ effort (no git churn)')
-      + (sum.app_level != null
-          ? ' · 🏗 app target compiles at L' + sum.app_level + ' — every extraction moves code down from there; lower landings are more foundational'
-          : '')
-      + '</div>'
-    : '<div>No quick-win data in this payload — regenerate with the current tool version (index path).</div>';
-  const q = (document.getElementById('qwFilter').value || '').toLowerCase();
-  let rows = items.filter(it => !migrated.has(it.folder) && !excluded.has(it.folder));
-  if (q) rows = rows.filter(it => it.folder.toLowerCase().includes(q));
-  const CAP = 80;
-  ul.innerHTML = rows.slice(0, CAP).map((it, idx) => qwRowHtml(it, idx)).join('')
-    + (rows.length > CAP
-        ? '<li class="small" style="color:var(--text-faint);padding:6px;">…' + (rows.length - CAP) + ' more — type in the filter to narrow.</li>'
-        : '');
-  ul.querySelectorAll('.reco-row[data-qw-folder]').forEach(li => {
-    li.onclick = () => focusToFolder(li.getAttribute('data-qw-folder'));
-  });
-  ul.querySelectorAll('.qw-edges code[data-folder]').forEach(el => {
-    el.onclick = (ev) => { ev.stopPropagation(); focusToFolder(el.dataset.folder); };
-  });
-  const shown = rows.slice(0, CAP);
-  ul.querySelectorAll('.step-actions button').forEach(b => {
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      if (b.dataset.act === 'review') {
-        const it = shown[Number(b.dataset.ridx)];
-        navigator.clipboard.writeText(qwReviewPrompt(it)).then(() => {
-          b.textContent = '✓ copied'; setTimeout(() => { b.textContent = '📝 Review prompt'; }, 1200);
-        });
-        return;
-      }
-      const f = b.dataset.folder;
-      if (b.dataset.act === 'preview') openMigPreview([f], '⚡');
-      else setTarget(f);
-    };
-  });
-  renderFileMoves();
-  renderModuleSplits();
-}
-
-// Architecture-review prompt for one quick-win row. The engine's predicates
-// already enforce the graph rules (DAG, levels, churn); this delegates the one
-// thing the graph cannot see — domain cohesion and naming — to a reviewer,
-// with rejection as an explicit, expected outcome.
-function qwReviewPrompt(it) {
-  const files = (filesByFolder[it.folder] || []).map(x => x.name);
-  const types = mpDeclaredTypes(it.folder);
-  const L = [];
-  L.push('# Architecture review: extract `' + it.folder + '` — approve or reject');
-  L.push('');
-  L.push('I am modularizing this codebase into Swift Package Manager modules. A dependency-graph');
-  L.push('tool proposed the move below from build-graph structure ONLY — reference counts, build');
-  L.push('levels, churn. It cannot judge domain cohesion or naming; that judgment is your job.');
-  L.push('**REJECT is a first-class answer.** Do not approve a move just because the graph allows it.');
-  L.push('');
-  L.push('## Proposed move');
-  L.push('- Folder: `' + it.folder + '` (' + it.files + ' file(s), ' + types.length + ' declared type(s))');
-  if (it.action === 'absorb') {
-    const d = it.destination;
-    L.push('- Action: absorb into the existing module `' + d.label + '`');
-    L.push('- Tool rationale: already exchanges ' + d.refs + ' reference(s) (' + d.uses
-      + ' this folder uses, ' + d.used_by + ' using it)'
-      + (d.level != null ? '; the destination sits at L' + d.level + ' and the absorb does not raise it' : '') + '.');
-  } else if (it.action === 'new_module') {
-    L.push('- Action: create a new SPM module (no existing module fits — see vetoes below).');
-  } else {
-    L.push('- Action: cut ' + it.cut.total_refs + ' blocking reference(s) first (edges below), then extract.');
-  }
-  if (it.landing_level != null) {
-    const appLvl = (quickWins.summary || {}).app_level;
-    const lands = (it.action === 'absorb' && it.destination && it.destination.level != null)
-      ? it.destination.level : it.landing_level;
-    L.push('- Build level: compiles inside the app target today'
-      + (appLvl != null ? ' (L' + appLvl + ', the top of the build graph)' : '')
-      + '; lands at L' + lands
-      + (it.action === 'absorb' ? ' inside the destination' : ' as its own module')
-      + ' (L0 = depends on no first-party module; lower = more foundational).');
-    if (it.pinned_by) {
-      L.push('- Level floor: pinned by its dependency on `' + it.pinned_by.label + '` (L'
-        + it.pinned_by.level + ') — it cannot land lower until that reference is cut or that module is split.');
-    }
-  }
-  L.push('- Churn: ' + (it.churn || 0) + ' commit(s) touched it in the analysis window.'
-    + (it.public ? ' Public surface: ' + it.public + ' type(s) flip internal → public.' : ''));
-  if (files.length) {
-    L.push('');
-    L.push('## Files');
-    files.forEach(fn => L.push('- `' + fn + '`'));
-  }
-  if (types.length) {
-    L.push('');
-    L.push('## Declared types');
-    L.push(types.map(t => '`' + t + '`').join(', '));
-  }
-  if ((it.cut.edges || []).length) {
-    L.push('');
-    L.push('## Blocking edges to cut first');
-    it.cut.edges.forEach(e => {
-      L.push('- → `' + e.dst + '` (' + e.refs + ' ref(s)) — suggested fix: ' + e.fix
-        + ((e.evidence || []).length ? ' (' + e.evidence.join(', ') + ')' : ''));
-    });
-  }
-  if ((it.rejected || []).length) {
-    L.push('');
-    L.push('## Destinations the tool vetoed (layer/churn rules)');
-    it.rejected.forEach(r => {
-      L.push('- `' + r.label + '` (' + r.refs + ' ref(s)) — ' + r.reason
-        + ((r.evidence || []).length ? ': ' + r.evidence.join('; ') : ''));
-    });
-    L.push('');
-    L.push('You may override a veto, but only with an explicit architectural argument.');
-  }
-  L.push('');
-  L.push('## What I need from you');
-  L.push('1. Read the actual sources of the files above and their closest usages in the repo — do not rely on this summary alone.');
-  L.push('2. Give exactly one verdict: **APPROVE** / **APPROVE WITH DIFFERENT DESTINATION** (name it) / **REJECT**.');
-  L.push('3. Reject when ANY of these hold: the code has no domain cohesion with the destination; the names say it belongs elsewhere; the move only optimizes the dependency graph with no architectural story; the public API it forces is not one you would design.');
-  L.push('4. If rejecting, say where the code should live instead (existing module, new module + convention-matching name, or stay put) — or what should change first.');
-  L.push('5. Keep the rationale to a few sentences per point. Judge only — do not move anything.');
-  return L.join('\n');
-}
-
-// Review prompt for one composite-module split candidate: the spread says the
-// split pays; whether the unit boundary makes domain sense is the question.
-function qwSplitPrompt(s) {
-  const L = [];
-  L.push('# Architecture review: split module `' + s.label + '` — a low-level core may be trapped');
-  L.push('');
-  L.push('A dependency-graph tool found that the SPM module `' + s.module + '` sits at build level L'
-    + s.level + ', but part of it only needs L' + s.min_intrinsic + ' — one heavy unit pins the whole');
-  L.push('module (and every consumer waiting on it) at that height. Levels: L(module) = longest');
-  L.push('first-party dependency chain beneath it; L0 = depends on nothing first-party.');
-  L.push('');
-  L.push('## Units (immediate subfolders) and the level each needs on its own');
-  s.units.forEach(u => {
-    L.push('- `' + u.unit + '` — ' + u.types + ' type(s), intrinsic L' + u.intrinsic_level
-      + (s.low_units.includes(u.unit) ? '  ← split candidate' : ''));
-  });
-  L.push('');
-  L.push('## Why it pays');
-  L.push('- ' + s.releasable.length + ' of ' + s.consumers + ' consuming module(s) touch ONLY the low unit(s) — they could depend on the split-off module instead and drop from L' + s.level + ' to L' + (s.min_intrinsic + 1) + ' dependency height: '
-    + (s.releasable.length ? s.releasable.map(c => '`' + c + '`').join(', ') : '(none)'));
-  L.push('- Cost: ' + s.public_cost + ' type(s) the remaining units reference must flip internal → public'
-    + (s.public_sample.length ? ' (e.g. ' + s.public_sample.map(t => '`' + t + '`').join(', ') + ')' : '') + '.');
-  L.push('- The consumer count is an upper bound: the index attributes type references; runtime or non-type couplings may pin a consumer anyway.');
-  L.push('');
-  L.push('## What I need from you');
-  L.push('1. Read the unit sources and decide whether the low unit(s) form a coherent domain concept — not just a graph-convenient slice.');
-  L.push('2. Give exactly one verdict: **APPROVE SPLIT** (propose a convention-matching module name) / **ADJUST BOUNDARY** (say which files/types move differently) / **REJECT** (say why the module should stay whole).');
-  L.push('3. Check the forced-public types: is that an API you would design on purpose?');
-  L.push('4. Judge only — do not move anything yet.');
-  return L.join('\n');
-}
-
-// Composite-module split candidates (payload.module_splits) in the Quick wins
-// tab. One row per module; 📝 copies the split review prompt.
-function renderModuleSplits() {
-  const wrapEl = document.getElementById('qwSplitsWrap');
-  const listEl = document.getElementById('qwSplits');
-  if (!wrapEl || !listEl) return;
-  const items = moduleSplits.items || [];
-  if (!items.length) { wrapEl.style.display = 'none'; return; }
-  wrapEl.style.display = '';
-  wrapEl.querySelector('summary').textContent =
-    '🪓 Module splits (' + items.length + ') — low-level cores trapped in high modules';
-  listEl.innerHTML = items.slice(0, 30).map((s, i) => {
-    return '<div style="padding:3px 0;border-bottom:1px solid var(--border);">'
-      + '<b>' + escapeHtml(s.label) + '</b>'
-      + ' <span class="qw-chip" title="module level vs what its lowest unit needs — the trapped-core gap">L' + s.level + ' hides L' + s.min_intrinsic + '</span>'
-      + ' <span style="color:var(--text-dim);">low unit' + (s.low_units.length === 1 ? '' : 's') + ': '
-      + s.low_units.map(u => '<code>' + escapeHtml(u) + '</code>').join(', ') + '</span>'
-      + ' <span style="color:var(--text-faint);" title="consumers touching only the low units — they could retarget and drop their dependency height">frees '
-      + s.releasable.length + '/' + s.consumers + ' consumer(s)</span>'
-      + ' <span style="color:var(--text-faint);" title="low-unit types the remaining units reference — they must go public">'
-      + s.public_cost + ' public</span>'
-      + ' <button class="ghost" style="font-size:10px;padding:1px 7px;" data-sp="' + i + '" title="Copy the split review prompt">📝</button>'
-      + '</div>';
-  }).join('')
-  + (items.length > 30 ? '<div style="color:var(--text-faint);padding:4px;">…' + (items.length - 30) + ' more</div>' : '');
-  listEl.querySelectorAll('button[data-sp]').forEach(b => {
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      const s = items[Number(b.dataset.sp)];
-      navigator.clipboard.writeText(qwSplitPrompt(s)).then(() => {
-        b.textContent = '✓'; setTimeout(() => { b.textContent = '📝'; }, 1200);
-      });
-    };
-  });
-}
-
-// Misplaced-file suggestions (payload.file_moves) inside the Quick wins tab.
-// One row per move; 📋 copies a self-contained move prompt for an agent.
-function fileMovePrompt(m) {
-  return 'Move the file `' + m.file + '` from folder `' + m.from + '` to folder `'
-    + m.to + '` in this repository (git mv, keep history). '
-    + m.refs + ' of its type references bind to `' + m.to + '`'
-    + (m.symbols && m.symbols.length ? ' (e.g. ' + m.symbols.join(', ') + ')' : '')
-    + ', so it belongs there. Update any imports/target membership the move '
-    + 'requires, change nothing else, and verify the project still builds and '
-    + 'tests pass. If the move is semantically wrong (the file only *uses* that '
-    + 'folder heavily but belongs where it is), say so instead of moving it.';
-}
-
-function renderFileMoves() {
-  const wrapEl = document.getElementById('qwMovesWrap');
-  const movesEl = document.getElementById('qwMoves');
-  if (!wrapEl || !movesEl) return;
-  const moves = (fileMoves.items || []).filter(m =>
-    !migrated.has(m.from) && !excluded.has(m.from));
-  if (!moves.length) { wrapEl.style.display = 'none'; return; }
-  wrapEl.style.display = '';
-  wrapEl.querySelector('summary').textContent =
-    '📁 Misplaced files (' + moves.length + ') — smallest PRs first';
-  movesEl.innerHTML = moves.slice(0, 50).map((m, i) => {
-    const name = m.file.split('/').pop();
-    return '<div style="padding:3px 0;border-bottom:1px solid var(--border);">'
-      + '<code data-folder="' + escapeHtml(m.from) + '" title="' + escapeHtml(m.file) + '">' + escapeHtml(name) + '</code>'
-      + ' <span style="color:var(--text-faint);">' + escapeHtml(m.from) + '</span>'
-      + ' → <b>' + escapeHtml(m.to) + '</b>'
-      + ' <span style="color:var(--text-dim);">(' + m.refs + ' ref' + (m.refs === 1 ? '' : 's')
-      + (m.symbols && m.symbols.length ? ': ' + escapeHtml(m.symbols.slice(0, 3).join(', ')) : '') + ')</span>'
-      + ' <button class="ghost" style="font-size:10px;padding:1px 7px;" data-mv="' + i + '">📋</button>'
-      + '</div>';
-  }).join('')
-  + (moves.length > 50 ? '<div style="color:var(--text-faint);padding:4px;">…' + (moves.length - 50) + ' more</div>' : '');
-  movesEl.querySelectorAll('code[data-folder]').forEach(el => {
-    el.onclick = () => focusToFolder(el.dataset.folder);
-  });
-  movesEl.querySelectorAll('button[data-mv]').forEach(b => {
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      const m = moves[Number(b.dataset.mv)];
-      navigator.clipboard.writeText(fileMovePrompt(m)).then(() => {
-        b.textContent = '✓'; setTimeout(() => { b.textContent = '📋'; }, 1200);
-      });
-    };
-  });
-}
-
-// ── Advisor: the unified feed (payload.advice) ────────────────────────────────
-// All arbitration happened in Python (modgraph/advisor.py); this renders the
-// wave-ordered actions and links each one to the specialized view that
-// executes it. The stop line is the actions/deferred boundary.
-const ADV_WAVES = {
-  0: '📁 Wave 0 — Move misplaced files',
-  1: '⚡ Wave 1 — Extract what\'s ready',
-  2: '🔓 Wave 2 — Unblock and extract',
-  3: '🪓 Wave 3 — Module surgery',
-  4: '🫱 Wave 4 — Fold needless boundaries',
-};
-const ADV_REASON = {
-  tail: 'diminishing returns', blocked_cut: 'big cut first',
-  stabilize_api: 'no seam — narrow API', unused: 'verify usage',
-};
-
-// Fold prompt for a join action: the one advisor action with no detail view.
-function advisorJoinPrompt(a) {
-  return 'Fold the SPM module `' + a.subject + '` into `' + a.details.into
-    + '` in this repository. ' + a.why + ' Move its sources into the consumer '
-    + 'target, merge the Package.swift entries, drop `public` where nothing '
-    + 'external needs it anymore, and verify the project builds and tests '
-    + 'pass. If the module exists for a reason the dependency graph cannot '
-    + 'see (dynamic loading, app extensions, a license boundary), say so '
-    + 'instead of folding it.';
-}
-
-function advCopy(b, text, restore) {
-  navigator.clipboard.writeText(text).then(() => {
-    b.textContent = '✓ copied'; setTimeout(() => { b.textContent = restore; }, 1200);
-  });
-}
-
-function advActionButtons(a) {
-  const k = a.kind;
-  if (k === 'move_file') return '<button class="ghost" data-aa="move">📋 Move prompt</button>';
-  if (k === 'absorb' || k === 'new_module')
-    return '<button class="ghost" data-aa="preview">⚡ Preview</button>'
-         + '<button class="ghost" data-aa="review">📝 Review prompt</button>';
-  if (k === 'cut_then_extract')
-    return '<button class="ghost" data-aa="target">🎯 Plan path</button>'
-         + '<button class="ghost" data-aa="review">📝 Review prompt</button>';
-  if (k === 'split_module')
-    return (DATA.divisions && DATA.divisions[a.subject]
-            ? '<button class="ghost" data-aa="divide">✂️ Divide</button>' : '')
-         + ((moduleSplits.items || []).some(s => s.module === a.subject)
-            ? '<button class="ghost" data-aa="splitprompt">📝 Review prompt</button>' : '');
-  if (k === 'isolate_type')
-    return '<button class="ghost" data-aa="isolate">🎯 Isolate</button>';
-  if (k === 'join_module')
-    return '<button class="ghost" data-aa="join">📋 Fold prompt</button>';
-  return '';
-}
-
-function advRowHtml(a, idx) {
-  const chips = [];
-  if (a.roi != null) chips.push('<span class="qw-chip" title="payoff ' + a.payoff + ' ÷ effort ' + a.effort + '">roi ' + a.roi + '</span>');
-  else chips.push('<span class="qw-chip">payoff ' + a.payoff + ' · effort ' + a.effort + '</span>');
-  if (a.after && a.after.length) chips.push('<span class="qw-chip" title="do after: ' + escapeHtml(a.after.join(', ')) + '">after ' + a.after.length + ' move(s)</span>');
-  if (a.unblocks && a.unblocks.length) chips.push('<span class="qw-chip" title="folders this move unblocks for extraction">unblocks ' + escapeHtml(a.unblocks.join(', ')) + '</span>');
-  // Clicking a row focuses its subject in the tree; file rows focus the folder.
-  const focusId = a.kind === 'move_file' ? (a.details.src || a.subject) : a.subject;
-  const alt = a.details && a.details.alternative
-    ? '<div class="small" style="color:var(--text-faint);">↔ ' + escapeHtml(a.details.alternative) + '</div>' : '';
-  return '<li class="reco-row" data-adv="' + idx + '" data-focus="' + escapeHtml(focusId) + '">'
-    + '<div><b>' + escapeHtml(a.title) + '</b> ' + chips.join(' ') + '</div>'
-    + '<div class="small" style="color:var(--text-dim);">' + escapeHtml(a.why) + '</div>'
-    + alt
-    + '<div class="step-actions">' + advActionButtons(a) + '</div>'
-    + '</li>';
-}
-
-function renderAdvisor() {
-  const ul = document.getElementById('advList');
-  if (!ul) return;
-  const sum = advice.summary || {};
-  // Hide rows whose subject the user already migrated/excluded this session.
-  const live = (advice.actions || []).filter(a =>
-    !migrated.has(a.subject) && !excluded.has(a.subject));
-  document.getElementById('advSummary').innerHTML = live.length
-    ? '<div><b>' + live.length + '</b> action(s) in <b>'
-      + new Set(live.map(a => a.wave)).size + '</b> wave(s) · <b>'
-      + (sum.deferred || 0) + '</b> deferred below the stop line</div>'
-      + '<div class="small" style="margin-top:4px;color:var(--text-dim)">Waves respect dependencies; within a wave, best payoff-per-effort first.</div>'
-    : '<div>' + escapeHtml(sum.stop || 'No advice in this payload — regenerate with the current tool version (index path).') + '</div>';
-  let lastWave = null;
-  ul.innerHTML = live.map((a, i) => {
-    const head = a.wave !== lastWave
-      ? '<li class="small" style="list-style:none;margin:10px 0 2px;font-weight:700;color:var(--text-dim);">' + (ADV_WAVES[a.wave] || ('Wave ' + a.wave)) + '</li>'
-      : '';
-    lastWave = a.wave;
-    return head + advRowHtml(a, i);
-  }).join('');
-  const stopEl = document.getElementById('advStop');
-  if (live.length) {
-    stopEl.style.display = '';
-    stopEl.innerHTML = '<div style="margin:12px 0 6px;padding:7px 10px;border:1px dashed var(--border);border-radius:6px;color:var(--text-dim);font-size:12px;">🛑 <b>Stop line.</b> ' + escapeHtml(sum.stop || '') + '</div>';
-  } else stopEl.style.display = 'none';
-  const wrapEl = document.getElementById('advDeferredWrap');
-  const defEl = document.getElementById('advDeferred');
-  const ds = advice.deferred || [];
-  if (!ds.length) { wrapEl.style.display = 'none'; } else {
-    wrapEl.style.display = '';
-    wrapEl.querySelector('summary').textContent =
-      '🗂 Deferred (' + ds.length + ') — looked at, set aside, with reasons';
-    defEl.innerHTML = ds.map(d =>
-      '<div style="padding:3px 0;border-bottom:1px solid var(--border);">'
-      + '<b>' + escapeHtml(d.title) + '</b>'
-      + ' <span class="qw-chip">' + escapeHtml(ADV_REASON[d.reason] || d.reason) + '</span>'
-      + ' <span style="color:var(--text-faint);">' + escapeHtml(d.why) + '</span></div>').join('');
-  }
-  ul.querySelectorAll('.reco-row[data-adv]').forEach(li => {
-    li.onclick = () => focusToFolder(li.getAttribute('data-focus'));
-  });
-  ul.querySelectorAll('.step-actions button').forEach(b => {
-    b.onclick = (ev) => {
-      ev.stopPropagation();
-      const a = live[Number(b.closest('[data-adv]').dataset.adv)];
-      const act = b.dataset.aa;
-      if (act === 'preview') openMigPreview([a.subject], '🧠');
-      else if (act === 'target') setTarget(a.subject);
-      else if (act === 'divide') openDivide(a.subject);
-      else if (act === 'isolate') openIsolate(a.subject);
-      else if (act === 'review') {
-        const it = (quickWins.items || []).find(i => i.folder === a.subject);
-        if (it) advCopy(b, qwReviewPrompt(it), '📝 Review prompt');
-      } else if (act === 'splitprompt') {
-        const sp = (moduleSplits.items || []).find(x => x.module === a.subject);
-        if (sp) advCopy(b, qwSplitPrompt(sp), '📝 Review prompt');
-      } else if (act === 'move') {
-        const m = (fileMoves.items || []).find(x => x.file === a.subject);
-        advCopy(b, m ? fileMovePrompt(m) : a.why, '📋 Move prompt');
-      } else if (act === 'join') advCopy(b, advisorJoinPrompt(a), '📋 Fold prompt');
-    };
-  });
-}
-
-(function () {
-  const qf = document.getElementById('qwFilter');
-  if (qf) qf.oninput = () => renderQuickWins();
-})();
 
 // ── Build mode → Improvements: build-cost history over time ──────────────────
 // All client-side off the precomputed `history` payload. Structural metrics are
@@ -4867,6 +4414,7 @@ function labelForTarget(id) {
 }
 
 function renderWizard() {
+  renderSetupChecklist();
   // 1. Source
   const srcEl = document.getElementById('wizSource');
   if (!srcEl) return;
@@ -6045,39 +5593,6 @@ document.getElementById('wizCompute').onclick = () => {
   renderWizardPlan();
 };
 
-// Empty-plan placeholder shown until the wizard has been run. The plan is
-// intentionally NOT auto-generated from the global graph — the user must
-// declare source/targets/per-folder destinations in the wizard so the plan
-// reflects THEIR intent (and respects migrated/excluded/blocked sets).
-function renderEmptyPlan() {
-  document.getElementById('targetBanner').style.display = 'none';
-  document.getElementById('planFilter').style.display = 'none';
-  document.getElementById('stuckDetails').style.display = 'none';
-  document.getElementById('planListHeading').textContent = 'Recommended order';
-  const planList = document.getElementById('planList');
-  if (planList) planList.innerHTML = '';
-  const rec = document.getElementById('recCard');
-  rec.innerHTML =
-    '<h3>🧭 No plan yet</h3>' +
-    '<div class="info">' +
-      'Run the <b>Migration wizard</b> to generate a plan. ' +
-      'The wizard asks where code is moving from and to, then orders the ' +
-      'steps so each folder\'s dependencies are migrated first. ' +
-      'It already respects <b>migrated</b>, <b>won\'t-modularize</b>, and ' +
-      '<b>can\'t-modularize</b> sets, and prefers the <b>most-used</b> ' +
-      'folders inside each eligible wave.' +
-    '</div>' +
-    '<div class="card-actions">' +
-      '<button id="emptyPlanGoWizard">🧭 Open wizard</button>' +
-    '</div>';
-  const btn = document.getElementById('emptyPlanGoWizard');
-  if (btn) btn.onclick = () => switchTab('wizard');
-  // Apply Full Plan / Reset are no-ops without a plan — hide their row.
-  const globalActions = document.querySelector('#panel-plan .rec-global-actions');
-  if (globalActions) globalActions.style.display = 'none';
-  updateMigrationCounts();
-}
-
 // ── Runway computation: pin a seed folder as "next migrated", then forward-cascade
 // until something locks (cycle bundle or eligible set empties). Reuses the same
 // SCC condensation + inbound-weight tiebreak as the global plan.
@@ -6389,13 +5904,11 @@ function renderRunway() {
   }
 }
 
-// Patch renderPlan: target-driven (drill from a node) keeps original behavior;
-// otherwise the plan is wizard-driven. No global "Start here" is ever shown.
+// Patch renderPlan: node-driven views (runway / 🎯 target) and a computed
+// wizard plan take precedence; the default landing is the master-plan feed.
 const _origRenderPlan = renderPlan;
 renderPlan = function() {
   if (runwaySeed) { renderRunway(); return; }
-  // Target-driven plan (clicked "🎯 Plan to move" on a node) still uses the
-  // original render — it's an explicit user intent, not the default landing.
   if (migrationTarget) { _origRenderPlan(); return; }
   const globalActions = document.querySelector('#panel-plan .rec-global-actions');
   if (currentMode === 'migration' && wizPlan) {
@@ -6403,7 +5916,7 @@ renderPlan = function() {
     renderWizardPlan();
     return;
   }
-  renderEmptyPlan();
+  renderMasterFeed();
 };
 
 // Restore the plan exactly as last computed. Prefer the persisted plan verbatim

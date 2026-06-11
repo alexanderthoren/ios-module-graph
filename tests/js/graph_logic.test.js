@@ -256,3 +256,84 @@ test('resourcesUnder: empty/missing map yields empty list', () => {
   assert.deepStrictEqual(resourcesUnder({}, 'Core'), []);
   assert.deepStrictEqual(resourcesUnder(undefined, 'Core'), []);
 });
+
+// ── masterStepPrompt ──────────────────────────────────────────────────────────
+const { masterStepPrompt } = require('../../modgraph/templates/graph_logic.js');
+
+function apiImplStep(extra) {
+  return Object.assign({
+    id: 'qw:Feat', kind: 'new_module', phase: 1, subject: 'Feat',
+    title: 'Extract Feat as a new module',
+    shape: {
+      mode: 'api_impl', rule: '2 consumer module(s)',
+      api_module: 'FeatAPI', impl_module: 'Feat', destination: null,
+      consumers: 2, api_surface_count: 2,
+      api_surface: ['FeatModel', 'FeatVM'], protocols_for: ['FeatVM'],
+    },
+    what: { files: 3, types: 3, resources_count: 1, resources: ['Feat.xcassets'] },
+    why: { narrative: 'Extractable today.', roi: 1.0, payoff: 40, effort: 10 },
+    after: [], unblocks: [], details: {},
+    verify: { commands: ['just refresh'], expect: { modules: '2 → 4' } },
+  }, extra || {});
+}
+
+test('masterStepPrompt api_impl names both packages and the surface', () => {
+  const p = masterStepPrompt(apiImplStep(), { files: ['A.swift', 'B.swift'] });
+  assert.match(p, /FeatAPI/);
+  assert.match(p, /`Feat`/);
+  assert.match(p, /`FeatModel`/);                      // value type moves whole
+  assert.match(p, /protocol in `FeatAPI` mirroring/);  // class gets a protocol
+  assert.match(p, /composition root/);
+  assert.match(p, /behavior-preserving/);
+  assert.match(p, /Bundle\.module/);                   // resources move along
+  assert.match(p, /A\.swift/);
+  assert.match(p, /just refresh/);
+  assert.match(p, /modules: 2 → 4/);
+});
+
+test('masterStepPrompt cut_then_extract lists the cut first', () => {
+  const s = apiImplStep({ kind: 'cut_then_extract' });
+  const p = masterStepPrompt(s, {
+    files: [], cut: { total_refs: 6, edges: [
+      { dst: 'Other', refs: 6, fix: 'invert', evidence: ['T3'] }] },
+  });
+  assert.match(p, /cut the 6 blocking reference/);
+  assert.match(p, /fix: invert/);
+  assert.ok(p.indexOf('blocking reference') < p.indexOf('API/implementation'));
+});
+
+test('masterStepPrompt move_file is a git mv instruction', () => {
+  const p = masterStepPrompt({
+    id: 'move:B/F.swift', kind: 'move_file', subject: 'B/F.swift',
+    title: 'Move F.swift → X/',
+    shape: { mode: 'move_file', rule: 'reference affinity', destination: 'X' },
+    what: { files: 1 }, why: { narrative: '4 of its references bind to X.' },
+    details: { src: 'B', dst: 'X' },
+    verify: { commands: [], expect: {} },
+  }, { move: { file: 'B/F.swift', to: 'X', symbols: ['T1'] } });
+  assert.match(p, /git mv B\/F\.swift X\//);
+  assert.match(p, /T1/);
+});
+
+test('masterStepPrompt join folds into the consumer', () => {
+  const p = masterStepPrompt({
+    id: 'join:Q', kind: 'join_module', subject: 'Q',
+    title: 'Fold Q into P',
+    shape: { mode: 'join', rule: 'boundary without benefit', destination: 'P' },
+    what: { types: 4 }, why: { narrative: 'Only P depends on it.' },
+    verify: { commands: [], expect: {} },
+  }, {});
+  assert.match(p, /into `P`/);
+  assert.match(p, /Package\.swift/);
+  assert.match(p, /dynamic loading/);                  // the escape hatch stays
+});
+
+test('masterStepPrompt single_module skips the API split', () => {
+  const s = apiImplStep();
+  s.shape = { mode: 'single_module', rule: 'one consumer', impl_module: 'Feat',
+              api_module: null, api_surface: [], protocols_for: [],
+              api_surface_count: 0, destination: null };
+  const p = masterStepPrompt(s, { files: [] });
+  assert.match(p, /single|No API split/i);
+  assert.ok(!/composition root/.test(p));
+});
