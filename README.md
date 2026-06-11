@@ -115,7 +115,7 @@ just tree project_dir=/other/App workspace=Other.xcworkspace scheme=Other
 A toggle at the top switches the whole UI between three modes:
 
 - **🔍 Explore** — understand the codebase. Every folder is neutral-colored; migration state is hidden so it doesn't get in the way. Already-SPM folders stay in scope so you can see SPM-to-SPM coupling.
-- **🧭 Migration** — plan and execute the split. Adds a **Setup** wizard, a **Plan** tab, a **⚡ Quick wins** tab, and per-node migration state (leaf / blocked / migrated / won't-modularize).
+- **🧭 Migration** — plan and execute the split. Adds a **🧠 Advisor** tab (the front door: one unified plan), a **Setup** wizard, a **Plan** tab, a **⚡ Quick wins** tab, and per-node migration state (leaf / blocked / migrated / won't-modularize).
 - **🏗️ Build** — find build-time wins. Forgets folders and shows the real compile units (SPM targets + the app target) with warm/cold cost lenses, a split-payoff ranking, and a build-cost history. See *Build mode* below.
 
 Tools available while exploring or planning:
@@ -126,11 +126,49 @@ Tools available while exploring or planning:
 - **🤖 Prompt generators** — once a step is scoped, generate a ready-to-paste **Claude prompt**:
   - *migration prompt* — describes every move in the step (including relocating tests into the new module's test target).
   - *investigation prompt* — when you don't yet know the destination, asks Claude to inspect the repo (with dependency context attached) and recommend the package, module name, and approach first.
+- **🧠 Advisor** — the unified feed. Every engine below (file moves, quick wins, isolations, splits, joins) feeds **one** wave-ordered plan with **one decision per subject** and an explicit **stop line** — see *The Advisor* below.
+- **🎯 Isolate hot type** — hover a module and pull its single most-referenced type into its own sub-module. The analysis ranks every declared type by external + internal reference mass, shows the **drag closure** (in-module types it transitively uses, which must move with it), the distinct build modules the extraction would **free**, the new module's public surface, and an ROI (external mass freed over module size). The companion to Divide: Divide splits along folder seams, Isolate cuts along type seams.
 - **⚡ Quick wins** — every in-scope folder ranked by **ROI**: payoff (warm blast radius = unblocking power, cold critical-path contribution, weighted by git churn) over effort (files + refs to refactor + types going `public`). Rows extractable **today** carry the auto-picked **absorb-into-existing-module** destination (folding into an existing SPM module is the default outcome; a new target the exception). Blocked rows expand to the exact references to sever, each classified with a suggested fix — *move file*, *push the shared type down*, or *invert with a protocol*. A **Misplaced files** section on top lists single-file moves (the smallest PRs of all) that dissolve fake folder coupling, with a copy-paste agent prompt each. The plan list shows the same signals as 🌊 wave (parallelizable cohort) and ⚡ ROI badges per step.
 - **🏗 Level-aware destinations** — the absorb auto-pick respects build layering, not just reference counts. A destination is **vetoed** when absorbing would *raise its build level* (the folder depends on a module at or above it — feature code must not drag a low-level module upward) or when it's *churn-hostile* (a hot folder into a widely-depended-on module makes every consumer pay the churn on warm rebuilds). Vetoes are hard but auditable: each row lists the rejected candidates with reason and evidence, so overriding is a deliberate act. Every row also carries a 🏗 **lands L*y*** badge: today the code compiles inside the app target — the *top* of the build graph — and every extraction moves it down; the badge says how far it gets (the destination's level for absorbs, its own-module landing otherwise) and which dependency **pins** its floor ("pinned by Containers" means it can't land lower until that reference is cut or that module is split). Blocked rows get the projection too: "fix the cut-set and this lands at L1" is the motivation for the cut. ROI ties rank lower landings first — same payoff-per-effort, but one builds the foundation.
 - **🪓 Module splits** — existing SPM modules whose **level spread** says a low-level core is trapped inside: the module sits at L5 because one unit imports a heavy SDK, while its other units would be L0 on their own. The section lists each module's units with their *intrinsic level*, which consumers touch only the low units (they could retarget and drop their dependency height), and the public-API cost of the split.
 - **📝 Review prompts** — every quick-win row and split candidate has a copy-paste **architecture-review prompt**: all the graph evidence (cut-set, files, levels, churn, destination rationale, vetoed alternatives) addressed to a reviewer — human or Claude — whose job is the one thing the graph can't see: domain cohesion and naming. **REJECT is a first-class verdict**; the tool never modularizes for its own sake.
 - **✂️ Divide into modules** — hover any folder big enough to split and hit **Divide**. It treats the folder's immediate subfolders as candidate sub-modules and shows a **public-API cost** table (how many types each sub-module would expose as `public`) and an **SCC-aware extraction order**. Each step has a **📊 Visualize** before/after graph and a **📋 Copy prompt** button that builds a ready-to-paste Claude prompt for that step. See *Divide a module* below.
+
+---
+
+## 🧠 The Advisor
+
+The analyses below are each right in their own lane — but six competing surfaces
+don't answer the only questions a modularization actually runs on: **what do I do
+next, in what order, and when do I stop?** The Advisor tab is the arbiter. It
+merges every stream into one plan:
+
+- **Waves** — actions sequenced by dependency, not by which engine found them:
+  *misplaced-file moves* first (smallest PRs, dissolve fake coupling), *ready
+  extractions* second, *extractions unblocked by those very moves* third (each
+  row cross-linked `after` the moves that free it), *module surgery* fourth,
+  *boundary-folding joins* last.
+- **One decision per subject** — when a module split, a type isolation, and a
+  division plan all target the same module, the Advisor picks one (a trapped
+  low-level core → split; one type carrying most of the external fan-in →
+  isolate; otherwise the division plan) and records the runner-up as an
+  ↔ *alternative* on the row instead of letting tabs compete.
+- **Joins** — the inverse operation: a tiny SPM module with exactly one SPM
+  consumer is a boundary without benefit, so the Advisor suggests folding it
+  into its consumer (with a copy-paste prompt). Modularization is *done* when
+  neither direction pays.
+- **The stop line 🛑** — actions whose payoff falls under a fraction of their
+  kind's best are **deferred with a reason** (diminishing returns, cut too big,
+  no seam to split on, drag closure too heavy), shown collapsed under the line.
+  The feed ends where effort stops paying — that is the answer to "when do I
+  stop", and it's auditable: every deferred row says why, and the detailed tabs
+  still show everything.
+
+Each action row links to the view that executes it — ⚡ Preview, 🎯 Plan path,
+✂️ Divide, 🎯 Isolate — or carries a copy-paste agent prompt (file moves, folds)
+and the 📝 architecture-review prompt where domain judgment is needed. All
+arbitration happens in Python (`modgraph/advisor.py`, deterministic); the tab
+only renders.
 
 ---
 
