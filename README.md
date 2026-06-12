@@ -185,12 +185,19 @@ Every step carries:
   `api_impl` pair (≥2 current-or-future consumer modules, churn-hot with a
   wide warm blast, or on the cold critical path), a `single_module` (one
   consumer — an API split here is a boundary the join phase would later fold),
-  or the auto-picked `absorb` destination. API surface and which classes get
-  protocols come from the USR-resolved type graph.
+  the auto-picked `absorb` destination, an `api_retrofit` (an existing
+  multi-consumer module gains the API package it is missing), or a
+  `partition` (an existing module split along its **usage seams** — one slice
+  per consumer cohort plus a shared core, computed from per-consumer drag
+  closures over the type graph, never from folders). API surface and which
+  classes get protocols come from the USR-resolved type graph.
 - **Why** — the payoff in build terms: ROI, churn, critical-path membership,
-  and **simulated post-step deltas** (the move is replayed over the module
-  graph: module count, critical-path length, estimated compile work leaving
-  the app target when measured times exist).
+  and **cumulative simulated deltas**: the whole plan is replayed move by
+  move (extractions, API rewires, retrofits, joins), so step N's numbers
+  assume steps 1…N−1 already shipped. Every state is priced by one cost
+  model — churn-weighted warm rebuild cost + the work-weighted cold chain —
+  and the plan ships its **trajectory** (where each step takes the graph)
+  plus the projected end state.
 - **Verify** — the commands to run after the PR (`just refresh`, the CI
   ratchet, a periodic cold build) and the metric movement to expect, so every
   step closes its own loop in the Improvements history.
@@ -204,6 +211,15 @@ collapsed under the line. All arbitration and shaping happens in Python
 (`modgraph/advisor.py` + `modgraph/master_plan.py`, deterministic); the tab
 only renders. `migration_plan.md` (`just list`) is the same plan as a file, so
 the CLI and the UI never disagree.
+
+The plan is **validated against alternatives**, not asserted:
+`python3 -m modgraph.evaluate <root> <index_graph.json>` replays the master
+plan, a no-API ablation (same steps, API decisions stripped), and the classic
+bottom-up extract-everything plan through the same simulator and cost model.
+On both reference projects the ablations *worsen* warm builds — extracting
+modules without API firewalls raises the churn-weighted rebuild bill above
+the unmodularized baseline — which is exactly the "we modularized and builds
+got slower" failure the shape decisions exist to prevent.
 
 ---
 
