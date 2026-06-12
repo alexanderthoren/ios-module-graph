@@ -19,7 +19,8 @@ from .module_graph import compute_module_graph
 from .module_splits import compute_module_splits
 from .file_affinity import compute_file_moves
 from .master_plan import compute_master_plan
-from .isolate import compute_isolations
+from .isolate import compute_isolations, isolatable_modules
+from .partition import compute_partitions
 from .quick_wins import compute_quick_wins
 from .render import render_html
 from .resources import collect_resources
@@ -345,6 +346,21 @@ def main() -> int:
           f"{msum['crit_len']} deep, max parallel width {msum['max_width']}, "
           f"{msum['n_cycles']} module cycle(s)")
 
+    # Usage-cohort partitions: per real compile unit, split-by-how-it-is-used
+    # (consumer drag closures + shared core), priced against the module graph.
+    # Index path only (needs type_edges); no_seam verdicts are kept — their
+    # blockers are the actionable output.
+    partitions: dict[str, dict] = {}
+    if resolved_pair_types is not None and type_edges:
+        partitions = compute_partitions(
+            isolatable_modules(decls, migrated_prefixes), type_edges,
+            type_kinds, migrated_prefixes, module_graph,
+        )
+        n_ok = sum(1 for p in partitions.values() if p["verdict"] == "ok")
+        if partitions:
+            print(f"Partitions:        {n_ok} module(s) with a usage seam, "
+                  f"{len(partitions) - n_ok} blocked (no seam — hubs listed)")
+
     # Rank modules by the build-time payoff of separating them (links dividable
     # ones to the precomputed division plans). Computed after divisions so it can
     # flag which modules have an auto-split plan.
@@ -428,6 +444,7 @@ def main() -> int:
         leaf_edges=leaf_edges, migrated_prefixes=migrated_prefixes,
         decls=decls, resources=resources, history=history,
         excluded_count=len(excluded), churn_commits=churn_commits,
+        partitions=partitions,
     )
     msum_plan = master_plan["summary"]
     print(f"Master plan:       {msum_plan['actions']} step(s) in "
@@ -458,7 +475,7 @@ def main() -> int:
             recommendations=recommendations, history=history,
             resources=resources, quick_wins=quick_wins, file_moves=file_moves,
             module_splits=module_splits, isolations=isolations,
-            master_plan=master_plan,
+            master_plan=master_plan, partitions=partitions,
         )
         print(f"\nWrote graph: {graph_path}")
 

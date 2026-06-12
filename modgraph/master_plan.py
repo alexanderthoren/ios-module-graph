@@ -543,7 +543,8 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
                         resources: dict | None = None,
                         history: list | None = None,
                         excluded_count: int = 0,
-                        churn_commits=None) -> dict:
+                        churn_commits=None,
+                        partitions: dict[str, dict] | None = None) -> dict:
     """Return ``{"setup", "steps", "deferred", "trajectory", "equilibrium",
     "summary"}``.
 
@@ -553,7 +554,8 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
     All keyword inputs are optional and degrade exactly like their producers.
     """
     advice = compute_advice(quick_wins, file_moves, isolations,
-                            module_splits, recommendations, module_graph)
+                            module_splits, recommendations, module_graph,
+                            partitions)
     leaf_edges = leaf_edges or {}
     prefixes = migrated_prefixes or []
     qw_by_folder = {i["folder"]: i for i in (quick_wins or {}).get("items", [])}
@@ -697,6 +699,43 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
                 "consumers": f"{top.get('ext_modules', 0)} module(s) drop the "
                              f"dependency on {subject}",
             })
+        elif kind == "partition_module":
+            part = (partitions or {}).get(subject, {})
+            n = nodes_by_id.get(subject, {})
+            sim_p = part.get("sim") or {}
+            step["shape"] = {
+                "mode": "partition",
+                "rule": f"usage-cohort seam: {len(part.get('parts', []))} "
+                        f"disjoint consumer slice(s), core "
+                        f"{part.get('core', {}).get('share_pct', 0)}%",
+                "destination": None,
+                "api_module": None,
+                "impl_module": n.get("label", subject),
+                "consumers": part.get("summary", {}).get("consumers"),
+                "api_surface_count": sum(p["public"]
+                                         for p in part.get("parts", [])),
+                "api_surface": [], "protocols_for": [],
+            }
+            step["what"] = {"files": 0,
+                            "types": part.get("type_total",
+                                              n.get("types", 0)),
+                            "resources_count": 0, "resources": []}
+            step["why"].update({"warm": n.get("warm"), "crit": n.get("crit"),
+                                "churn": n.get("churn")})
+            step["details"]["parts"] = part.get("parts", [])
+            step["details"]["core"] = part.get("core")
+            expect = {"modules": sim_p.get("modules",
+                                           "+N (parts + core; not simulated "
+                                           "— type-level move)")}
+            if sim_p.get("warm_cost"):
+                expect["warm_cost"] = (f"{sim_p['warm_cost']} "
+                                       f"{sim_p.get('unit', 'types')}-unit(s) "
+                                       f"(partition sim)")
+            if sim_p.get("cold_cost"):
+                expect["cold_chain"] = (f"{sim_p['cold_cost']} "
+                                        f"{sim_p.get('unit', 'types')}-unit(s) "
+                                        f"(partition sim)")
+            step["verify"] = _verify_block(expect)
         elif kind == "split_module":
             n = nodes_by_id.get(subject, {})
             step["shape"] = {"mode": "split", "rule": a["why"],

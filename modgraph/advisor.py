@@ -92,7 +92,8 @@ def _cut_mix(cut_edges: list[dict]) -> str:
 
 def compute_advice(quick_wins: dict, file_moves: dict,
                    isolations: dict[str, dict], module_splits: dict,
-                   recommendations: dict, module_graph: dict) -> dict:
+                   recommendations: dict, module_graph: dict,
+                   partitions: dict[str, dict] | None = None) -> dict:
     """Return ``{"actions": [...], "deferred": [...], "summary": {...}}``.
 
     ``actions`` is the ordered do-this-next feed (wave-major, see module doc);
@@ -104,6 +105,7 @@ def compute_advice(quick_wins: dict, file_moves: dict,
     qw_items = (quick_wins or {}).get("items", [])
     fm_items = (file_moves or {}).get("items", [])
     isolations = isolations or {}
+    partitions = partitions or {}
     ms_items = (module_splits or {}).get("items", [])
     reco_items = (recommendations or {}).get("items", [])
     nodes = (module_graph or {}).get("nodes", [])
@@ -233,7 +235,7 @@ def compute_advice(quick_wins: dict, file_moves: dict,
         direct_deps[e["to"]].add(e["from"])
     reco_by_id = {r["id"]: r for r in reco_items}
     split_by_id = {s["module"]: s for s in ms_items}
-    subjects = sorted((set(split_by_id) | set(isolations) |
+    subjects = sorted((set(split_by_id) | set(isolations) | set(partitions) |
                        {r["id"] for r in reco_items if r["kind"] == "spm"})
                       - {APP_ID})
     max_leverage = max(((r.get("hot") if r.get("hot") is not None
@@ -321,6 +323,34 @@ def compute_advice(quick_wins: dict, file_moves: dict,
         elif iso and iso["summary"]["top_share"] >= ADVISOR_ISOLATE_SHARE:
             _iso_or_defer(mid, iso, leverage,
                           float(iso["candidates"][0]["roi"]))
+        elif (part := partitions.get(mid)) and part["verdict"] == "ok" \
+                and leverage >= surgery_tail:
+            # Usage-cohort partition: split along how consumers actually use
+            # the module, priced against the module graph. Preferred over the
+            # folder-based division — folders are a proxy, closures are not.
+            sim = part.get("sim") or {}
+            freed = sum(p["ext_refs"] for p in part["parts"])
+            pub = sum(p["public"] for p in part["parts"])
+            n_parts = len(part["parts"])
+            why = (f"{part['summary']['consumers']} consumer boundar(ies) "
+                   f"pull {n_parts} disjoint slice(s) "
+                   f"({freed} external ref(s)); the shared core keeps "
+                   f"{part['core']['share_pct']}% of the module.")
+            if sim.get("warm_delta") is not None:
+                why += (f" Simulated churn-weighted rebuild "
+                        f"{sim['warm_cost']} {sim.get('unit', 'types')}-units.")
+            a = _action(
+                f"mod:{mid}", "partition_module", 3, mid,
+                f"Partition {label} into {n_parts} usage slice(s) + core",
+                why, payoff=float(freed), effort=float(pub), roi=None,
+                module=mid, parts=n_parts)
+            if iso:
+                top = iso["candidates"][0]
+                a["details"]["alternative"] = (
+                    f"or isolate {top['type']} "
+                    f"({iso['summary']['top_share']}% of external fan-in)")
+            wave3.append((leverage, float(freed), mid, a))
+            surgery_modules.add(mid)
         elif reco and reco.get("dividable") and leverage >= surgery_tail:
             a = _action(
                 f"mod:{mid}", "split_module", 3, mid,
@@ -343,12 +373,23 @@ def compute_advice(quick_wins: dict, file_moves: dict,
             _iso_or_defer(mid, iso, leverage,
                           float(iso["candidates"][0]["roi"]))
         elif reco and leverage >= surgery_tail:
-            deferred.append(_deferred(
-                f"mod:{mid}", "stabilize_api", mid,
-                f"Narrow {label}'s public API", "stabilize_api",
-                f"Editing it recompiles {reco['dependents']} module(s) but "
-                f"there is no sub-folder seam to split on — shrink and "
-                f"freeze its public interface instead."))
+            part = partitions.get(mid)
+            if part and part["verdict"] == "no_seam" and part["blockers"]:
+                hubs = ", ".join(b["type"] for b in part["blockers"][:3])
+                deferred.append(_deferred(
+                    f"mod:{mid}", "partition_module", mid,
+                    f"Partition {label}", "no_seam",
+                    f"Editing it recompiles {reco['dependents']} module(s), "
+                    f"but {part['summary']['reason']} — no usage seam yet. "
+                    f"Blocking hub(s): {hubs}. Isolate or invert them first "
+                    f"to create the seam."))
+            else:
+                deferred.append(_deferred(
+                    f"mod:{mid}", "stabilize_api", mid,
+                    f"Narrow {label}'s public API", "stabilize_api",
+                    f"Editing it recompiles {reco['dependents']} module(s) "
+                    f"but there is no sub-folder seam to split on — shrink "
+                    f"and freeze its public interface instead."))
         else:
             ignored_tail += 1
 

@@ -109,6 +109,19 @@ EQ_APP_SHARE_PCT = 20
 EQ_WARM_MAX_PCT = 30
 EQ_PAR_EFF_PCT = 70
 
+# Usage-cohort partition (modgraph/partition.py): split ONE module along how
+# it is consumed (per-consumer drag closures), not along its folders.
+# - MIN_PART_TYPES: an exclusive slice smaller than this folds back into the
+#   rump — a module boundary that tiny frees nobody.
+# - CORE_MAX_PCT: when the shared core holds more than this % of the module,
+#   there is no usage seam; the verdict flips to no_seam and the blocking hub
+#   types are reported instead of a fake plan.
+# - SAMPLE/BLOCKER_SAMPLE: type names shipped per part / blockers listed.
+PARTITION_MIN_PART_TYPES = 3
+PARTITION_CORE_MAX_PCT = 60
+PARTITION_SAMPLE = 8
+PARTITION_BLOCKER_SAMPLE = 6
+
 DECL_RE = re.compile(
     r"\b(?:class|struct|enum|protocol|actor|typealias)\s+([A-Z][A-Za-z0-9_]*)"
 )

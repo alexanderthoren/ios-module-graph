@@ -37,6 +37,9 @@ def _shape_line(step: dict) -> str:
                 f"`{sh.get('impl_module')}`")
     elif mode == "split":
         body = "split along the unit boundaries (see the Divide view)"
+    elif mode == "partition":
+        body = (f"split `{sh.get('impl_module')}` along its usage seams — "
+                f"one slice per consumer cohort + a shared core")
     elif mode == "join":
         body = f"fold into `{sh.get('destination')}`"
     else:
@@ -91,6 +94,17 @@ def _step_lines(num: int, step: dict) -> list[str]:
         if sh.get("protocols_for"):
             lines.append("  - protocols for (reference types with behavior): "
                          + ", ".join(f"`{t}`" for t in sh["protocols_for"]))
+    parts = (step.get("details") or {}).get("parts") or []
+    if parts:
+        core = (step.get("details") or {}).get("core") or {}
+        lines.append(f"- **Slices** (+ shared core of {core.get('types', 0)} "
+                     f"type(s), {core.get('share_pct', 0)}%):")
+        for p in parts:
+            sample = ", ".join(f"`{t}`" for t in p.get("type_sample", [])[:4])
+            lines.append(f"  - serves {', '.join(p.get('consumers', []))} — "
+                         f"{p['types']} type(s), {p['public']} public, "
+                         f"{p['ext_refs']} external ref(s)"
+                         + (f" ({sample}, …)" if sample else ""))
     if step.get("after"):
         lines.append("- **After:** " + ", ".join(f"`{a}`" for a in step["after"]))
     if step.get("unblocks"):

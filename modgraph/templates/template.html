@@ -2147,6 +2147,7 @@ const SHAPE_BADGE = {
   api_impl: '🧩 API + impl', single_module: '📦 single module',
   absorb: '🧲 absorb', move_file: '📁 file move', isolate: '🎯 isolate',
   split: '✂️ split', join: '🫱 fold', api_retrofit: '🛡️ API retrofit',
+  partition: '🧬 usage partition',
 };
 const EXTRACT_KINDS = new Set(['absorb', 'new_module', 'cut_then_extract']);
 const PLANDONE_KEY = 'modgraph-plandone::' + (DATA.root_path || '');
@@ -2239,6 +2240,13 @@ function masterStepHtml(s) {
       + escapeHtml(sh.impl_module || '') + '</b> (no API split — see the shape badge for why)</div>';
   } else if (sh.mode === 'absorb' || sh.mode === 'join') {
     shapeLine = '<div class="small">→ into <b>' + escapeHtml(sh.destination || '') + '</b></div>';
+  } else if (sh.mode === 'partition') {
+    const parts = (s.details && s.details.parts) || [];
+    const core = (s.details && s.details.core) || {};
+    shapeLine = '<div class="small">→ ' + parts.map(p =>
+      '<b>' + escapeHtml((p.consumers || []).join(', ')) + '</b> slice (' + p.types + ' type(s), '
+      + p.public + ' public)').join(' · ')
+      + ' + shared core (' + (core.types || 0) + ' type(s), ' + (core.share_pct || 0) + '%)</div>';
   }
   const whatBits = [];
   if (what.files) whatBits.push(what.files + ' file(s)');
