@@ -171,8 +171,10 @@ A detection-driven, one-time checklist — items appear only when the graph says
 the project is missing them: a local-packages layout, the `<Name>API`/`<Name>`
 convention, the composition root, a CI ratchet (`modgraph check
 --no-new-edges --no-new-cycles` against a committed baseline), a measured
-build baseline, an exclusions review. Below it, the scope wizard remains for
-computing a custom plan for one specific move.
+build baseline, an exclusions review. That is the whole tab: there is
+deliberately no scope picker and no wizard. The engine evaluates everything
+and the Plan tab *is* the proposed architecture — the tool answers, it
+doesn't ask.
 
 ### Plan
 
