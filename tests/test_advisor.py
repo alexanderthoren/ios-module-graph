@@ -288,5 +288,82 @@ class AdvisorTest(unittest.TestCase):
         json.dumps(self.advice)
 
 
+class ApiRetrofitTest(unittest.TestCase):
+    """Wave-3 retrofit gate + the wave-4 API-module join exemption."""
+
+    @staticmethod
+    def _graph(extra_nodes=(), extra_edges=()):
+        nodes = [
+            {"id": "app", "kind": "app", "label": "App", "types": 50,
+             "warm": 0},
+            # Core: two direct consumers, no CoreAPI — retrofit fires.
+            {"id": "Core", "kind": "spm", "label": "Core", "types": 30,
+             "warm": 2},
+            {"id": "Feat", "kind": "spm", "label": "Feat", "types": 20,
+             "warm": 1},
+        ] + list(extra_nodes)
+        edges = [
+            {"from": "app", "to": "Core", "w": 5},
+            {"from": "app", "to": "Feat", "w": 5},
+            {"from": "Feat", "to": "Core", "w": 3},
+        ] + list(extra_edges)
+        return {"nodes": nodes, "edges": edges,
+                "summary": {"n_cycles": 0, "measured": False}}
+
+    def _advice(self, graph):
+        return compute_advice({}, {}, {}, {}, {}, graph)
+
+    def test_retrofit_emitted_for_multi_consumer_module(self):
+        advice = self._advice(self._graph())
+        a = next(x for x in advice["actions"] if x["id"] == "api:Core")
+        self.assertEqual(a["kind"], "api_retrofit")
+        self.assertEqual(a["wave"], 3)
+        self.assertEqual(a["details"]["consumers"], 2)
+
+    def test_no_retrofit_when_api_counterpart_exists(self):
+        g = self._graph(
+            extra_nodes=[{"id": "CoreAPI", "kind": "spm", "label": "CoreAPI",
+                          "types": 4, "warm": 3}],
+            extra_edges=[{"from": "Core", "to": "CoreAPI", "w": 1}])
+        advice = self._advice(g)
+        self.assertNotIn("api:Core", [a["id"] for a in advice["actions"]])
+
+    def test_no_retrofit_for_api_module_itself(self):
+        g = self._graph(
+            extra_nodes=[{"id": "XAPI", "kind": "spm", "label": "XAPI",
+                          "types": 4, "warm": 3}],
+            extra_edges=[{"from": "app", "to": "XAPI", "w": 1},
+                         {"from": "Feat", "to": "XAPI", "w": 1}])
+        advice = self._advice(g)
+        self.assertNotIn("api:XAPI", [a["id"] for a in advice["actions"]])
+
+    def test_single_consumer_module_not_retrofitted(self):
+        advice = self._advice(self._graph())
+        self.assertNotIn("api:Feat", [a["id"] for a in advice["actions"]])
+
+    def test_join_never_folds_an_api_module(self):
+        # TinyAPI: 1 type, one SPM consumer — matches every join predicate
+        # except the name; the convention exempts it.
+        g = self._graph(
+            extra_nodes=[{"id": "TinyAPI", "kind": "spm", "label": "TinyAPI",
+                          "types": 1, "warm": 1}],
+            extra_edges=[{"from": "Feat", "to": "TinyAPI", "w": 1}])
+        advice = self._advice(g)
+        ids = [a["id"] for a in advice["actions"]]
+        self.assertNotIn("join:TinyAPI", ids)
+        self.assertNotIn("join:TinyAPI", [d["id"] for d in advice["deferred"]])
+
+    def test_retrofitted_module_excluded_from_joins(self):
+        advice = self._advice(self._graph())
+        ids = [a["id"] for a in advice["actions"]]
+        self.assertIn("api:Core", ids)
+        self.assertNotIn("join:Core", ids)
+
+    def test_deterministic(self):
+        a = json.dumps(self._advice(self._graph()), sort_keys=True)
+        b = json.dumps(self._advice(self._graph()), sort_keys=True)
+        self.assertEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()

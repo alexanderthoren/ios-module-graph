@@ -14,21 +14,31 @@ and turns that feed into the *complete* migration product:
     (``<Name>API`` protocols/values + ``<Name>`` implementation, consumers
     rewired to the API, impl bound at the composition root), a
     ``single_module`` (one consumer — an API split here is a boundary wave 4
-    would later fold), or the quick-win ``absorb`` pick. The rule that fired
-    ships with the step so the decision is auditable.
+    would later fold), the quick-win ``absorb`` pick, or an ``api_retrofit``
+    (an existing multi-consumer module gains the API package it is missing).
+    The rule that fired ships with the step so the decision is auditable.
   - a **why** grounded in build cost — folder warm blast radius, critical
-    path membership, churn, and (when the step moves code out of a module) a
-    **simulated** post-step module graph: crit-path length and module-count
-    deltas computed by replaying the move over the module edges and re-running
-    :func:`modgraph.build_impact.compute_build_impact`.
+    path membership, churn, and **cumulative** post-step deltas: the plan is
+    replayed step by step through :class:`_PlanSim` (folder edges mapped to
+    the evolving module set, API rewires applied, costs re-priced by
+    :func:`modgraph.objective.compute_cost_model`), so step N's numbers
+    assume steps 1…N−1 landed — not a frozen baseline.
   - a **verify** block — the commands to run after the step and the metric
     movements to expect, so every step closes its own loop.
 
+* **Trajectory** — one row per simulated step (modules, crit_len, warm/cold
+  cost, app share), plus the projected end state, so "where does this plan
+  take us" is answerable before the first PR. Simulated costs are always in
+  type-units (measured seconds can't be attributed to modules that don't
+  exist yet); the unit ships with the data.
 * **Equilibrium** — the measurable definition of done: app target thin
-  (``EQ_APP_SHARE_PCT``), warm blast radius bounded (``EQ_WARM_MAX_PCT``),
-  zero module cycles, API coverage for multi-consumer modules, and an empty
-  action feed (neither splitting nor joining pays). Each criterion ships
-  current/target/met so the UI can answer "are we done?" from data alone.
+  (``EQ_APP_SHARE_PCT``), warm blast radius bounded — churn-aware when churn
+  data exists (only churn-hot modules count against ``EQ_WARM_MAX_PCT``;
+  a stable foundation with wide fan-in is fine) — zero module cycles, API
+  coverage for multi-consumer modules, cold-build parallelism efficiency
+  (``EQ_PAR_EFF_PCT``, only when measured), and an empty action feed. Each
+  criterion ships current/target/met, and ``projected`` carries the same
+  numbers at the simulated end of the plan.
 
 Pure interpretation over already-computed inputs; deterministic (sorted
 iteration only); every stream optional (regex-scan path degrades to
@@ -44,9 +54,11 @@ from collections import defaultdict
 from .advisor import WAVE_LABELS, compute_advice
 from .build_impact import compute_build_impact
 from .config import (ABSORB_CHURN_HOT, ABSORB_WARM_WIDE, API_MIN_CONSUMERS,
-                     API_SURFACE_SAMPLE, EQ_APP_SHARE_PCT, EQ_WARM_MAX_PCT)
+                     API_SURFACE_SAMPLE, EQ_APP_SHARE_PCT, EQ_PAR_EFF_PCT,
+                     EQ_WARM_MAX_PCT)
 from .graph import build_tree
 from .module_graph import APP_ID, module_of
+from .objective import compute_cost_model
 
 PHASE_LABELS = dict(WAVE_LABELS)
 
@@ -90,14 +102,21 @@ def _module_name(folder: str) -> str:
     return name or "Module"
 
 
-def _api_surface(folder: str, pair_types: dict | None) -> list[str]:
-    """Types declared under *folder* that other folders reference — the
-    surface that goes ``public``, i.e. the contents of the API package."""
+def _api_surface(folders, pair_types: dict | None) -> list[str]:
+    """Types declared under *folders* (one prefix or a set of folder ids) that
+    other folders reference — the surface that goes ``public``, i.e. the
+    contents of the API package."""
     if not pair_types:
         return []
+    if isinstance(folders, str):
+        prefix = folders
+        inside = lambda f: _under(f, prefix)  # noqa: E731
+    else:
+        members = set(folders)
+        inside = lambda f: f in members  # noqa: E731
     out: set[str] = set()
     for (a, b), types in pair_types.items():
-        if _under(b, folder) and not _under(a, folder):
+        if inside(b) and not inside(a):
             out |= set(types)
     return sorted(out)
 
@@ -119,39 +138,128 @@ def _consumer_modules(folder: str, leaf_edges: dict,
     return sorted(mods)
 
 
-def _sim_extract(leaf_edges: dict, migrated_prefixes: list[str],
-                 folder: str | None, api_id: str | None,
-                 impl_id: str | None) -> dict:
-    """Module-graph metrics after (hypothetically) extracting *folder*.
+class _PlanSim:
+    """Cumulative what-if module graph: the plan replayed move by move.
 
-    Replays every folder edge through :func:`module_of`, except that folders
-    under *folder* become *impl_id* and references INTO the subtree land on
-    *api_id* when one is given (the API-rewire: consumers depend on the API
-    package, the implementation keeps the subtree's outgoing deps). With
-    ``folder=None`` it is the as-is baseline. Returns ``{"modules", "crit_len"}``.
+    Holds the folder→module mapping as it *evolves* — every applied step
+    (extraction, API retrofit, join) changes where folders land, and each
+    :meth:`snapshot` re-derives the module set, edges, per-module work
+    (type-count proxy) and churn from scratch under the current overrides.
+    Step N is therefore priced against the world steps 1…N−1 produced, not
+    against a frozen baseline. Deterministic: inputs are sorted once, every
+    iteration below is over sorted data.
     """
-    medges: dict[tuple[str, str], int] = defaultdict(int)
-    mods: set[str] = set()
-    prefixes = migrated_prefixes or []
-    for (a, b), w in sorted((leaf_edges or {}).items()):
-        a_in = folder is not None and _under(a, folder)
-        b_in = folder is not None and _under(b, folder)
-        if a_in and b_in:
-            continue
-        ma = impl_id if a_in else module_of(a, prefixes)
-        mb = (api_id or impl_id) if b_in else module_of(b, prefixes)
-        mods.add(ma)
-        mods.add(mb)
-        if ma != mb:
-            medges[(ma, mb)] += w
-    if folder is not None and impl_id:
-        mods.add(impl_id)
-        if api_id:
+
+    def __init__(self, leaf_edges: dict, prefixes: list[str], decls: dict,
+                 churn_commits=None):
+        self._edges = sorted((leaf_edges or {}).items())
+        self._prefixes = prefixes or []
+        self._ftypes = {f: len(ts) for f, ts in sorted((decls or {}).items())}
+        self._churn = [sorted(s) for s in (churn_commits or [])]
+        folders = set(self._ftypes)
+        for (a, b), _w in self._edges:
+            folders.add(a)
+            folders.add(b)
+        for cset in self._churn:
+            folders.update(cset)
+        self._folders = sorted(folders)
+        # (folder prefix, api id or None, impl id) — longest prefix wins.
+        self._over: list[tuple[str, str | None, str]] = []
+        self._retro: dict[str, str] = {}   # module id -> its new API package id
+        self._joined: dict[str, str] = {}  # module id -> folded-into id
+
+    # -- mutations (one per applied plan step) ------------------------------
+    def extract(self, folder: str, api_id: str | None, impl_id: str) -> None:
+        self._over.append((folder.rstrip("/"), api_id, impl_id))
+
+    def retrofit(self, mid: str, api_id: str) -> None:
+        self._retro[mid] = api_id
+
+    def join(self, mid: str, into: str) -> None:
+        self._joined[mid] = into
+
+    # -- mapping -------------------------------------------------------------
+    def _route(self, folder: str) -> tuple[str, str | None]:
+        """(module the folder's code lives in, API id consumers should hit)."""
+        best: tuple[str, str | None, str] | None = None
+        for ov in self._over:
+            if _under(folder, ov[0]) and (best is None or
+                                          len(ov[0]) > len(best[0])):
+                best = ov
+        if best is not None:
+            return self._joined.get(best[2], best[2]), best[1]
+        m = module_of(folder, self._prefixes)
+        return self._joined.get(m, m), None
+
+    def snapshot(self) -> dict:
+        route = {f: self._route(f) for f in self._folders}
+        mods: set[str] = set()
+        medges: dict[tuple[str, str], int] = defaultdict(int)
+        for (a, b), w in self._edges:
+            ma, _ = route[a]
+            mb, api_b = route[b]
+            if ma == mb:
+                continue
+            dst = api_b or mb
+            # Retrofit rewire: consumer edges land on the module's API
+            # package; only the composition root (the app) keeps the impl.
+            if dst in self._retro and ma != APP_ID:
+                dst = self._retro[dst]
+            mods.add(ma)
+            mods.add(dst)
+            if ma != dst:
+                medges[(ma, dst)] += w
+        for (_p, api_id, impl_id) in self._over:
+            impl = self._joined.get(impl_id, impl_id)
+            mods.add(impl)
+            if api_id:
+                mods.add(api_id)
+                medges[(impl, api_id)] += 1
+        for mid, api_id in sorted(self._retro.items()):
             mods.add(api_id)
-            medges[(impl_id, api_id)] += 1
-    tree = build_tree(mods, {m: set() for m in mods}, root_label="sim")
-    bi = compute_build_impact(tree, dict(medges))
-    return {"modules": len(mods), "crit_len": bi["summary"]["crit_len"]}
+            if mid in mods:
+                medges[(mid, api_id)] += 1
+
+        work: dict[str, float] = defaultdict(float)
+        app_types = 0
+        total_types = 0
+        for f, n in self._ftypes.items():
+            m = route[f][0]
+            mods.add(m)
+            work[m] += n
+            total_types += n
+            if m == APP_ID:
+                app_types += n
+        churn: dict[str, int] = defaultdict(int)
+        for cset in self._churn:
+            for m in sorted({route[f][0] for f in cset if f in route}):
+                churn[m] += 1
+
+        cost = compute_cost_model(mods, dict(medges), dict(work),
+                                  dict(churn) if self._churn else None)
+        tree = build_tree(mods, {m: set() for m in mods}, root_label="sim")
+        bi = compute_build_impact(tree, dict(medges))
+        n_mods = len(mods)
+        warm_max = max(cost["dependents"].values(), default=0)
+        return {
+            "modules": n_mods,
+            "crit_len": bi["summary"]["crit_len"],
+            "n_cycles": bi["summary"]["n_cycles"],
+            "warm_max": warm_max,
+            "warm_max_pct": (round(100.0 * warm_max / (n_mods - 1), 1)
+                             if n_mods > 1 else 0.0),
+            "app_types": app_types,
+            "app_share_pct": (round(100.0 * app_types / total_types, 1)
+                              if total_types else 0.0),
+            "warm_cost": cost["warm_cost"],
+            "cold_cost": cost["cold_cost"],
+            "dependents": cost["dependents"],
+        }
+
+
+def _public_snap(snap: dict) -> dict:
+    """The snapshot fields that ship (the dependents map stays internal)."""
+    return {k: v for k, v in snap.items() if k != "dependents"}
 
 
 def _shape_for_extraction(folder: str, qw_item: dict, pair_types: dict | None,
@@ -340,10 +448,33 @@ def _equilibrium(module_graph: dict, actions: list[dict]) -> dict:
     n_modules = len(nodes)
 
     app_share = round(100.0 * app_types / total_types, 1) if total_types else 0.0
-    warm_max = max((n.get("warm", 0) for n in nodes), default=0)
-    warm_pct = (round(100.0 * warm_max / (n_modules - 1), 1)
-                if n_modules > 1 else 0.0)
     n_cycles = summary.get("n_cycles", 0)
+
+    # Warm bound — churn-aware when churn data exists: a stable foundation
+    # with wide fan-in is *fine* (nobody edits it); the real offender is a
+    # churn-hot module whose edits cascade widely. Without churn data the
+    # blanket bound applies to every module (today's worst case).
+    churned = bool(summary.get("churned"))
+    if churned:
+        offenders = sorted(
+            n.get("label", n["id"]) for n in nodes
+            if n.get("churn", 0) >= ABSORB_CHURN_HOT
+            and n.get("warm_pct", 0.0) > EQ_WARM_MAX_PCT)
+        warm_current = (f"{len(offenders)} churn-hot module(s) over "
+                        f"{EQ_WARM_MAX_PCT}% warm radius"
+                        + (f": {', '.join(offenders[:4])}" if offenders else ""))
+        warm_met = bool(spm) and not offenders
+        warm_target = (f"0 modules with ≥ {ABSORB_CHURN_HOT} commits and "
+                       f"> {EQ_WARM_MAX_PCT}% warm radius")
+    else:
+        warm_max = max((n.get("warm", 0) for n in nodes), default=0)
+        warm_pct = (round(100.0 * warm_max / (n_modules - 1), 1)
+                    if n_modules > 1 else 0.0)
+        warm_current = (f"worst module rebuilds {warm_pct}% of modules "
+                        f"({warm_max} of {max(n_modules - 1, 0)}) — no churn "
+                        f"data, every module counts")
+        warm_met = bool(spm) and warm_pct <= EQ_WARM_MAX_PCT
+        warm_target = f"≤ {EQ_WARM_MAX_PCT}%"
 
     direct_consumers: dict[str, set[str]] = defaultdict(set)
     for e in edges:
@@ -360,11 +491,11 @@ def _equilibrium(module_graph: dict, actions: list[dict]) -> dict:
          "target": f"≤ {EQ_APP_SHARE_PCT}%",
          "met": bool(spm) and app_share <= EQ_APP_SHARE_PCT},
         {"id": "warm_bounded",
-         "label": "Warm blast radius bounded",
-         "current": f"worst module rebuilds {warm_pct}% of modules "
-                    f"({warm_max} of {max(n_modules - 1, 0)})",
-         "target": f"≤ {EQ_WARM_MAX_PCT}%",
-         "met": bool(spm) and warm_pct <= EQ_WARM_MAX_PCT},
+         "label": "Warm blast radius bounded"
+                  + (" (churn-aware)" if churned else ""),
+         "current": warm_current,
+         "target": warm_target,
+         "met": warm_met},
         {"id": "no_cycles",
          "label": "No module cycles",
          "current": f"{n_cycles} module cycle(s)",
@@ -383,6 +514,21 @@ def _equilibrium(module_graph: dict, actions: list[dict]) -> dict:
          "target": "0 — neither splitting nor joining pays",
          "met": not actions},
     ]
+    # Cold-build parallelism efficiency — only priceable with a measured
+    # baseline (the setup checklist demands one): resource floor ÷ actual
+    # wall floor. ≈1 ⇒ resource-bound (restructuring can't help); low ⇒
+    # dependency-bound (chains serialize the build — flatten them).
+    if summary.get("measured") and summary.get("est_wall_s"):
+        cores = summary.get("cores") or 1
+        resource = (summary.get("total_build_s", 0.0) or 0.0) / cores
+        eff = round(100.0 * resource / summary["est_wall_s"], 1)
+        criteria.insert(3, {
+            "id": "parallel_efficiency",
+            "label": "Cold build is resource-bound, not chain-bound",
+            "current": f"{eff}% parallelism efficiency "
+                       f"(resource floor ÷ estimated wall)",
+            "target": f"≥ {EQ_PAR_EFF_PCT}%",
+            "met": eff >= EQ_PAR_EFF_PCT})
     return {"criteria": criteria, "met": all(c["met"] for c in criteria)}
 
 
@@ -396,13 +542,15 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
                         decls: dict | None = None,
                         resources: dict | None = None,
                         history: list | None = None,
-                        excluded_count: int = 0) -> dict:
-    """Return ``{"setup", "steps", "deferred", "equilibrium", "summary"}``.
+                        excluded_count: int = 0,
+                        churn_commits=None) -> dict:
+    """Return ``{"setup", "steps", "deferred", "trajectory", "equilibrium",
+    "summary"}``.
 
     Wraps :func:`modgraph.advisor.compute_advice` (which orders the work and
     draws the stop line) and decorates every action into a full step: shape
-    decision, build-grounded why, simulated deltas, verify block. All keyword
-    inputs are optional and degrade exactly like their producers do.
+    decision, build-grounded why, cumulative simulated deltas, verify block.
+    All keyword inputs are optional and degrade exactly like their producers.
     """
     advice = compute_advice(quick_wins, file_moves, isolations,
                             module_splits, recommendations, module_graph)
@@ -414,7 +562,11 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
     app_node = next((n for n in (module_graph or {}).get("nodes", [])
                      if n.get("kind") == "app"), None)
     measured = (module_graph or {}).get("summary", {}).get("measured", False)
-    baseline = _sim_extract(leaf_edges, prefixes, None, None, None)
+
+    sim = _PlanSim(leaf_edges, prefixes, decls or {}, churn_commits)
+    baseline = sim.snapshot()
+    prev = baseline
+    trajectory: list[dict] = []
 
     steps: list[dict] = []
     for a in advice["actions"]:
@@ -432,6 +584,7 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
             },
             "verify": _verify_block({}),
         }
+        simulated = False
         if kind == "move_file":
             step["shape"] = {"mode": "move_file", "rule": "reference affinity",
                              "destination": a["details"].get("dst")}
@@ -453,21 +606,30 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
                             "resources": res[:_RESOURCE_SAMPLE]}
             step["why"].update({"warm": it.get("warm"), "crit": it.get("crit"),
                                 "churn": it.get("churn")})
-            # Simulated post-step module graph: where do the cold metrics land.
             if shape["mode"] == "absorb":
                 dest_mod = (it.get("destination") or {}).get("module")
-                sim = _sim_extract(leaf_edges, prefixes, f, None, dest_mod)
+                impl_id = dest_mod or f"new:{_module_name(f)}"
+                sim.extract(f, None, impl_id)
             else:
                 name = shape["impl_module"] or _module_name(f)
-                sim = _sim_extract(leaf_edges, prefixes, f,
-                                   f"new:{name}API" if shape["api_module"]
-                                   else None, f"new:{name}")
+                impl_id = f"new:{name}"
+                sim.extract(f, f"new:{name}API" if shape["api_module"]
+                            else None, impl_id)
+            post = sim.snapshot()
+            simulated = True
             expect = {
-                "modules": f"{baseline['modules']} → {sim['modules']}",
-                "crit_len": f"{baseline['crit_len']} → {sim['crit_len']} "
-                            f"(simulated)",
+                "modules": f"{prev['modules']} → {post['modules']}",
+                "crit_len": f"{prev['crit_len']} → {post['crit_len']} "
+                            f"(simulated, cumulative)",
+                "warm_cost": f"{prev['warm_cost']} → {post['warm_cost']} "
+                             f"type-unit(s) of churn-weighted rebuild",
                 "app_types": f"−{n_types}" if n_types else "unchanged",
             }
+            if shape["mode"] == "api_impl":
+                deps = post["dependents"].get(impl_id, 0)
+                expect["impl_warm"] = (
+                    f"editing {shape['impl_module']} rebuilds {deps} "
+                    f"module(s) — consumers sit on {shape['api_module']}")
             if measured and app_node and app_node.get("types"):
                 share = n_types / app_node["types"]
                 est = round(app_node.get("build_ms", 0) * share / 1000.0, 1)
@@ -476,6 +638,43 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
                     expect["app_work"] = (f"~{est}s of compile work leaves the "
                                           f"app target (estimated)")
             step["verify"] = _verify_block(expect)
+        elif kind == "api_retrofit":
+            n = nodes_by_id.get(subject, {})
+            label = n.get("label", subject)
+            mod_folders = sorted(f for f in (decls or {})
+                                 if module_of(f, prefixes) == subject)
+            surface = _api_surface(mod_folders, pair_types)
+            kinds_map = type_kinds or {}
+            protocols = [t for t in surface
+                         if kinds_map.get(t, "") in _PROTOCOL_KINDS]
+            step["shape"] = {
+                "mode": "api_retrofit",
+                "rule": a["why"],
+                "destination": None,
+                "api_module": f"{label}API",
+                "impl_module": label,
+                "consumers": a["details"].get("consumers"),
+                "api_surface_count": len(surface),
+                "api_surface": surface[:API_SURFACE_SAMPLE],
+                "protocols_for": protocols[:API_SURFACE_SAMPLE],
+            }
+            step["what"] = {"files": 0, "types": n.get("types", 0),
+                            "resources_count": 0, "resources": []}
+            step["why"].update({"warm": n.get("warm"), "crit": n.get("crit"),
+                                "churn": n.get("churn")})
+            sim.retrofit(subject, f"new:{label}API")
+            post = sim.snapshot()
+            simulated = True
+            pre_deps = prev["dependents"].get(subject, 0)
+            post_deps = post["dependents"].get(subject, 0)
+            step["verify"] = _verify_block({
+                "modules": f"{prev['modules']} → {post['modules']} "
+                           f"(+{label}API)",
+                "impl_warm": f"editing {label} rebuilds {pre_deps} → "
+                             f"{post_deps} module(s) (simulated, cumulative)",
+                "warm_cost": f"{prev['warm_cost']} → {post['warm_cost']} "
+                             f"type-unit(s) of churn-weighted rebuild",
+            })
         elif kind == "isolate_type":
             iso = (isolations or {}).get(subject, {})
             top = (iso.get("candidates") or [{}])[0]
@@ -493,7 +692,8 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
             step["what"] = {"files": 0, "types": top.get("module_size", 0),
                             "resources_count": 0, "resources": []}
             step["verify"] = _verify_block({
-                "modules": "+1 (the isolated type and its closure)",
+                "modules": "+1 (the isolated type and its closure; "
+                           "not simulated — type-level move)",
                 "consumers": f"{top.get('ext_modules', 0)} module(s) drop the "
                              f"dependency on {subject}",
             })
@@ -504,7 +704,8 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
             step["what"] = {"files": 0, "types": n.get("types", 0),
                             "resources_count": 0, "resources": []}
             step["verify"] = _verify_block({
-                "modules": "+N (one per split unit)",
+                "modules": "+N (one per split unit; not simulated — "
+                           "unit-level move)",
                 "warm": f"{n.get('warm', 0)} dependent module(s) stop "
                         f"rebuilding on every edit",
             })
@@ -516,15 +717,32 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
                                  "label", into)}
             step["what"] = {"files": 0, "types": n.get("types", 0),
                             "resources_count": 0, "resources": []}
+            sim.join(subject, into)
+            post = sim.snapshot()
+            simulated = True
             step["verify"] = _verify_block({
-                "modules": "−1 (one manifest and resolution step removed)",
+                "modules": f"{prev['modules']} → {post['modules']} "
+                           f"(one manifest and resolution step removed)",
             })
         else:  # pragma: no cover — future kinds fall through untyped
             step["shape"] = {"mode": kind, "rule": "", "destination": None}
+        if simulated:
+            prev = post
+        trajectory.append({"id": step["id"], "simulated": simulated,
+                           **_public_snap(prev)})
         steps.append(step)
 
+    final = prev
     setup = _setup_items(module_graph, history, excluded_count)
     equilibrium = _equilibrium(module_graph, advice["actions"])
+    # Where the plan lands if every simulated step ships — the projected end
+    # state, same fields as the trajectory rows (type-unit costs).
+    equilibrium["projected"] = {
+        **_public_snap(final),
+        "app_share_met": final["app_share_pct"] <= EQ_APP_SHARE_PCT,
+        "warm_met": final["warm_max_pct"] <= EQ_WARM_MAX_PCT,
+        "cycles_met": final["n_cycles"] == 0,
+    }
 
     shapes: dict[str, int] = defaultdict(int)
     for s in steps:
@@ -533,5 +751,13 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
     summary["shapes"] = dict(sorted(shapes.items()))
     summary["setup_items"] = len(setup)
     summary["equilibrium_met"] = equilibrium["met"]
+    summary["warm_cost_delta"] = round(final["warm_cost"]
+                                       - baseline["warm_cost"], 1)
+    summary["cold_cost_delta"] = round(final["cold_cost"]
+                                       - baseline["cold_cost"], 1)
     return {"setup": setup, "steps": steps, "deferred": advice["deferred"],
+            "trajectory": {"baseline": _public_snap(baseline),
+                           "steps": trajectory,
+                           "final": _public_snap(final),
+                           "unit": "types"},
             "equilibrium": equilibrium, "summary": summary}

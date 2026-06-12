@@ -427,7 +427,7 @@ def main() -> int:
         module_graph, pair_types=resolved_pair_types, type_kinds=type_kinds,
         leaf_edges=leaf_edges, migrated_prefixes=migrated_prefixes,
         decls=decls, resources=resources, history=history,
-        excluded_count=len(excluded),
+        excluded_count=len(excluded), churn_commits=churn_commits,
     )
     msum_plan = master_plan["summary"]
     print(f"Master plan:       {msum_plan['actions']} step(s) in "
@@ -437,6 +437,12 @@ def main() -> int:
     if master_plan["steps"]:
         head_step = master_plan["steps"][0]
         print(f"  → First move: {head_step['title']}")
+    traj = master_plan["trajectory"]
+    print(f"  Projected: warm cost {traj['baseline']['warm_cost']} → "
+          f"{traj['final']['warm_cost']} {traj['unit']}-units, cold chain "
+          f"{traj['baseline']['cold_cost']} → {traj['final']['cold_cost']}, "
+          f"app share {traj['baseline']['app_share_pct']}% → "
+          f"{traj['final']['app_share_pct']}%")
 
     if graph_path is not None:
         graph_path = graph_path.expanduser().resolve()

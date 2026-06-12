@@ -28,6 +28,10 @@ def _shape_line(step: dict) -> str:
         body = f"absorb into the existing module `{sh.get('destination')}`"
     elif mode == "move_file":
         body = f"move the file to `{sh.get('destination')}/`"
+    elif mode == "api_retrofit":
+        body = (f"add `{sh.get('api_module')}` (protocols + value types) in "
+                f"front of the existing `{sh.get('impl_module')}`; rewire "
+                f"consumers to the API, bind the impl at the composition root")
     elif mode == "isolate":
         body = (f"pull the type (and its drag closure) into the new module "
                 f"`{sh.get('impl_module')}`")
@@ -190,12 +194,47 @@ def master_plan_markdown(master_plan: dict, meta: dict) -> str:
             lines.append(f"- **{d['title']}** — `{d['reason']}`: {d['why']}")
         lines.append("")
 
+    traj = mp.get("trajectory") or {}
+    rows = traj.get("steps") or []
+    if rows:
+        base = traj.get("baseline") or {}
+        unit = traj.get("unit", "types")
+        lines.append("## Projected trajectory (simulated, cumulative)")
+        lines.append("")
+        lines.append(f"Costs are in {unit}-units (structural proxy — measured "
+                     f"seconds can't be attributed to modules that don't "
+                     f"exist yet). Each row assumes every step above it "
+                     f"already shipped.")
+        lines.append("")
+        lines.append("| step | modules | crit len | warm max | warm cost | "
+                     "cold chain | app share |")
+        lines.append("|---|---|---|---|---|---|---|")
+        lines.append(f"| (baseline) | {base.get('modules')} | "
+                     f"{base.get('crit_len')} | {base.get('warm_max')} | "
+                     f"{base.get('warm_cost')} | {base.get('cold_cost')} | "
+                     f"{base.get('app_share_pct')}% |")
+        for r in rows:
+            tag = "" if r.get("simulated") else " *(not simulated)*"
+            lines.append(f"| `{r['id']}`{tag} | {r.get('modules')} | "
+                         f"{r.get('crit_len')} | {r.get('warm_max')} | "
+                         f"{r.get('warm_cost')} | {r.get('cold_cost')} | "
+                         f"{r.get('app_share_pct')}% |")
+        lines.append("")
+
     lines.append("## Equilibrium — the definition of done")
     lines.append("")
     for c in eq.get("criteria", []):
         mark = "x" if c.get("met") else " "
         lines.append(f"- [{mark}] **{c['label']}** — {c['current']} "
                      f"(target: {c['target']})")
+    proj = eq.get("projected") or {}
+    if proj:
+        lines.append("")
+        lines.append(f"Projected end state if every simulated step ships: "
+                     f"{proj.get('modules')} module(s), app share "
+                     f"{proj.get('app_share_pct')}%, worst warm radius "
+                     f"{proj.get('warm_max_pct')}%, {proj.get('n_cycles')} "
+                     f"module cycle(s).")
     lines.append("")
 
     if blocked_reasons:

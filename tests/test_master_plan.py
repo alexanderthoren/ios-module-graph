@@ -196,7 +196,7 @@ class MasterPlanTest(unittest.TestCase):
 
     def test_extraction_expect_carries_crit_and_app_types(self):
         e = self.by_id["qw:Feat"]["verify"]["expect"]
-        self.assertIn("(simulated)", e["crit_len"])
+        self.assertIn("(simulated, cumulative)", e["crit_len"])
         self.assertEqual(e["app_types"], "−3")
 
     def test_every_step_has_verify_commands(self):
@@ -312,6 +312,126 @@ class MasterPlanTest(unittest.TestCase):
 
     def test_payload_is_json_serializable(self):
         json.dumps(self.plan)
+
+
+class TrajectoryTest(unittest.TestCase):
+    """Cumulative simulation: each step priced against the prior steps' world."""
+
+    def setUp(self):
+        self.plan = compute_master_plan(*_inputs(), **_kwargs())
+        self.traj = self.plan["trajectory"]
+        self.steps = self.plan["steps"]
+
+    def test_one_row_per_step(self):
+        self.assertEqual(len(self.traj["steps"]), len(self.steps))
+        self.assertEqual([r["id"] for r in self.traj["steps"]],
+                         [s["id"] for s in self.steps])
+
+    def test_final_equals_last_row(self):
+        last = dict(self.traj["steps"][-1])
+        last.pop("id")
+        last.pop("simulated")
+        self.assertEqual(last, self.traj["final"])
+
+    def test_steps_chain_not_frozen_baseline(self):
+        # Two consecutive simulated extractions: the second step's "before"
+        # module count must equal the first step's "after".
+        sims = [s for s in self.steps
+                if s["kind"] in ("new_module", "cut_then_extract", "absorb")]
+        self.assertGreaterEqual(len(sims), 2)
+        first_after = int(sims[0]["verify"]["expect"]["modules"]
+                          .split(" → ")[1])
+        second_before = int(sims[1]["verify"]["expect"]["modules"]
+                            .split(" → ")[0])
+        self.assertEqual(first_after, second_before)
+
+    def test_extractions_lower_app_share(self):
+        self.assertLess(self.traj["final"]["app_share_pct"],
+                        self.traj["baseline"]["app_share_pct"])
+
+    def test_api_impl_expect_reports_impl_warm(self):
+        plan = self.plan
+        s = next(x for x in plan["steps"] if x["id"] == "qw:Feat")
+        self.assertIn("impl_warm", s["verify"]["expect"])
+        self.assertIn("FeatAPI", s["verify"]["expect"]["impl_warm"])
+
+    def test_unit_is_types(self):
+        self.assertEqual(self.traj["unit"], "types")
+
+    def test_projected_block_on_equilibrium(self):
+        proj = self.plan["equilibrium"]["projected"]
+        for key in ("app_share_pct", "warm_max_pct", "n_cycles",
+                    "app_share_met", "warm_met", "cycles_met"):
+            self.assertIn(key, proj)
+
+
+class ApiRetrofitStepTest(unittest.TestCase):
+    """Decoration of an advisor api_retrofit action into a full step."""
+
+    def _plan(self):
+        qw, fm, iso, ms, reco, mg = _inputs()
+        # P gains a second consumer (R) -> the advisor emits api:P.
+        mg["edges"].append({"from": "R", "to": "P", "w": 1})
+        kw = _kwargs()
+        kw["pair_types"][("Home", "P/Lib")] = {"PThing"}
+        kw["type_kinds"]["PThing"] = "class"
+        kw["decls"]["P/Lib"] = {"PThing"}
+        return compute_master_plan(qw, fm, iso, ms, reco, mg, **kw)
+
+    def test_retrofit_step_shape(self):
+        plan = self._plan()
+        s = next(x for x in plan["steps"] if x["id"] == "api:P")
+        self.assertEqual(s["shape"]["mode"], "api_retrofit")
+        self.assertEqual(s["shape"]["api_module"], "PAPI")
+        self.assertEqual(s["shape"]["impl_module"], "P")
+        self.assertEqual(s["shape"]["api_surface"], ["PThing"])
+        self.assertEqual(s["shape"]["protocols_for"], ["PThing"])
+
+    def test_retrofit_expect_shows_impl_warm_drop(self):
+        plan = self._plan()
+        s = next(x for x in plan["steps"] if x["id"] == "api:P")
+        self.assertIn("impl_warm", s["verify"]["expect"])
+        self.assertIn("→", s["verify"]["expect"]["impl_warm"])
+
+
+class EquilibriumUpgradeTest(unittest.TestCase):
+    def test_warm_bound_is_churn_aware_when_churned(self):
+        qw, fm, iso, ms, reco, mg = _inputs()
+        mg["summary"]["churned"] = True
+        # P: hot (6 commits) and wide (50% warm radius) — the offender.
+        for n in mg["nodes"]:
+            n["churn"] = 6 if n["id"] == "P" else 0
+            n["warm_pct"] = 50.0 if n["id"] == "P" else 10.0
+        plan = compute_master_plan(qw, fm, iso, ms, reco, mg, **_kwargs())
+        warm = next(c for c in plan["equilibrium"]["criteria"]
+                    if c["id"] == "warm_bounded")
+        self.assertFalse(warm["met"])
+        self.assertIn("P", warm["current"])
+        self.assertIn("churn-aware", warm["label"])
+
+    def test_stable_wide_module_passes_churn_aware_bound(self):
+        qw, fm, iso, ms, reco, mg = _inputs()
+        mg["summary"]["churned"] = True
+        for n in mg["nodes"]:
+            n["churn"] = 0           # wide but never touched -> fine
+            n["warm_pct"] = 80.0
+        plan = compute_master_plan(qw, fm, iso, ms, reco, mg, **_kwargs())
+        warm = next(c for c in plan["equilibrium"]["criteria"]
+                    if c["id"] == "warm_bounded")
+        self.assertTrue(warm["met"])
+
+    def test_parallel_efficiency_only_when_measured(self):
+        plan = compute_master_plan(*_inputs(), **_kwargs())
+        ids = [c["id"] for c in plan["equilibrium"]["criteria"]]
+        self.assertNotIn("parallel_efficiency", ids)
+        qw, fm, iso, ms, reco, mg = _inputs()
+        mg["summary"].update({"measured": True, "est_wall_s": 100.0,
+                              "total_build_s": 200.0, "cores": 4})
+        plan = compute_master_plan(qw, fm, iso, ms, reco, mg, **_kwargs())
+        eff = next(c for c in plan["equilibrium"]["criteria"]
+                   if c["id"] == "parallel_efficiency")
+        self.assertIn("50.0%", eff["current"])
+        self.assertFalse(eff["met"])
 
 
 if __name__ == "__main__":

@@ -96,11 +96,18 @@ ADVISOR_JOIN_MAX_TYPES = 10
 # Equilibrium criteria — the measurable definition of "done":
 # - EQ_APP_SHARE_PCT: the app target holds at most this % of all declared
 #   types (everything else lives in packages; the app is a composition root).
-# - EQ_WARM_MAX_PCT: no module's warm blast radius exceeds this % of modules.
+# - EQ_WARM_MAX_PCT: warm blast-radius bound. With churn data only CHURN-HOT
+#   modules (≥ ABSORB_CHURN_HOT commits) count against it — a stable
+#   foundation with wide fan-in is fine; without churn data it applies to
+#   every module (worst case).
+# - EQ_PAR_EFF_PCT: cold-build parallelism efficiency floor (resource floor ÷
+#   estimated wall, measured baseline only). Below it the build is
+#   dependency-bound — chains serialize it — and flattening still pays.
 API_MIN_CONSUMERS = 2
 API_SURFACE_SAMPLE = 24
 EQ_APP_SHARE_PCT = 20
 EQ_WARM_MAX_PCT = 30
+EQ_PAR_EFF_PCT = 70
 
 DECL_RE = re.compile(
     r"\b(?:class|struct|enum|protocol|actor|typealias)\s+([A-Z][A-Za-z0-9_]*)"

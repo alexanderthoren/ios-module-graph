@@ -2146,7 +2146,7 @@ const PLAN_REASON = {
 const SHAPE_BADGE = {
   api_impl: '🧩 API + impl', single_module: '📦 single module',
   absorb: '🧲 absorb', move_file: '📁 file move', isolate: '🎯 isolate',
-  split: '✂️ split', join: '🫱 fold',
+  split: '✂️ split', join: '🫱 fold', api_retrofit: '🛡️ API retrofit',
 };
 const EXTRACT_KINDS = new Set(['absorb', 'new_module', 'cut_then_extract']);
 const PLANDONE_KEY = 'modgraph-plandone::' + (DATA.root_path || '');
@@ -2228,6 +2228,12 @@ function masterStepHtml(s) {
       + (sh.api_surface_count ? ', ' + sh.api_surface_count + ' public type(s)' : '')
       + ') + <b>' + escapeHtml(sh.impl_module || '')
       + '</b> (the implementation, bound at the composition root)</div>';
+  } else if (sh.mode === 'api_retrofit') {
+    shapeLine = '<div class="small">→ add <b>' + escapeHtml(sh.api_module || '')
+      + '</b> (protocols + value types'
+      + (sh.api_surface_count ? ', ' + sh.api_surface_count + ' public type(s)' : '')
+      + ') in front of the existing <b>' + escapeHtml(sh.impl_module || '')
+      + '</b>; consumers rewire to the API, only the composition root keeps the impl</div>';
   } else if (sh.mode === 'single_module') {
     shapeLine = '<div class="small">→ ships as the single module <b>'
       + escapeHtml(sh.impl_module || '') + '</b> (no API split — see the shape badge for why)</div>';

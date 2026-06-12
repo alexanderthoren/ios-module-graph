@@ -49,7 +49,8 @@ from __future__ import annotations
 from collections import defaultdict
 
 from .config import (ADVISOR_CUT_MAX, ADVISOR_ISOLATE_SHARE,
-                     ADVISOR_JOIN_MAX_TYPES, ADVISOR_TAIL_PCT)
+                     ADVISOR_JOIN_MAX_TYPES, ADVISOR_TAIL_PCT,
+                     API_MIN_CONSUMERS)
 from .module_graph import APP_ID
 
 WAVE_LABELS = {
@@ -224,6 +225,12 @@ def compute_advice(quick_wins: dict, file_moves: dict,
 
     # ---- wave 3: module surgery — one decision per module -------------------
     spm_nodes = {n["id"]: n for n in nodes if n.get("kind") == "spm"}
+    # Direct (not transitive) dependents over the module graph: an edge
+    # from -> to means "from depends on to". Used by the API-retrofit gate
+    # here and the join wave below.
+    direct_deps: dict[str, set[str]] = defaultdict(set)
+    for e in edges:
+        direct_deps[e["to"]].add(e["from"])
     reco_by_id = {r["id"]: r for r in reco_items}
     split_by_id = {s["module"]: s for s in ms_items}
     subjects = sorted((set(split_by_id) | set(isolations) |
@@ -345,15 +352,43 @@ def compute_advice(quick_wins: dict, file_moves: dict,
         else:
             ignored_tail += 1
 
+    # API retrofit: an existing SPM module with several direct consumers and
+    # no <Name>API counterpart. The split decision the master plan makes for
+    # *new* extractions, applied retroactively — otherwise the equilibrium's
+    # api_coverage criterion can fail with an empty feed and nothing to do.
+    all_labels = {n.get("label", n["id"]) for n in nodes}
+    for mid in sorted(spm_nodes):
+        if mid in surgery_modules:
+            continue
+        n = spm_nodes[mid]
+        label = n.get("label", mid)
+        if label.endswith("API") or f"{label}API" in all_labels:
+            continue
+        consumers = sorted(direct_deps.get(mid, ()))
+        if len(consumers) < API_MIN_CONSUMERS:
+            continue
+        leverage = 0.0
+        reco = reco_by_id.get(mid)
+        if reco:
+            leverage = (reco["hot"] if reco.get("hot") is not None
+                        else reco.get("combined", 0))
+        a = _action(
+            f"api:{mid}", "api_retrofit", 3, mid,
+            f"Give {label} an API package ({label}API)",
+            f"{len(consumers)} module(s) import {label} directly — every "
+            f"implementation edit cascades into all of them. A {label}API "
+            f"package (protocols + value types) firewalls the warm rebuild: "
+            f"consumers rewire to the API, only the composition root keeps "
+            f"the implementation.",
+            payoff=float(n.get("warm", 0)), effort=float(n.get("types", 0)),
+            roi=None, module=mid, consumers=len(consumers))
+        wave3.append((leverage, float(n.get("warm", 0)), mid, a))
+        surgery_modules.add(mid)
+
     wave3.sort(key=lambda t: (-t[0], -t[1], t[2]))
     actions.extend(a for _l, _n, _m, a in wave3)
 
     # ---- wave 4: joins — boundary without benefit ----------------------------
-    # Direct (not transitive) dependents: an edge from -> to means "from
-    # depends on to", so dependents of M are the edges pointing at it.
-    direct_deps: dict[str, set[str]] = defaultdict(set)
-    for e in edges:
-        direct_deps[e["to"]].add(e["from"])
     # A module about to receive an absorbed folder keeps its boundary — never
     # suggest folding it away in the same plan.
     absorb_dests = {
@@ -363,8 +398,13 @@ def compute_advice(quick_wins: dict, file_moves: dict,
     for mid in sorted(spm_nodes):
         if mid in surgery_modules or mid in absorb_dests:
             continue
-        deps = direct_deps.get(mid, set())
         n = spm_nodes[mid]
+        # An API package exists to be small and single-purpose; one consumer
+        # today (often just its impl) is the convention working, not a
+        # boundary without benefit. Never advise folding it.
+        if n.get("label", mid).endswith("API"):
+            continue
+        deps = direct_deps.get(mid, set())
         types = n.get("types") or 0
         if not deps:
             deferred.append(_deferred(
