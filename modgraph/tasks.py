@@ -18,7 +18,9 @@ from .master_plan import PHASE_LABELS
 def _shape_line(step: dict) -> str:
     sh = step.get("shape") or {}
     mode = sh.get("mode", "")
-    if mode == "api_impl":
+    if mode == "setup":
+        body = "one-time prerequisite — land it before the extraction phases"
+    elif mode == "api_impl":
         body = (f"ships as `{sh.get('api_module')}` (API: protocols + value "
                 f"types) + `{sh.get('impl_module')}` (implementation, bound "
                 f"at the composition root)")
@@ -94,6 +96,11 @@ def _step_lines(num: int, step: dict) -> list[str]:
         if sh.get("protocols_for"):
             lines.append("  - protocols for (reference types with behavior): "
                          + ", ".join(f"`{t}`" for t in sh["protocols_for"]))
+    how = (step.get("details") or {}).get("how") or []
+    if how:
+        lines.append("- **How:**")
+        for i, h in enumerate(how, 1):
+            lines.append(f"  {i}. {h}")
     parts = (step.get("details") or {}).get("parts") or []
     if parts:
         core = (step.get("details") or {}).get("core") or {}
@@ -130,7 +137,6 @@ def master_plan_markdown(master_plan: dict, meta: dict) -> str:
     """The whole plan as one markdown document (see module docstring)."""
     mp = master_plan or {}
     steps = mp.get("steps", [])
-    setup = mp.get("setup", [])
     deferred = mp.get("deferred", [])
     eq = mp.get("equilibrium") or {"criteria": [], "met": False}
     summary = mp.get("summary") or {}
@@ -154,17 +160,6 @@ def master_plan_markdown(master_plan: dict, meta: dict) -> str:
                  f"**{len(deferred)}** deferred below the stop line · "
                  f"equilibrium **{'MET' if eq.get('met') else 'not met'}**")
     lines.append("")
-
-    if setup:
-        lines.append("## Setup (one-time, do these first)")
-        lines.append("")
-        for it in setup:
-            lines.append(f"- [ ] **{it['title']}** — {it['why']}")
-            for i, h in enumerate(it.get("how", []), 1):
-                lines.append(f"  {i}. {h}")
-            if it.get("done_when"):
-                lines.append(f"  - Done when: {it['done_when']}")
-        lines.append("")
 
     lines.append("## How to use this plan")
     lines.append("")

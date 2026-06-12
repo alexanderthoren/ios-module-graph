@@ -60,7 +60,9 @@ from .graph import build_tree
 from .module_graph import APP_ID, module_of
 from .objective import compute_cost_model
 
-PHASE_LABELS = dict(WAVE_LABELS)
+# Setup items are steps too — phase -1, ahead of every wave: one feed, no
+# separate surface to manage. The plan is the entire product.
+PHASE_LABELS = {-1: "One-time prerequisites", **WAVE_LABELS}
 
 # Reference types with behavior become protocols in the API package; value
 # types (and protocols themselves) move into the API package whole.
@@ -570,7 +572,29 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
     prev = baseline
     trajectory: list[dict] = []
 
+    # Phase -1: the one-time prerequisites, as ordinary checkable steps —
+    # there is no separate Setup surface; the feed is the whole product.
+    setup = _setup_items(module_graph, history, excluded_count)
     steps: list[dict] = []
+    for it in setup:
+        steps.append({
+            "id": it["id"], "kind": "setup", "phase": -1,
+            "subject": it["id"], "title": it["title"],
+            "after": [], "unblocks": [],
+            "details": {"how": it.get("how", []),
+                        "done_when": it.get("done_when", "")},
+            "shape": {"mode": "setup", "rule": it["why"],
+                      "destination": None},
+            "what": {"files": 0, "types": 0, "resources_count": 0,
+                     "resources": []},
+            "why": {"narrative": it["why"], "roi": None, "payoff": 0.0,
+                    "effort": 0.0, "warm": None, "crit": None,
+                    "churn": None, "cold_delta_s": None},
+            "verify": {"commands": [],
+                       "expect": {"done_when": it.get("done_when", "")}},
+        })
+        trajectory.append({"id": it["id"], "simulated": False,
+                           **_public_snap(prev)})
     for a in advice["actions"]:
         kind, subject = a["kind"], a["subject"]
         step = {
@@ -772,7 +796,6 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
         steps.append(step)
 
     final = prev
-    setup = _setup_items(module_graph, history, excluded_count)
     equilibrium = _equilibrium(module_graph, advice["actions"])
     # Where the plan lands if every simulated step ships — the projected end
     # state, same fields as the trajectory rows (type-unit costs).

@@ -200,8 +200,12 @@ class MasterPlanTest(unittest.TestCase):
         self.assertEqual(e["app_types"], "−3")
 
     def test_every_step_has_verify_commands(self):
+        # Setup steps verify via done_when instead of commands.
         for s in self.steps:
-            self.assertTrue(s["verify"]["commands"])
+            if s["kind"] == "setup":
+                self.assertTrue(s["verify"]["expect"]["done_when"])
+            else:
+                self.assertTrue(s["verify"]["commands"])
 
     def test_isolate_step_shape(self):
         s = self.by_id["mod:T"]
@@ -304,11 +308,14 @@ class MasterPlanTest(unittest.TestCase):
 
     def test_empty_inputs(self):
         plan = compute_master_plan({}, {}, {}, {}, {}, {})
-        self.assertEqual(plan["steps"], [])
+        # Even with no advice streams, the feed leads with the one-time
+        # prerequisites (phase -1) — there is no separate Setup surface.
+        self.assertTrue(all(s["kind"] == "setup" for s in plan["steps"]))
         self.assertFalse(plan["equilibrium"]["met"])
-        ids = {i["id"] for i in plan["setup"]}
+        ids = {s["id"] for s in plan["steps"]}
         self.assertIn("setup:packages", ids)
         self.assertIn("setup:ratchet", ids)
+        self.assertTrue(all(s["phase"] == -1 for s in plan["steps"]))
 
     def test_payload_is_json_serializable(self):
         json.dumps(self.plan)

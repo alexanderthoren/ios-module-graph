@@ -315,6 +315,56 @@ test('masterStepPrompt move_file is a git mv instruction', () => {
   assert.match(p, /T1/);
 });
 
+test('masterStepPrompt setup renders the how-list and done_when', () => {
+  const p = masterStepPrompt({
+    kind: 'setup', subject: 'setup:ratchet',
+    title: 'Wire the architecture ratchet into CI',
+    shape: { mode: 'setup', rule: 'Lock in wins.' },
+    details: { how: ['Commit a baseline.', 'Run just check in CI.'],
+               done_when: 'CI fails on any new edge.' },
+    what: {}, why: { narrative: 'Lock in wins.' }, verify: {},
+  }, {});
+  assert.match(p, /1\. Commit a baseline\./);
+  assert.match(p, /2\. Run just check in CI\./);
+  assert.match(p, /Done when: CI fails on any new edge\./);
+  // No code moves -> no behavior-preserving guard.
+  assert.doesNotMatch(p, /behavior-preserving/);
+});
+
+test('masterStepPrompt api_retrofit rewires consumers to the API package', () => {
+  const p = masterStepPrompt({
+    kind: 'api_retrofit', subject: 'Pkg/Sources/Core',
+    title: 'Give Core an API package (CoreAPI)',
+    shape: { mode: 'api_retrofit', rule: '3 consumers',
+             api_module: 'CoreAPI', impl_module: 'Core',
+             api_surface: ['CacheProtocol', 'Entry'], api_surface_count: 2,
+             protocols_for: ['CacheProtocol'] },
+    what: { types: 30 }, why: {}, verify: { commands: [], expect: {} },
+  }, {});
+  assert.match(p, /Create the library target `CoreAPI`/);
+  assert.match(p, /value types Entry move whole/);
+  assert.match(p, /composition root alone keeps the `Core` import/);
+});
+
+test('masterStepPrompt partition lists one numbered step per slice', () => {
+  const p = masterStepPrompt({
+    kind: 'partition_module', subject: 'Pkg/Sources/UI',
+    title: 'Partition UI into 2 usage slice(s) + core',
+    shape: { mode: 'partition', rule: 'usage seams' },
+    details: { parts: [
+      { consumers: ['Feed'], types: 4, type_sample: ['A', 'B'], public: 2,
+        ext_refs: 9 },
+      { consumers: ['Checkout'], types: 3, type_sample: ['C'], public: 1,
+        ext_refs: 5 },
+    ], core: { types: 6, share_pct: 20 } },
+    what: { types: 13 }, why: {}, verify: { commands: [], expect: {} },
+  }, {});
+  assert.match(p, /1\. Create the shared-core target first \(6 type\(s\)/);
+  assert.match(p, /2\. Slice for Feed: 4 type\(s\) \(A, B, …\)/);
+  assert.match(p, /3\. Slice for Checkout: 3 type\(s\)/);
+  assert.match(p, /4\. The remainder stays in `Pkg\/Sources\/UI`/);
+});
+
 test('masterStepPrompt join folds into the consumer', () => {
   const p = masterStepPrompt({
     id: 'join:Q', kind: 'join_module', subject: 'Q',

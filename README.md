@@ -115,7 +115,7 @@ just tree project_dir=/other/App workspace=Other.xcworkspace scheme=Other
 A toggle at the top switches the whole UI between three modes:
 
 - **🔍 Explore** — understand the codebase. Every folder is neutral-colored; migration state is hidden so it doesn't get in the way. Already-SPM folders stay in scope so you can see SPM-to-SPM coupling.
-- **🧭 Migration** — plan and execute the split with exactly two surfaces: **Setup** (a detection-driven one-time prerequisites checklist + an optional scope wizard) and **Plan** (the master plan: every engine's intelligence merged into one phase-ordered feed with explicit shape decisions, verify blocks, and a measurable definition of done) — plus per-node migration state (leaf / blocked / migrated / won't-modularize). See *Migration: Setup + Plan* below.
+- **🧭 Migration** — exactly one surface: **the Plan** — the master plan: every engine's intelligence merged into one phase-ordered feed (one-time prerequisites lead it as phase −1) with explicit shape decisions, verify blocks, and a measurable definition of done — plus per-node migration state (leaf / blocked / migrated / won't-modularize). No wizard, no scope picker, no setup tab: the tool answers, it doesn't ask. See *Migration: the Plan* below.
 - **🏗️ Build** — find build-time wins. Forgets folders and shows the real compile units (SPM targets + the app target) with warm/cold cost lenses, a split-payoff ranking, and a build-cost history. See *Build mode* below.
 
 Tools available while exploring or planning:
@@ -136,13 +136,13 @@ Tools available while exploring or planning:
 
 ---
 
-## 🧭 Migration: Setup + Plan
+## 🧭 Migration: the Plan
 
-Migration mode has exactly two surfaces. Everything the engines know — file
-moves, quick wins, isolations, splits, joins, build cost, churn — lands in one
-place, ordered, with the *how* and the *why* attached, so the only questions a
-modularization actually runs on are answered on one screen: **what do I do
-next, how, in what order, and when do I stop?**
+Migration mode has exactly one surface. Everything the engines know — file
+moves, quick wins, isolations, partitions, splits, joins, build cost, churn —
+lands in one place, ordered, with the *how* and the *why* attached, so the
+only questions a modularization actually runs on are answered on one screen:
+**what do I do next, how, in what order, and when do I stop?**
 
 ### The target: equilibrium
 
@@ -165,18 +165,18 @@ The plan drives toward an explicit architecture, not "more modules":
   API coverage, an empty feed) with met/unmet state — the measurable answer to
   "are we done?".
 
-### Setup
+### One-time prerequisites (phase −1)
 
-A detection-driven, one-time checklist — items appear only when the graph says
-the project is missing them: a local-packages layout, the `<Name>API`/`<Name>`
-convention, the composition root, a CI ratchet (`modgraph check
---no-new-edges --no-new-cycles` against a committed baseline), a measured
-build baseline, an exclusions review. That is the whole tab: there is
-deliberately no scope picker and no wizard. The engine evaluates everything
-and the Plan tab *is* the proposed architecture — the tool answers, it
-doesn't ask.
+The feed leads with a detection-driven set of one-time steps — emitted only
+when the graph says the project is missing them: a local-packages layout, the
+`<Name>API`/`<Name>` convention, the composition root, a CI ratchet
+(`modgraph check --no-new-edges --no-new-cycles` against a committed
+baseline), a measured build baseline, an exclusions review. They are ordinary
+plan steps (prompt + done) — there is no separate Setup tab, no scope picker,
+no wizard. The engine evaluates everything and the plan *is* the proposed
+architecture.
 
-### Plan
+### The phases
 
 The master plan: phases respect dependencies (misplaced-file moves → ready
 extractions → extractions unblocked by those very moves, cross-linked `after`

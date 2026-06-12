@@ -688,7 +688,7 @@
       <div class="mode" data-mode="build">🏗️ Build</div>
     </div>
     <div class="tabs">
-      <div class="tab" data-tab="wizard" data-mode="migration">🧭 Setup</div>
+      
       <div class="tab" data-tab="plan" data-mode="migration">🎯 Plan</div>
       <div class="tab" data-tab="build" data-mode="build">🏗️ Build impact</div>
       <div class="tab" data-tab="recommend" data-mode="build">🪓 Split plan</div>
@@ -769,18 +769,6 @@
         <div id="impTableWrap"></div>
       </div>
 
-      <!-- MIGRATION SETUP TAB: one-time prerequisites only (detection-driven,
-           from payload.master_plan.setup). There is deliberately NO scope
-           picker: the engine evaluates everything and the Plan tab IS the
-           proposed architecture — the tool doesn't ask, it answers. -->
-      <div class="panel" id="panel-wizard">
-        <h3 style="margin-top: 4px;">Project setup</h3>
-        <div class="small" style="margin-bottom: 6px;">
-          One-time prerequisites the graph says this project is missing.
-          Check items off as you land them — the Plan tab assumes they exist.
-        </div>
-        <div id="setupChecklist"></div>
-      </div>
 
       <!-- PLAN TAB -->
       <div class="panel" id="panel-plan">
@@ -834,8 +822,7 @@
       <h3>How to use</h3>
       <ol style="font-size: 12px; line-height: 1.7; padding-left:18px; color:var(--text-dim);">
         <li><b>Explore</b> the graph — click a circle to drill in.</li>
-        <li>Found something you want to extract? Hit <b>🎯 plan</b> on it — the Plan tab shows the exact ordered path of folders to migrate first.</li>
-        <li>Or open <b>Plan</b> for the global recommended order; click <b>Migrate</b> on a step to simulate extraction and watch what unlocks (orange).</li>
+        <li>Switch to <b>Migration</b> and open <b>Plan</b> — the calculated plan is the answer: work the steps top-down, copy each step's <b>📝 Prompt</b>, mark it <b>✓ Done</b> as you land it.</li>
         <li>The <b>Legend</b> (bottom-right of the graph) is always visible.</li>
       </ol>
 
@@ -933,19 +920,21 @@
       </div>
     </div>
 
-    <div id="isolateOverlay" class="ct-overlay hidden">
+    <div id="stepOverlay" class="ct-overlay hidden">
       <div class="ct-modal mp-modal dv-modal">
         <div class="ct-head">
-          <span class="ttl" id="isTitle"></span>
-          <button class="ct-close" id="isClose" aria-label="Close isolation plan" title="Close (Esc)">
+          <span class="ttl" id="sdTitle"></span>
+          <button class="ct-close" id="sdClose" aria-label="Close step details" title="Close (Esc)">
             <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
               <path d="M5 5 L15 15 M15 5 L5 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
             </svg>
           </button>
         </div>
-        <div class="mp-body" id="isBody"></div>
+        <div class="mp-body" id="sdBody"></div>
         <div class="mp-foot">
-          <button class="ghost" id="isDone">Done</button>
+          <button class="ghost" id="sdFocus">🔭 Focus in graph</button>
+          <button class="ghost" id="sdPrompt">📝 Copy prompt</button>
+          <button id="sdDone">✓ Done</button>
         </div>
       </div>
     </div>
@@ -1434,35 +1423,6 @@ function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
 })();
 
-// ── target-driven migration planning ────────────────────────────────────────
-// "I want to move X" → compute everything that must be migrated first.
-let migrationTarget = null;
-const depOut = {};                                   // folder -> Set(folders it depends on), USR-resolved
-for (const e of edges) { (depOut[e.src] = depOut[e.src] || new Set()).add(e.dst); }
-function sourceDescendants(id) {                      // descendants that actually hold .swift files
-  return [...descendantsOf(id)].filter(d => (filesByFolder[d] || []).length > 0);
-}
-// Transitive closure of the target's outgoing deps (everything it needs), plus
-// the target's own source folders, minus what's already migrated.
-function migrationClosure(targetId) {
-  const seedSet = new Set(sourceDescendants(targetId));
-  const closure = new Set(seedSet);
-  const stack = [...seedSet];
-  while (stack.length) {
-    const f = stack.pop();
-    for (const d of (depOut[f] || [])) { if (!closure.has(d)) { closure.add(d); stack.push(d); } }
-  }
-  for (const f of [...closure]) if (outOfScope(f)) closure.delete(f);
-  return { closure, seedSet };
-}
-function setTarget(id) { migrationTarget = id; savePlanViewLS(); switchTab('plan'); renderPlan(); }
-function clearTarget() { migrationTarget = null; savePlanViewLS(); renderPlan(); }
-
-// ── Runway view: "if I migrate X next, how far does the cascade go before a wall?"
-let runwaySeed = null;
-function setRunway(id) { runwaySeed = id; migrationTarget = null; savePlanViewLS(); switchTab('plan'); renderPlan(); }
-function clearRunway() { runwaySeed = null; savePlanViewLS(); renderPlan(); }
-
 // Tab switching — route through switchTab so the activated tab is (re)rendered.
 // Without this, opening the Plan tab on a fresh load just reveals whatever DOM
 // was last drawn there (e.g. the explore-mode "No plan yet" placeholder), so a
@@ -1503,8 +1463,7 @@ function applyMode(mode) {
       document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
       firstVisible.classList.add('active');
       document.getElementById('panel-' + firstVisible.dataset.tab).classList.add('active');
-      if (firstVisible.dataset.tab === 'wizard') renderWizard();
-      if (firstVisible.dataset.tab === 'plan') renderPlan();
+          if (firstVisible.dataset.tab === 'plan') renderPlan();
     }
   }
   // Use a root-level mode flag + CSS so we don't clobber inline display values
@@ -2090,10 +2049,8 @@ function stepScoreBadges(s) {
 }
 
 function renderPlan() {
-  // Target-driven plan (clicked a node's 🎯) renders the prerequisite path;
-  // everything else lands on the master-plan feed. (The patched dispatcher
-  // near the bottom of the file additionally routes runway/wizard plans.)
-  if (migrationTarget) { renderTargetPlan(); return; }
+  // The Plan tab is always the master-plan feed — the calculated plan is the
+  // single answer; there are no user-selectable alternative plan views.
   renderMasterFeed();
 }
 
@@ -2103,6 +2060,7 @@ function renderPlan() {
 // (modgraph/master_plan.py); this only renders, tracks done-state, and copies
 // per-step prompts (masterStepPrompt lives in graph_logic.js, unit-tested).
 const PLAN_PHASES = {
+  '-1': '🧰 First — One-time prerequisites',
   0: '📁 Phase 0 — Move misplaced files',
   1: '⚡ Phase 1 — Extract what\'s ready',
   2: '🔓 Phase 2 — Unblock and extract',
@@ -2117,7 +2075,7 @@ const SHAPE_BADGE = {
   api_impl: '🧩 API + impl', single_module: '📦 single module',
   absorb: '🧲 absorb', move_file: '📁 file move', isolate: '🎯 isolate',
   split: '✂️ split', join: '🫱 fold', api_retrofit: '🛡️ API retrofit',
-  partition: '🧬 usage partition',
+  partition: '🧬 usage partition', setup: '🧰 one-time setup',
 };
 const EXTRACT_KINDS = new Set(['absorb', 'new_module', 'cut_then_extract']);
 const PLANDONE_KEY = 'modgraph-plandone::' + (DATA.root_path || '');
@@ -2178,7 +2136,7 @@ function equilibriumHtml() {
           + Object.keys(sum.waves || {}).length + '</b> phase(s) · <b>'
           + (sum.deferred || 0) + '</b> deferred below the stop line'
           + ((sum.setup_items || 0)
-              ? ' · <b>' + sum.setup_items + '</b> setup item(s) → <a href="#" id="planGoSetup">Setup tab</a>'
+              ? ' · <b>' + sum.setup_items + '</b> one-time prerequisite(s) lead the feed'
               : ''))
     + '</div>'
     + '<details style="margin-top:6px;"' + (eq.met ? ' open' : '') + '>'
@@ -2265,7 +2223,14 @@ function masterStepHtml(s) {
   if ((s.unblocks || []).length) chips.push('<span class="qw-chip" title="what this unblocks">unblocks '
     + escapeHtml(s.unblocks.join(', ')) + '</span>');
   let shapeLine = '';
-  if (sh.mode === 'api_impl') {
+  if (sh.mode === 'setup') {
+    const d = s.details || {};
+    shapeLine = '<details style="margin-top:2px;"><summary style="font-size:11px;cursor:pointer;color:var(--text-dim);">How</summary>'
+      + '<ol style="font-size:11px;margin:4px 0;padding-left:18px;">'
+      + (d.how || []).map(h => '<li>' + escapeHtml(h) + '</li>').join('') + '</ol>'
+      + (d.done_when ? '<div class="small" style="color:var(--text-faint);">Done when: ' + escapeHtml(d.done_when) + '</div>' : '')
+      + '</details>';
+  } else if (sh.mode === 'api_impl') {
     shapeLine = '<div class="small">→ ships as <b>' + escapeHtml(sh.api_module || '')
       + '</b> (the API: protocols + value types'
       + (sh.api_surface_count ? ', ' + sh.api_surface_count + ' public type(s)' : '')
@@ -2339,30 +2304,241 @@ function masterStepEl(s) {
       ev.stopPropagation();
       const act = b.dataset.pa;
       if (act === 'prompt') copyPrompt(b, masterStepPrompt(s, masterStepCtx(s)), '📝 Prompt');
-      else if (act === 'done' || act === 'undo') {
-        if (act === 'done') planDone.add(s.id); else planDone.delete(s.id);
-        savePlanDone();
-        // Extraction steps mirror into the migrated set so the graph and
-        // every other view stay consistent with per-folder marking.
-        if (EXTRACT_KINDS.has(s.kind)) {
-          const fs = tree[s.subject] ? [...descendantsOf(s.subject)] : [s.subject];
-          if (act === 'done') fs.forEach(f => migrated.add(f));
-          else fs.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
-          _invalidateBlockedCache();
-        }
-        renderMasterFeed();
-        render();
-      }
+      else if (act === 'done' || act === 'undo') setPlanStepDone(s, act === 'done');
     };
   });
-  // Row click previews the subject in the graph; never mutates state.
+  // Row click opens the step-detail modal; never mutates state.
+  div.style.cursor = 'pointer';
+  div.title = 'Click for the full story';
   div.addEventListener('click', (ev) => {
     if (ev.target.closest('details') || ev.target.closest('.step-actions')) return;
-    const focusId = s.kind === 'move_file' ? ((s.details && s.details.src) || s.subject) : s.subject;
-    if (tree[focusId]) focusToFolder(focusId);
+    openStepDetail(s);
   });
   return div;
 }
+// ── Step-detail modal: tap a plan step → the full story in one place ─────────
+// Pure re-presentation of the step object (modgraph/master_plan.py) plus its
+// row on the cumulative trajectory — nothing is recomputed, no new decisions.
+let sdCurrent = null;
+function setPlanStepDone(s, on) {
+  if (on) planDone.add(s.id); else planDone.delete(s.id);
+  savePlanDone();
+  // Extraction steps mirror into the migrated set so the graph and every
+  // other view stay consistent with per-folder marking.
+  if (EXTRACT_KINDS.has(s.kind)) {
+    const fs = tree[s.subject] ? [...descendantsOf(s.subject)] : [s.subject];
+    if (on) fs.forEach(f => migrated.add(f));
+    else fs.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
+    _invalidateBlockedCache();
+  }
+  renderMasterFeed();
+  render();
+}
+function sdSection(t) {
+  return '<div class="small" style="font-weight:700;margin-top:12px;letter-spacing:.4px;color:var(--text-dim);">' + t + '</div>';
+}
+function sdFact(label, value, hint) {
+  return '<div style="border:1px solid var(--border);border-radius:6px;padding:5px 8px;min-width:96px;"'
+    + (hint ? ' title="' + escapeHtml(hint) + '"' : '') + '>'
+    + '<div class="small" style="color:var(--text-dim);">' + escapeHtml(label) + '</div>'
+    + '<div style="font-size:13px;font-weight:700;">' + value + '</div></div>';
+}
+function stepDetailHtml(s) {
+  const sh = s.shape || {}, what = s.what || {}, why = s.why || {}, d = s.details || {};
+  const done = planDone.has(s.id);
+  const eligible = planStepEligible(s);
+  const stepsById = {};
+  (masterPlan.steps || []).forEach(x => { stepsById[x.id] = x; });
+  const titleOf = id => (stepsById[id] ? stepsById[id].title : id);
+  let html = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">'
+    + '<span class="qw-chip">' + escapeHtml(PLAN_PHASES[s.phase] || ('Phase ' + s.phase)) + '</span>'
+    + '<span class="qw-chip" title="' + escapeHtml(sh.rule || '') + '">' + escapeHtml(SHAPE_BADGE[sh.mode] || sh.mode || '') + '</span>'
+    + '<span class="qw-chip">' + (done ? '✅ done' : eligible ? '▶️ ready now' : '🔒 blocked — finish what it waits on first') + '</span>'
+    + '</div>';
+
+  html += sdSection('Why this step');
+  html += '<div style="font-size:12px;margin-top:3px;">' + escapeHtml(why.narrative || sh.rule || '') + '</div>';
+  const facts = [];
+  if (why.roi != null) facts.push(sdFact('roi', why.roi, 'payoff ÷ effort — the ranking key'));
+  if (why.payoff) facts.push(sdFact('payoff', why.payoff, 'reference mass / blast radius this step frees'));
+  if (why.effort) facts.push(sdFact('effort', why.effort, 'files + outgoing refs + public surface to touch'));
+  if (why.warm != null) facts.push(sdFact('warm radius', why.warm, 'folders that can recompile when this changes'));
+  if (why.churn) facts.push(sdFact('churn', why.churn + ' commit(s)', 'commits touching it in the analysis window — hot code pays back fastest'));
+  if (why.crit) facts.push(sdFact('cold critical path', '🧊 yes', 'on the longest dependency chain of a clean build — extracting it shortens the floor'));
+  if (why.cold_delta_s) facts.push(sdFact('compile work', '~' + why.cold_delta_s + 's', 'measured compile seconds that leave the app target'));
+  if (facts.length) html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">' + facts.join('') + '</div>';
+
+  if (sh.mode === 'setup') {
+    html += sdSection('How');
+    html += '<ol style="font-size:12px;margin:4px 0;padding-left:18px;">'
+      + (d.how || []).map(h => '<li>' + escapeHtml(h) + '</li>').join('') + '</ol>'
+      + (d.done_when ? '<div class="small" style="color:var(--text-faint);">Done when: ' + escapeHtml(d.done_when) + '</div>' : '');
+  } else {
+    html += sdSection('Shape — what gets created, and why this shape');
+    html += '<div style="font-size:12px;margin-top:3px;">' + escapeHtml(sh.rule || '') + '</div>';
+    if (sh.mode === 'api_impl' || sh.mode === 'api_retrofit') {
+      html += '<div style="font-size:12px;margin-top:4px;">'
+        + (sh.mode === 'api_impl'
+            ? 'Ships as <b>' + escapeHtml(sh.api_module || '') + '</b> (what consumers import: protocols + value types) + <b>'
+              + escapeHtml(sh.impl_module || '') + '</b> (the implementation, bound once at the composition root).'
+            : 'Adds <b>' + escapeHtml(sh.api_module || '') + '</b> (protocols + value types) in front of the existing <b>'
+              + escapeHtml(sh.impl_module || '') + '</b>; consumers rewire to the API, only the composition root keeps the impl.')
+        + ' Implementation changes then stop rebuilding consumers — that firewall is what makes the extraction pay.</div>';
+      const surf = sh.api_surface || [];
+      const protos = new Set(sh.protocols_for || []);
+      if (surf.length) {
+        html += '<details style="margin-top:4px;"><summary style="font-size:11px;cursor:pointer;color:var(--text-dim);">API surface ('
+          + surf.length + ' public type(s))</summary>'
+          + '<div style="font-size:11px;margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;">'
+          + surf.map(t => '<code title="' + (protos.has(t)
+              ? 'consumers get a protocol; the concrete type stays in the impl'
+              : 'moves into the API as-is (value type)') + '">'
+              + escapeHtml(t) + (protos.has(t) ? ' → protocol' : '') + '</code>').join(' ')
+          + '</div></details>';
+      }
+    } else if (sh.mode === 'single_module') {
+      html += '<div style="font-size:12px;margin-top:4px;">Ships as the single module <b>' + escapeHtml(sh.impl_module || '')
+        + '</b> — no API split. The rule above says why a pair isn\'t warranted (yet); a later render recommends an API retrofit if consumers multiply.</div>';
+    } else if (sh.mode === 'absorb' || sh.mode === 'join') {
+      html += '<div style="font-size:12px;margin-top:4px;">Folds into the existing module <b>' + escapeHtml(sh.destination || '')
+        + '</b> — no new package. The pick already survived the level/churn/cycle vetoes.</div>';
+    } else if (sh.mode === 'isolate') {
+      html += '<div style="font-size:12px;margin-top:4px;">Pulls <b>' + escapeHtml(d.type || '')
+        + '</b> (plus everything it drags) out of <b>' + escapeHtml(d.module || s.subject)
+        + '</b> into the new module <b>' + escapeHtml(sh.impl_module || '')
+        + '</b>, so outside consumers can depend on the small module instead of the whole thing.</div>';
+    } else if (sh.mode === 'partition') {
+      const parts = d.parts || [];
+      const core = d.core || {};
+      html += '<div style="font-size:12px;margin-top:4px;"><b>' + parts.length + '</b> usage slice(s) + a shared core ('
+        + (core.types || 0) + ' type(s), ' + (core.share_pct || 0)
+        + '% of the module). Slices only reference themselves or the core, so the result is acyclic by construction.</div>'
+        + '<div class="qw-edges" style="max-height:220px;font-size:11px;margin-top:4px;">'
+        + parts.map(p => '<div style="padding:3px 0;border-bottom:1px solid var(--border);"><b>'
+          + escapeHtml((p.consumers || []).join(', ')) + '</b> — ' + p.types + ' type(s), ' + p.public
+          + ' public, ' + p.ext_refs + ' external ref(s)'
+          + ((p.type_sample || []).length
+              ? '<div style="color:var(--text-faint);">' + p.type_sample.map(t => '<code>' + escapeHtml(t) + '</code>').join(' ')
+                + (p.types > p.type_sample.length ? ' …' : '') + '</div>' : '')
+          + '</div>').join('')
+        + '</div>';
+    }
+  }
+
+  const bits = [];
+  if (what.files) bits.push('<b>' + what.files + '</b> file(s)');
+  if (what.types) bits.push('<b>' + what.types + '</b> type(s)');
+  if (what.resources_count) bits.push('<b>' + what.resources_count + '</b> bundle resource(s)');
+  const moveLine = s.kind === 'move_file'
+    ? '<div style="font-size:12px;"><code>' + escapeHtml(d.src || '') + '</code> → <code>' + escapeHtml(d.dst || '') + '</code></div>' : '';
+  const cutLine = d.cut_refs
+    ? '<div style="font-size:12px;">✂️ ' + d.cut_refs + ' blocking ref(s) handled first — already sequenced under "waits on"</div>' : '';
+  const ctx = masterStepCtx(s);
+  const fileList = ctx.files || [];
+  if (bits.length || moveLine || cutLine || fileList.length) {
+    html += sdSection('What moves');
+    if (bits.length) html += '<div style="font-size:12px;">' + bits.join(' · ') + '</div>';
+    html += moveLine + cutLine;
+    if (fileList.length) html += '<details style="margin-top:3px;"><summary style="font-size:11px;cursor:pointer;color:var(--text-dim);">Files ('
+      + fileList.length + ')</summary><div style="font-size:11px;max-height:160px;overflow:auto;margin-top:3px;">'
+      + fileList.map(f => '<div><code>' + escapeHtml(f) + '</code></div>').join('') + '</div></details>';
+    if ((what.resources || []).length) html += '<details style="margin-top:3px;"><summary style="font-size:11px;cursor:pointer;color:var(--text-dim);">Resources ('
+      + what.resources.length + ')</summary><div style="font-size:11px;max-height:160px;overflow:auto;margin-top:3px;">'
+      + what.resources.map(r => '<div><code>' + escapeHtml(r) + '</code></div>').join('') + '</div></details>';
+  }
+
+  if ((s.after || []).length || (s.unblocks || []).length) {
+    html += sdSection('Sequencing');
+    if ((s.after || []).length) html += '<div style="font-size:12px;">Waits on:'
+      + s.after.map(id => '<div>' + (planDone.has(id) ? '✅' : '⬜') + ' ' + escapeHtml(titleOf(id)) + '</div>').join('') + '</div>';
+    if ((s.unblocks || []).length) html += '<div style="font-size:12px;margin-top:3px;">Unblocks: '
+      + s.unblocks.map(u => '<b>' + escapeHtml(titleOf(u)) + '</b>').join(', ') + '</div>';
+  }
+
+  const traj = masterPlan.trajectory || {};
+  const trows = traj.steps || [];
+  const ti = trows.findIndex(r => r.id === s.id);
+  if (ti >= 0) {
+    const row = trows[ti], prev = ti === 0 ? traj.baseline : trows[ti - 1];
+    if (row.simulated && prev) {
+      const unit = traj.unit || 'types';
+      html += sdSection('Simulated impact — priced against the world the steps before it produce');
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
+        + trajDelta('modules', prev.modules, row.modules, false, '')
+        + trajDelta('warm cost (' + unit + '-u)', prev.warm_cost, row.warm_cost, true, '')
+        + trajDelta('cold chain (' + unit + '-u)', prev.cold_cost, row.cold_cost, true, '')
+        + trajDelta('app share', prev.app_share_pct, row.app_share_pct, true, '%')
+        + '</div>'
+        + '<div class="small" style="color:var(--text-faint);margin-top:3px;">Cumulative simulation in '
+        + escapeHtml(unit) + '-units — step ' + (ti + 1) + ' of ' + trows.length + ' on the trajectory. Shape over height.</div>';
+    } else if (!row.simulated) {
+      html += sdSection('Simulated impact');
+      html += '<div class="small" style="color:var(--text-faint);">Not simulated — a type-level move the folder→module simulation can\'t express; the trajectory carries the previous state over. The verify block below still says what to check.</div>';
+    }
+  }
+
+  const v = s.verify || {}, exp = v.expect || {}, ek = Object.keys(exp);
+  if ((v.commands || []).length || ek.length) {
+    html += sdSection('Verify after landing');
+    html += (v.commands || []).map(c => '<div style="margin:2px 0;"><code>' + escapeHtml(c) + '</code></div>').join('');
+    if (ek.length) html += '<div style="font-size:12px;margin-top:4px;">'
+      + ek.map(k => '<div>• <b>' + escapeHtml(k) + '</b>: ' + escapeHtml(String(exp[k])) + '</div>').join('') + '</div>';
+  }
+
+  if (d.alternative) {
+    html += sdSection('Runner-up the engine rejected');
+    html += '<div style="font-size:12px;color:var(--text-dim);">↔ ' + escapeHtml(d.alternative) + '</div>';
+  }
+
+  html += sdSection('Execution prompt');
+  html += '<details style="margin-top:3px;"><summary style="font-size:11px;cursor:pointer;color:var(--text-dim);">Show the text 📝 Copy prompt puts on the clipboard</summary>'
+    + '<pre style="white-space:pre-wrap;font-size:11px;background:var(--surface-2);padding:8px;border-radius:6px;max-height:280px;overflow:auto;margin-top:4px;">'
+    + escapeHtml(masterStepPrompt(s, ctx)) + '</pre></details>';
+  return html;
+}
+function renderStepDetail() {
+  const s = sdCurrent;
+  if (!s) return;
+  document.getElementById('sdTitle').textContent = s.title;
+  document.getElementById('sdBody').innerHTML = stepDetailHtml(s);
+  const done = planDone.has(s.id);
+  const doneBtn = document.getElementById('sdDone');
+  doneBtn.textContent = done ? '↩ Undo' : '✓ Done';
+  doneBtn.className = done ? 'ghost' : '';
+  const focusId = s.kind === 'move_file' ? ((s.details && s.details.src) || s.subject) : s.subject;
+  document.getElementById('sdFocus').style.display = tree[focusId] ? '' : 'none';
+}
+function openStepDetail(s) {
+  sdCurrent = s;
+  renderStepDetail();
+  document.getElementById('stepOverlay').classList.remove('hidden');
+}
+function closeStepDetail() {
+  document.getElementById('stepOverlay').classList.add('hidden');
+  sdCurrent = null;
+}
+document.getElementById('sdClose').onclick = closeStepDetail;
+document.getElementById('sdPrompt').onclick = function () {
+  if (sdCurrent) copyPrompt(this, masterStepPrompt(sdCurrent, masterStepCtx(sdCurrent)), '📝 Copy prompt');
+};
+document.getElementById('sdFocus').onclick = () => {
+  if (!sdCurrent) return;
+  const focusId = sdCurrent.kind === 'move_file'
+    ? ((sdCurrent.details && sdCurrent.details.src) || sdCurrent.subject) : sdCurrent.subject;
+  closeStepDetail();
+  if (tree[focusId]) focusToFolder(focusId);
+};
+document.getElementById('sdDone').onclick = () => {
+  if (!sdCurrent) return;
+  setPlanStepDone(sdCurrent, !planDone.has(sdCurrent.id));
+  renderStepDetail();
+};
+document.getElementById('stepOverlay').addEventListener('click', (ev) => {
+  if (ev.target.id === 'stepOverlay') closeStepDetail();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !document.getElementById('stepOverlay').classList.contains('hidden')) closeStepDetail();
+});
 function renderMasterFeed() {
   document.getElementById('targetBanner').style.display = 'none';
   document.getElementById('planFilter').style.display = 'none';
@@ -2373,8 +2549,6 @@ function renderMasterFeed() {
   const rec = document.getElementById('recCard');
   rec.style.display = '';
   rec.innerHTML = equilibriumHtml() + trajectoryHtml();
-  const goSetup = document.getElementById('planGoSetup');
-  if (goSetup) goSetup.onclick = (ev) => { ev.preventDefault(); switchTab('wizard'); };
 
   const wrap = document.getElementById('planList');
   wrap.innerHTML = '';
@@ -2435,42 +2609,6 @@ function renderMasterFeed() {
   updateMigrationCounts();
 }
 
-// ── Setup checklist (payload.master_plan.setup) on the Setup tab ─────────────
-// Detection-driven one-time prerequisites; check-off persists per project.
-const SETUPDONE_KEY = 'modgraph-setupdone::' + (DATA.root_path || '');
-let setupDone = new Set();
-try { setupDone = new Set(JSON.parse(localStorage.getItem(SETUPDONE_KEY) || '[]')); } catch (e) {}
-function renderSetupChecklist() {
-  const el = document.getElementById('setupChecklist');
-  if (!el) return;
-  const items = masterPlan.setup || [];
-  if (!items.length) {
-    el.innerHTML = '<div class="info">✅ Nothing to set up — packages, conventions and a measured baseline were all detected.</div>';
-    return;
-  }
-  el.innerHTML = items.map((it, i) => {
-    const done = setupDone.has(it.id);
-    return '<div class="info" style="margin:6px 0;' + (done ? 'opacity:.55;' : '') + '">'
-      + '<label style="display:flex;gap:8px;align-items:baseline;cursor:pointer;">'
-      + '<input type="checkbox" data-su="' + i + '"' + (done ? ' checked' : '') + '>'
-      + '<span style="flex:1;"><b>' + escapeHtml(it.title) + '</b>'
-      + '<div class="small" style="color:var(--text-dim);">' + escapeHtml(it.why) + '</div>'
-      + '<details style="margin-top:3px;"><summary style="font-size:11px;cursor:pointer;">How</summary>'
-      + '<ol style="font-size:11px;margin:4px 0;padding-left:18px;">'
-      + (it.how || []).map(h => '<li>' + escapeHtml(h) + '</li>').join('') + '</ol>'
-      + '<div class="small" style="color:var(--text-faint);">Done when: ' + escapeHtml(it.done_when || '') + '</div>'
-      + '</details></span></label></div>';
-  }).join('');
-  el.querySelectorAll('input[data-su]').forEach(cb => {
-    cb.onchange = () => {
-      const it = items[Number(cb.dataset.su)];
-      if (cb.checked) setupDone.add(it.id); else setupDone.delete(it.id);
-      try { localStorage.setItem(SETUPDONE_KEY, JSON.stringify([...setupDone].sort())); } catch (e) {}
-      renderSetupChecklist();
-    };
-  });
-}
-
 function updateMigrationCounts() {
   const userCount = migrated.size - INITIAL_MIGRATED.size;
   document.getElementById('migCount2').textContent = migrated.size;
@@ -2481,70 +2619,6 @@ function updateMigrationCounts() {
   const prefixes = DATA.migrated_prefixes || [];
   document.getElementById('baselinePrefixes').textContent =
     prefixes.length ? '(' + prefixes.join(', ') + ')' : '';
-}
-
-// Plan focused on a single target: the ordered prerequisite path to extract it.
-function renderTargetPlan() {
-  const banner = document.getElementById('targetBanner');
-  const rec = document.getElementById('recCard');
-  rec.style.display = 'none';
-  document.getElementById('planListHeading').textContent = 'Path to extract this folder';
-  document.getElementById('planFilter').style.display = 'none';
-
-  const { closure, seedSet } = migrationClosure(migrationTarget);
-  // Prerequisites = closure minus the target's own source folders.
-  const prereq = new Set([...closure].filter(f => !seedSet.has(f)));
-  // Order everything by the global plan; cycles shown as one entry.
-  const orderedSteps = plan
-    .map((s, i) => ({ s, i }))
-    .filter(({ s }) => s.folders.some(f => closure.has(f)));
-
-  banner.className = 'card target-banner';
-  banner.style.display = 'block';
-  const name = tree[migrationTarget] ? tree[migrationTarget].name : migrationTarget;
-  banner.innerHTML =
-    '<h3>🎯 Plan to move: ' + escapeHtml(name) + '</h3>' +
-    '<div class="info">' + escapeHtml(migrationTarget) + '</div>' +
-    '<div class="info" style="margin-top:6px;">' +
-      (prereq.size === 0
-        ? 'Nothing blocks it — its dependencies are already migrated. Extract it directly.'
-        : '<b>' + prereq.size + '</b> folder(s) must be migrated first, then the target itself.') +
-    '</div>' +
-    '<div style="margin-top:8px;display:flex;gap:6px;">' +
-      '<button id="targetApply">Migrate this whole path</button>' +
-      '<button class="ghost" id="targetClear">← Back to full plan</button>' +
-    '</div>';
-  document.getElementById('targetClear').onclick = () => clearTarget();
-  document.getElementById('targetApply').onclick = () => {
-    closure.forEach(f => migrated.add(f));
-    renderPlan(); render();
-  };
-
-  // Render ordered path list.
-  const wrap = document.getElementById('planList');
-  wrap.innerHTML = '';
-  if (orderedSteps.length === 0) {
-    wrap.innerHTML = '<div class="info">Already fully migrated.</div>';
-  } else {
-    let ord = 1;
-    orderedSteps.forEach(({ s }) => {
-      const isTargetStep = s.folders.some(f => seedSet.has(f));
-      const done = stepIsDone(s);
-      const label = s.size === 1 ? s.folders[0] : ('⚠ cycle of ' + s.size + ' folders');
-      const div = document.createElement('div');
-      div.className = 'path-step' + (isTargetStep ? ' is-target' : '') + (done ? ' done' : '');
-      div.innerHTML = '<span class="ord">' + (done ? '✓' : ord) + '</span>' +
-        '<span>' + (isTargetStep ? '🎯 ' : '') + escapeHtml(label) +
-        (isTargetStep ? ' <span style="color:var(--text-faint);font-size:11px;">(your target)</span>' : '') + '</span>';
-      div.onclick = () => { focusToFolder(s.folders[0]); };
-      wrap.appendChild(div);
-      if (!done) ord++;
-    });
-  }
-  document.getElementById('stuckCount').textContent = '0';
-  document.getElementById('stuckInfo').innerHTML = '';
-  document.getElementById('stuckList').innerHTML = '';
-  updateMigrationCounts();
 }
 
 function applyStep(step) {
@@ -2579,7 +2653,6 @@ function switchTab(name) {
   // (persisted wizPlan / runway / target), so revealing the panel isn't enough —
   // it must be re-rendered or a fresh load shows stale/empty content.
   if (name === 'plan') renderPlan();
-  else if (name === 'wizard') renderWizard();
   else if (name === 'build') renderBuild();
   else if (name === 'recommend') renderRecommend();
   else if (name === 'improve') renderImprovements();
@@ -3696,34 +3769,18 @@ function render() {
       const exclLabel = isExcluded ? '↩ Will modularize' : '🚫 Won\'t modularize';
       const migCls = isExcluded ? 'ghost' : (isMigrated ? 'ghost' : '');
       const exclCls = isExcluded ? 'ghost' : 'danger';
-      // Blocked folders can't be planned/migrated until their excluded dep is
+      // Blocked folders can't be migrated until their excluded dep is
       // unmarked or the dependency severed — the excl button still works (user
       // may want to also mark them excluded explicitly).
-      const canPlan = !isExcluded && !isMigrated && !isBlocked;
+      // No plan-shaping actions here (plan/divide/isolate): the master plan
+      // already arbitrates those per module — the Plan tab is the answer.
       const canMig = !isExcluded && !isBlocked;
       const inboundCt = (inboundEdgesByFolder[nodeId] || []).length;
       actions = '<div class="np-actions">'
-        + (canPlan ? '<button class="ghost" data-act="planmig">🗺 Plan migration</button>' : '')
         + '<button class="ghost" data-act="calltree">🌳 Call tree' + (inboundCt ? ' (' + inboundCt + ')' : '') + '</button>'
         + (canMig ? '<button class="' + migCls + '" data-act="mig">' + migLabel + '</button>' : '')
         + '<button class="' + exclCls + '" data-act="excl">' + exclLabel + '</button>'
         + '</div>';
-    }
-    // "Divide" is available in any mode for folders we precomputed a split plan
-    // for (≥2 type-bearing subfolders). It opens the division-plan modal.
-    const hasDivision = !!(DATA.divisions && DATA.divisions[nodeId]);
-    if (hasDivision) {
-      const divideBtn = '<button class="ghost" data-act="divide">✂️ Divide into modules</button>';
-      if (actions) actions = actions.replace('</div>', divideBtn + '</div>');
-      else actions = '<div class="np-actions">' + divideBtn + '</div>';
-    }
-    // "Isolate" pulls the single most-referenced type out of this module into
-    // its own sub-module (precomputed for real modules with an external hub type).
-    const hasIsolation = !!(DATA.isolations && DATA.isolations[nodeId]);
-    if (hasIsolation) {
-      const isoBtn = '<button class="ghost" data-act="isolate">🎯 Isolate hot type</button>';
-      if (actions) actions = actions.replace('</div>', isoBtn + '</div>');
-      else actions = '<div class="np-actions">' + isoBtn + '</div>';
     }
     pop.innerHTML =
       '<div class="np-header"><span class="np-swatch" style="background:' + swatch + ';"></span>'
@@ -3742,9 +3799,6 @@ function render() {
         const act = b.dataset.act;
         if (act === 'mig') (isMigrated ? unmigrate(nodeId) : migrate(nodeId));
         else if (act === 'excl') toggleExclude(nodeId);
-        else if (act === 'planmig') setRunway(nodeId);
-        else if (act === 'divide') openDivide(nodeId);
-        else if (act === 'isolate') openIsolate(nodeId);
         else if (act === 'calltree') showCallTree({ kind: 'folder', key: nodeId, label: nodeId });
         pop.style.display = 'none'; popNodeId = null;
       };
@@ -4403,25 +4457,9 @@ function loadWizLS() {
   } catch (e) {}
   return null;
 }
+let wiz = loadWizLS() || { sourceId: null, targetIds: [], assign: {}, newPkgs: [] };
 function saveWizLS() {
   try { localStorage.setItem(WIZ_KEY, JSON.stringify(wiz)); } catch (e) {}
-}
-// The other two "plan" views are node-driven and ephemeral: 🎯 Plan-to-move
-// (migrationTarget) and 🗺 runway (runwaySeed). Persist whichever is active so
-// the Plan tab survives regeneration — the path itself is recomputed from the
-// seed id on load (cheap, deterministic). Stale ids (folder gone after a code
-// change) are dropped at restore time so they can't blank the view.
-const PLANVIEW_KEY = 'modgraph-planview::' + (DATA.root_path || '');
-function loadPlanViewLS() {
-  try { const v = JSON.parse(localStorage.getItem(PLANVIEW_KEY) || 'null');
-        if (v && typeof v === 'object') return v; } catch (e) {}
-  return null;
-}
-function savePlanViewLS() {
-  try {
-    if (runwaySeed == null && migrationTarget == null) localStorage.removeItem(PLANVIEW_KEY);
-    else localStorage.setItem(PLANVIEW_KEY, JSON.stringify({ runwaySeed, migrationTarget }));
-  } catch (e) {}
 }
 
 function wizSourceFolders() {
@@ -4473,11 +4511,6 @@ function labelForTarget(id) {
   return p ? p.label : id;
 }
 
-function renderWizard() {
-  // Setup tab = the detection-driven checklist only. No scope picker:
-  // the engine evaluates everything; the Plan tab is the answer.
-  renderSetupChecklist();
-}
 
 // Tarjan SCC over a chosen folder subset, iterative to dodge deep stacks.
 function wizComputeSccs(set) {
@@ -4499,8 +4532,6 @@ function wizComputeSccs(set) {
   return { deps, sccs };
 }
 
-
-        render();
 // ── migration preview & retarget modal ──────────────────────────────────────
 // Opened from a wizard plan step. Shows exactly which folders + .swift files
 // move, whether each destination is a NEW SPM module (created) or an EXISTING
@@ -4560,7 +4591,7 @@ function mpApplyAndRefresh() {
   // Assignment edits persist in wiz.assign (used by the prompts); the active
   // node-driven plan re-renders. There is no wizard plan anymore.
   saveWizLS();
-  _invalidateBlockedCache();_invalidateBlockedCache();
+  _invalidateBlockedCache();
   // Re-render whichever plan is active (runway/target/wizard) so retargeting from
   // a runway step doesn't yank the panel over to the wizard plan.
   renderPlan();
@@ -5132,111 +5163,6 @@ document.addEventListener('keydown', (ev) => {
       && document.getElementById('divideStepOverlay').classList.contains('hidden')) closeDivide();
 });
 
-// ── Isolate a hot type ──────────────────────────────────────────────────────
-// Renders the server-precomputed isolation analysis for a module: its declared
-// types ranked by reference mass (external + internal), each with the closure it
-// would drag out, the modules it frees, and a ready-to-paste extraction prompt.
-// The headline move every modularization makes — pull the one type that is the
-// reason half the app depends on this module into its own small module.
-let isCurrent = null;
-function _isKindTag(kind) { return kind ? '<span class="tag">' + escapeHtml(kind) + '</span> ' : ''; }
-function renderIsolate(iso) {
-  document.getElementById('isTitle').textContent = '🎯 Isolate — ' + iso.module;
-  let h = '';
-  const top = iso.candidates[0];
-  h += '<div class="dv-sum">'
-    + '<b>' + iso.candidates.length + '</b> extractable type(s) · '
-    + 'module declares <b>' + iso.type_total + '</b> referenced type(s) · '
-    + '<b>' + iso.ext_total + '</b> reference(s) reach it from outside · '
-    + 'the top type alone carries <b>' + iso.summary.top_share + '%</b> of that fan-in'
-    + '</div>';
-  h += '<p class="np-hint" style="margin:2px 0 12px;">Ranked by total references (most-used first). '
-    + '<b>Frees</b> = distinct modules that could drop their dependency on the whole of <code>'
-    + escapeHtml(iso.module) + '</code>. <b>Drags</b> = types pulled along (what this type uses inside the module) — '
-    + 'a small drag is a clean extraction; a large one means you are splitting the module.</p>';
-
-  h += '<table class="dv-tbl"><thead><tr>'
-    + '<th>Type</th><th>Ext refs</th><th>Int refs</th><th>Frees</th>'
-    + '<th>Drags</th><th>Public</th><th>ROI</th><th></th></tr></thead><tbody>';
-  iso.candidates.forEach((c, ci) => {
-    h += '<tr>'
-      + '<td>' + _isKindTag(c.kind) + '<code>' + escapeHtml(c.type) + '</code></td>'
-      + '<td class="num"><b>' + c.ext_refs + '</b></td>'
-      + '<td class="num">' + c.int_refs + '</td>'
-      + '<td class="num">' + c.ext_modules + '</td>'
-      + '<td class="num">' + c.pulls_total + '</td>'
-      + '<td class="num">' + c.module_public + '</td>'
-      + '<td class="num">' + c.roi + '</td>'
-      + '<td><button class="ghost is-prompt" data-cand="' + ci + '">📋 Prompt</button></td>'
-      + '</tr>';
-    if (c.pulls && c.pulls.length) {
-      const drag = c.pulls.map(p => '<code>' + escapeHtml(p.type) + '</code>'
-        + (p.ext_refs ? ' <span class="muted">(' + p.ext_refs + ' ext)</span>' : '')).join(', ');
-      const more = c.pulls_total > c.pulls.length ? ' <span class="muted">+ ' + (c.pulls_total - c.pulls.length) + ' more</span>' : '';
-      h += '<tr class="is-drag"><td colspan="8"><span class="muted">drags:</span> ' + drag + more + '</td></tr>';
-    }
-  });
-  h += '</tbody></table>';
-  document.getElementById('isBody').innerHTML = h;
-  document.getElementById('isBody').querySelectorAll('.is-prompt').forEach(b => {
-    b.onclick = () => isCopyPrompt(parseInt(b.dataset.cand, 10), b);
-  });
-}
-function isExtractPrompt(c) {
-  const mod = isCurrent.module;
-  const newName = c.type + 'Module';
-  const drag = (c.pulls || []).map(p => p.type);
-  const dragLine = drag.length
-    ? drag.join(', ') + (c.pulls_total > drag.length ? ', … (' + (c.pulls_total - drag.length) + ' more — move the full set ' + c.type + ' transitively uses inside this module)' : '')
-    : '(nothing — ' + c.type + ' is a clean leaf)';
-  return [
-    'Extract `' + c.type + '` (' + (c.kind || 'type') + ') out of module `' + mod + '` into its own SPM module.',
-    '',
-    'Why: `' + c.type + '` is referenced ' + c.ext_refs + '× from OUTSIDE this module, by ' + c.ext_modules
-      + ' other module(s). They depend on the whole of `' + mod + '` just to reach it. Isolating `' + c.type
-      + '` lets each of them depend on a small dedicated module instead.',
-    '',
-    'Move with it (the drag closure — ' + c.pulls_total + ' type(s) `' + c.type + '` transitively uses inside the module):',
-    '  ' + dragLine,
-    '',
-    'Steps:',
-    '1. Create a new SPM target `' + newName + '` (rename as you see fit).',
-    '2. Move `' + c.type + '` and the dragged types above into it.',
-    '3. Raise their public surface (~' + c.module_public + ' type(s)) from `internal` to `public`.',
-    '4. Add `' + newName + '` as a dependency of `' + mod + '` and of the ' + c.ext_modules
-      + ' consuming module(s); update their imports.',
-    '5. Build. Verify the consuming modules no longer need to depend on all of `' + mod + '` for these types.',
-    '',
-    'Behaviour-preserving: this is a move + access-level change, no logic edits.',
-  ].join('\n');
-}
-function isCopyPrompt(ci, btn) {
-  const c = isCurrent && isCurrent.candidates[ci];
-  if (!c) return;
-  _dvCopy(isExtractPrompt(c));
-  if (btn) { const old = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = old; }, 1400); }
-}
-function openIsolate(folderId) {
-  const iso = DATA.isolations && DATA.isolations[folderId];
-  if (!iso) return;
-  isCurrent = iso;
-  renderIsolate(iso);
-  document.getElementById('isolateOverlay').classList.remove('hidden');
-}
-function closeIsolate() {
-  document.getElementById('isolateOverlay').classList.add('hidden');
-  isCurrent = null;
-}
-document.getElementById('isClose').onclick = closeIsolate;
-document.getElementById('isDone').onclick = closeIsolate;
-document.getElementById('isolateOverlay').addEventListener('click', (ev) => {
-  if (ev.target.id === 'isolateOverlay') closeIsolate();
-});
-document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape'
-      && !document.getElementById('isolateOverlay').classList.contains('hidden')) closeIsolate();
-});
-
 // ── Per-step before/after preview ───────────────────────────────────────────
 // Draws the module's sub-module unit graph for one step. "Before" shows the
 // current coupling (with the edges this step must cut highlighted red); "After"
@@ -5392,336 +5318,7 @@ document.addEventListener('keydown', (ev) => {
 });
 
 
-// ── Runway computation: pin a seed folder as "next migrated", then forward-cascade
-// until something locks (cycle bundle or eligible set empties). Reuses the same
-// SCC condensation + inbound-weight tiebreak as the global plan.
-function computeRunway(seed) {
-  const blocked = blockedByExcludedSet();
-  if (excluded.has(seed)) return { error: '🚫 Seed is marked won\'t-modularize.' };
-  if (blocked.has(seed))  return { error: '🔒 Seed transitively depends on a won\'t-modularize folder.' };
-  if (migrated.has(seed)) return { error: '✓ Seed is already migrated.' };
-  const pending = new Set();
-  plan.forEach(s => s.folders.forEach(f => {
-    if (!migrated.has(f) && !excluded.has(f) && !blocked.has(f)) pending.add(f);
-  }));
-  // Seed may be a container folder (no direct edges) — expand to all pending leaf
-  // descendants and treat them as one bundle so the user can pick e.g.
-  // "Fever/Core/Models" instead of drilling to every leaf inside it.
-  const seedFolders = new Set();
-  if (pending.has(seed)) {
-    seedFolders.add(seed);
-  } else if (tree[seed]) {
-    const stk = [seed];
-    while (stk.length) {
-      const v = stk.pop();
-      if (pending.has(v)) seedFolders.add(v);
-      (tree[v]?.children || []).forEach(c => stk.push(c));
-    }
-    if (seedFolders.size === 0) {
-      return { error: 'No pending leaf folders under this node — every descendant is migrated, excluded, or blocked.' };
-    }
-  } else {
-    return { error: 'Seed not in the project tree.' };
-  }
-  const { deps, sccs } = wizComputeSccs([...pending]);
-  const sccsSorted = sccs.map(c => c.slice().sort());
-  const sccOf = {};
-  sccsSorted.forEach((c, i) => c.forEach(v => sccOf[v] = i));
-  const sdeps = sccsSorted.map(() => new Set());
-  const sRdeps = sccsSorted.map(() => new Set());
-  Object.keys(deps).forEach(a => {
-    for (const b of deps[a]) {
-      const sa = sccOf[a], sb = sccOf[b];
-      if (sa !== sb) { sdeps[sa].add(sb); sRdeps[sb].add(sa); }
-    }
-  });
-  const inboundWeight = sccsSorted.map(() => 0);
-  edges.forEach(e => {
-    const ds = sccOf[e.dst], ss = sccOf[e.src];
-    if (ds === undefined || ss === undefined || ds === ss) return;
-    inboundWeight[ds] += (e.refs || e.value || 1);
-  });
-  const seedSccs = new Set();
-  seedFolders.forEach(f => { const i = sccOf[f]; if (i !== undefined) seedSccs.add(i); });
-  const prereqIdx = new Set();
-  {
-    const st = [];
-    seedSccs.forEach(i => sdeps[i].forEach(d => { if (!seedSccs.has(d)) st.push(d); }));
-    while (st.length) {
-      const v = st.pop();
-      if (prereqIdx.has(v) || seedSccs.has(v)) continue;
-      prereqIdx.add(v);
-      sdeps[v].forEach(w => { if (!prereqIdx.has(w) && !seedSccs.has(w)) st.push(w); });
-    }
-  }
-  // Topo-order prereqs (deepest dep first — those have nothing left inside prereqIdx to wait on).
-  const prereqs = [];
-  {
-    const done = new Set();
-    while (done.size < prereqIdx.size) {
-      let pick = -1;
-      for (const i of prereqIdx) {
-        if (done.has(i)) continue;
-        let ok = true;
-        for (const d of sdeps[i]) if (prereqIdx.has(d) && !done.has(d)) { ok = false; break; }
-        if (ok) { pick = i; break; }
-      }
-      if (pick < 0) break;
-      done.add(pick);
-      prereqs.push({ folders: sccsSorted[pick], size: sccsSorted[pick].length, is_cycle: sccsSorted[pick].length > 1 });
-    }
-  }
-  // Cascade after seed: greedy pick by inbound-weight; cycle = wall.
-  const cascade = [];
-  const cascadeDone = new Set([...prereqIdx, ...seedSccs]);
-  const remaining = sdeps.map(s => {
-    let n = 0; s.forEach(d => { if (!cascadeDone.has(d)) n++; }); return n;
-  });
-  // Aggregate the seed SCC(s) into a single visible bundle.
-  const seedBundleFolders = [];
-  let seedBundleWeight = 0;
-  let seedHasCycle = false;
-  seedSccs.forEach(i => {
-    seedBundleFolders.push(...sccsSorted[i]);
-    seedBundleWeight += inboundWeight[i];
-    if (sccsSorted[i].length > 1) seedHasCycle = true;
-  });
-  seedBundleFolders.sort();
-  cascade.push({ folders: seedBundleFolders, size: seedBundleFolders.length,
-                 is_cycle: seedHasCycle, inbound_weight: seedBundleWeight,
-                 unlocks: [], isSeed: true });
-  seedSccs.forEach(seedScc => {
-    sRdeps[seedScc].forEach(r => {
-      if (cascadeDone.has(r)) return;
-      remaining[r]--;
-      if (remaining[r] === 0) cascade[0].unlocks.push({ folders: sccsSorted[r], size: sccsSorted[r].length });
-    });
-  });
-  let wall = null;
-  const HARD_CAP = 80;
-  while (cascade.length < HARD_CAP) {
-    const eligible = [];
-    for (let i = 0; i < sccsSorted.length; i++) {
-      if (cascadeDone.has(i)) continue;
-      if (remaining[i] === 0) eligible.push(i);
-    }
-    if (!eligible.length) {
-      const anyPending = sccsSorted.some((_, i) => !cascadeDone.has(i));
-      wall = anyPending
-        ? { type: 'unreachable', detail: 'Cascade exhausted. Remaining folders aren\'t reachable from this seed — pick another seed.' }
-        : { type: 'all_clear', detail: '🎉 Migrating this seed cascades through every remaining folder.' };
-      break;
-    }
-    const singles = eligible.filter(i => sccsSorted[i].length === 1);
-    const cyclesOnly = singles.length === 0;
-    if (cyclesOnly) {
-      const cyc = eligible.sort((a,b) => sccsSorted[a].length - sccsSorted[b].length)[0];
-      wall = { type: 'cycle', sccIdx: cyc, folders: sccsSorted[cyc], size: sccsSorted[cyc].length,
-               detail: 'Next move requires breaking a cyclic bundle.' };
-      break;
-    }
-    singles.sort((a,b) => inboundWeight[b] - inboundWeight[a] || sccsSorted[a][0].localeCompare(sccsSorted[b][0]));
-    const pick = singles[0];
-    cascadeDone.add(pick);
-    const step = { folders: sccsSorted[pick], size: 1, is_cycle: false,
-                   inbound_weight: inboundWeight[pick], unlocks: [] };
-    sRdeps[pick].forEach(r => {
-      if (cascadeDone.has(r)) return;
-      remaining[r]--;
-      if (remaining[r] === 0) step.unlocks.push({ folders: sccsSorted[r], size: sccsSorted[r].length });
-    });
-    cascade.push(step);
-  }
-  if (!wall && cascade.length >= HARD_CAP) wall = { type: 'cap', detail: 'Runway view capped at ' + HARD_CAP + ' steps.' };
-  return { seed, prereqs, cascade, wall };
-}
-
-function renderRunway() {
-  document.getElementById('targetBanner').style.display = 'none';
-  document.getElementById('planFilter').style.display = 'none';
-  document.getElementById('stuckDetails').style.display = 'none';
-  document.getElementById('planListHeading').textContent = '🗺 Migration plan';
-  const globalActions = document.querySelector('#panel-plan .rec-global-actions');
-  if (globalActions) globalActions.style.display = 'none';
-  const rec = document.getElementById('recCard');
-  const wrap = document.getElementById('planList');
-  wrap.innerHTML = '';
-  const r = computeRunway(runwaySeed);
-  const seedHtml = '<code>' + escapeHtml(runwaySeed) + '</code>';
-  if (r.error) {
-    rec.innerHTML = '<h3>🗺 Migration plan — ' + seedHtml + '</h3>' +
-      '<div class="info">' + escapeHtml(r.error) + '</div>' +
-      '<div class="card-actions"><button class="ghost" id="rwExit">← Back</button></div>';
-    document.getElementById('rwExit').onclick = clearRunway;
-    return;
-  }
-  const prereqsCount = r.prereqs.length;
-  const cascadeCount = r.cascade.length - 1; // exclude seed
-  const wallTxt = r.wall ? (
-    r.wall.type === 'all_clear' ? '🎉 unlocks everything remaining'
-      : r.wall.type === 'cycle' ? '⚠ blocks at cycle of ' + r.wall.size
-      : r.wall.type === 'unreachable' ? '🚧 cascade ends, others need another seed'
-      : '⏸ capped'
-  ) : '';
-  rec.innerHTML = '<h3>🗺 Migration plan — ' + seedHtml + '</h3>' +
-    '<div class="info">' +
-      '<b>' + prereqsCount + '</b> prereq step(s) needed first • ' +
-      'then your <b>seed</b> • ' +
-      'unlocks <b>' + cascadeCount + '</b> cascade step(s) • ' +
-      '<span style="font-weight:600;">' + wallTxt + '</span>' +
-    '</div>' +
-    '<div class="info" style="margin-top:6px;font-size:11px;color:var(--text-faint);background:var(--surface-2);padding:6px 10px;border-radius:4px;">' +
-      'ℹ️ Cascade is a <b>simulation</b>: it assumes you actually do the prereqs + seed. If you skip them, the unlocks below won\'t materialize.' +
-    '</div>' +
-    '<div class="card-actions">' +
-      '<button class="ghost" id="rwExit">← Back</button>' +
-      '<button class="ghost" id="rwReveal">Focus seed in graph</button>' +
-    '</div>';
-  document.getElementById('rwExit').onclick = clearRunway;
-  document.getElementById('rwReveal').onclick = () => focusToFolder(runwaySeed);
-
-  const renderStepCard = (s, opts) => {
-    const cls = opts.cls || 'step';
-    const badge = opts.badge || '';
-    const titleHtml = opts.title;
-    const unlocks = s.unlocks || [];
-    const unlocksHtml = unlocks.length === 0
-      ? ''
-      : '<div class="unlock-header">🔓 Unlocks <span class="unlock-count-badge">' + unlocks.length + '</span></div>' +
-        '<div class="unlock-list">' +
-          unlocks.slice(0, 12).map(u => {
-            const label = u.size === 1 ? u.folders[0] : '⚠ cycle×' + u.size;
-            const ccls = u.size === 1 ? 'unlock-chip' : 'unlock-chip cycle';
-            return '<span class="' + ccls + '" data-folder="' + escapeHtml(u.folders[0]) + '">' +
-              '<span class="arrow">↗</span>' + escapeHtml(label) + '</span>';
-          }).join('') +
-          (unlocks.length > 12 ? '<span class="unlock-chip" style="background:var(--surface-2);color:var(--text-faint);border-color:var(--border);cursor:default;">+' + (unlocks.length - 12) + ' more</span>' : '') +
-        '</div>';
-    const folderList = s.folders.slice(0, 6).map(f =>
-      '<div class="wiz-folder" data-folder="' + escapeHtml(f) + '">' +
-      '<code style="cursor:pointer;text-decoration:underline;">' + escapeHtml(f) + '</code></div>'
-    ).join('') + (s.folders.length > 6 ? '<div class="small">…+' + (s.folders.length - 6) + ' more</div>' : '');
-    const usageHtml = (s.inbound_weight && s.inbound_weight > 0)
-      ? '<div class="wiz-usage">📈 ' + s.inbound_weight + ' incoming ref' + (s.inbound_weight === 1 ? '' : 's') + '</div>'
-      : '';
-    // Same per-step actions as the wizard plan: preview/retarget the move and
-    // mark/unmark the step migrated. Marking re-renders the runway so the cascade
-    // recomputes against the new migrated set.
-    const isDone = s.folders.every(f => migrated.has(f));
-    const actionHtml = '<div class="step-actions">' +
-      '<button class="ghost" data-act="preview">🔍 Preview &amp; retarget</button>' +
-      (isDone
-        ? '<button class="ghost" data-act="unmark">↩ Unmark migrated</button>'
-        : '<button data-act="mark">✓ Mark migrated</button>') +
-      '</div>';
-    const div = document.createElement('div');
-    div.className = cls + (isDone ? ' done' : '');
-    div.innerHTML = '<div class="wiz-step-header">' +
-      '<span class="stepNum">' + escapeHtml(opts.label) + '</span>' +
-      '<span class="grow"><b>' + titleHtml + '</b></span>' +
-      (isDone ? '<span class="step-status done">✓ migrated</span>' : badge) + '</div>' +
-      folderList + usageHtml + unlocksHtml + actionHtml;
-    div.querySelectorAll('.wiz-folder code, .unlock-chip[data-folder]').forEach(el => {
-      el.onclick = (ev) => {
-        ev.stopPropagation();
-        const f = (el.closest('[data-folder]') || el).dataset.folder;
-        if (f) focusToFolder(f);
-      };
-    });
-    div.querySelectorAll('.step-actions button').forEach(b => {
-      b.onclick = (ev) => {
-        ev.stopPropagation();
-        if (b.dataset.act === 'preview') { openMigPreview(s.folders, opts.label); return; }
-        if (b.dataset.act === 'mark') {
-          s.folders.forEach(f => migrated.add(f));
-        } else {
-          s.folders.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
-        }
-        _invalidateBlockedCache();
-        updateMigratedSidebar();
-        updateBlockedSidebar();
-        renderPlan();   // routes back to renderRunway — cascade recomputes
-        render();
-      };
-    });
-    return div;
-  };
-
-  if (r.prereqs.length) {
-    const h = document.createElement('div');
-    h.className = 'small';
-    h.style.cssText = 'margin-top:10px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;font-size:11px;';
-    h.textContent = '⚙️ Prereqs — migrate first';
-    wrap.appendChild(h);
-    r.prereqs.forEach((p, i) => {
-      wrap.appendChild(renderStepCard(p, {
-        cls: 'step',
-        label: 'P' + (i + 1),
-        title: p.is_cycle ? '⚠ Cycle bundle of ' + p.size : 'Migrate folder',
-        badge: '<span class="step-status locked">prereq</span>',
-      }));
-    });
-  }
-  const sh = document.createElement('div');
-  sh.className = 'small';
-  sh.style.cssText = 'margin-top:14px;font-weight:700;color:var(--accent-strong);text-transform:uppercase;letter-spacing:.5px;font-size:11px;';
-  sh.textContent = '🎯 Seed + forward cascade';
-  wrap.appendChild(sh);
-  r.cascade.forEach((c, i) => {
-    wrap.appendChild(renderStepCard(c, {
-      cls: 'step' + (c.isSeed ? ' next' : ''),
-      label: c.isSeed ? 'SEED' : ('+' + i),
-      title: c.isSeed ? '🎯 Seed folder' : 'Becomes eligible',
-      badge: c.isSeed ? '<span class="step-status next">seed</span>' : '',
-    }));
-  });
-  if (r.wall) {
-    const w = document.createElement('div');
-    w.className = 'step';
-    if (r.wall.type === 'all_clear') {
-      w.style.cssText = 'background:var(--green-soft);border-color:var(--green);margin-top:10px;';
-      w.innerHTML = '<b style="color:var(--green);">' + escapeHtml(r.wall.detail) + '</b>';
-    } else if (r.wall.type === 'cycle') {
-      w.style.cssText = 'background:var(--orange-soft);border-color:var(--orange);margin-top:10px;';
-      const cyc = r.wall.folders.slice(0, 8).map(f =>
-        '<div class="wiz-folder" data-folder="' + escapeHtml(f) + '"><code style="cursor:pointer;text-decoration:underline;">' + escapeHtml(f) + '</code></div>'
-      ).join('');
-      w.innerHTML = '<div class="wiz-step-header"><span class="stepNum">🚧</span>' +
-        '<span class="grow"><b>Wall — cycle of ' + r.wall.size + ' folders</b></span>' +
-        '<span class="step-status next">blocker</span></div>' +
-        '<div class="info" style="font-size:11px;margin:4px 0;">' + escapeHtml(r.wall.detail) +
-        ' To pass this wall, extract one folder at a time from the cycle (see global Plan view for extraction candidates).</div>' +
-        cyc + (r.wall.folders.length > 8 ? '<div class="small">…+' + (r.wall.folders.length - 8) + ' more in cycle</div>' : '');
-      w.querySelectorAll('[data-folder]').forEach(el => {
-        el.onclick = (ev) => { ev.stopPropagation(); focusToFolder(el.dataset.folder); };
-      });
-    } else {
-      w.style.cssText = 'background:var(--surface-2);margin-top:10px;';
-      w.innerHTML = '<b>🚧 ' + escapeHtml(r.wall.detail) + '</b>';
-    }
-    wrap.appendChild(w);
-  }
-}
-
-// Patch renderPlan: node-driven inspection views (runway / 🎯 target) take
-// precedence; the default landing is always the master-plan feed.
-const _origRenderPlan = renderPlan;
-renderPlan = function() {
-  if (runwaySeed) { renderRunway(); return; }
-  if (migrationTarget) { _origRenderPlan(); return; }
-  renderMasterFeed();
-};
-// Restore the active node-driven plan view (🎯 target / 🗺 runway). Drop ids that
-// no longer exist in the tree so a stale seed can't blank the Plan tab.
-{
-  const pv = loadPlanViewLS();
-  if (pv) {
-    if (pv.runwaySeed && tree[pv.runwaySeed]) runwaySeed = pv.runwaySeed;
-    if (pv.migrationTarget && tree[pv.migrationTarget]) migrationTarget = pv.migrationTarget;
-  }
-}
 renderPlan();
-renderWizard();
 applyMode('explore');
 updateMigratedSidebar();
 updateExcludeSidebar();

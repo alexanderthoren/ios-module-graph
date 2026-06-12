@@ -107,7 +107,7 @@ function tarjanSccs(nodes, deps) {
 }
 
 // SCC-aware, deterministic migration-plan ordering — the algorithmic core of
-// computeWizardPlan, extracted so it can be unit-tested and cross-checked
+// the plan views, extracted so it can be unit-tested and cross-checked
 // against Python's modgraph.graph.compute_migration_plan.
 //
 //   sourceSet: array of in-scope folder ids (excluded/migrated/blocked already
@@ -382,6 +382,20 @@ function masterStepPrompt(step, ctx) {
   if (why.narrative) L.push(why.narrative);
   if (sh.rule) L.push('Shape decision: ' + sh.rule + '.');
 
+  if (sh.mode === 'setup') {
+    // One-time prerequisite — instructions come straight from the engine's
+    // detection-driven checklist item; no code moves, so no guard.
+    const d = step.details || {};
+    L.push('');
+    L.push('## Steps');
+    (d.how || []).forEach((h, i) => L.push((i + 1) + '. ' + h));
+    if (d.done_when) {
+      L.push('');
+      L.push('Done when: ' + d.done_when);
+    }
+    return L.join('\n');
+  }
+
   if (sh.mode === 'move_file') {
     const m = ctx.move || {};
     L.push('');
@@ -477,6 +491,43 @@ function masterStepPrompt(step, ctx) {
     L.push('3. If the module exists for a reason the dependency graph cannot '
       + 'see (dynamic loading, app extensions, a license boundary), say so '
       + 'instead of folding it.');
+  } else if (sh.mode === 'api_retrofit') {
+    const protocols = sh.protocols_for || [];
+    const surface = sh.api_surface || [];
+    const values = surface.filter(t => protocols.indexOf(t) < 0);
+    L.push('');
+    L.push('## Steps — put an API package in front of the existing module');
+    L.push('1. Create the library target `' + sh.api_module + '` (no SDK '
+      + 'dependencies; other *API packages only).');
+    L.push('2. Move the contract there: '
+      + (protocols.length ? 'protocols extracted from ' + protocols.join(', ')
+         + (sh.api_surface_count > surface.length ? ', …' : '') : '')
+      + (protocols.length && values.length ? '; ' : '')
+      + (values.length ? 'value types ' + values.join(', ') + ' move whole'
+         : '')
+      + (surface.length ? '.' : 'every externally-referenced type ('
+         + (sh.api_surface_count || 0) + ').'));
+    L.push('3. Make `' + sh.impl_module + '` depend on `' + sh.api_module
+      + '` and conform to its protocols.');
+    L.push('4. Rewire every consumer to import `' + sh.api_module + '` only; '
+      + 'the composition root alone keeps the `' + sh.impl_module
+      + '` import and binds impl → API at startup.');
+  } else if (sh.mode === 'partition') {
+    const parts = (step.details || {}).parts || [];
+    const core = (step.details || {}).core || {};
+    L.push('');
+    L.push('## Steps — split along the usage seams (one slice per consumer cohort)');
+    L.push('1. Create the shared-core target first ('
+      + (core.types || 0) + ' type(s) reachable from several cohorts) — every '
+      + 'slice may depend on it, slices never depend on each other.');
+    parts.forEach((pt, i) => {
+      L.push((i + 2) + '. Slice for ' + (pt.consumers || []).join(', ') + ': '
+        + pt.types + ' type(s) (' + (pt.type_sample || []).join(', ')
+        + (pt.types > (pt.type_sample || []).length ? ', …' : '') + '), '
+        + pt.public + ' go public; retarget those consumers to the new slice.');
+    });
+    L.push((parts.length + 2) + '. The remainder stays in `' + step.subject
+      + '`; re-render and verify the warm/cold movement below.');
   }
 
   L.push('');

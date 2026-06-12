@@ -36,6 +36,28 @@ def _plan(**over):
         }],
         "steps": [
             {
+                "id": "setup:ratchet", "kind": "setup", "phase": -1,
+                "subject": "setup:ratchet",
+                "title": "Wire the architecture ratchet into CI",
+                "shape": {"mode": "setup",
+                          "rule": "Lock in each step's structural win.",
+                          "destination": None},
+                "what": {"files": 0, "types": 0, "resources_count": 0,
+                         "resources": []},
+                "why": {"narrative": "Lock in each step's structural win.",
+                        "roi": None, "payoff": 0.0, "effort": 0.0,
+                        "warm": None, "crit": None, "churn": None,
+                        "cold_delta_s": None},
+                "after": [], "unblocks": [],
+                "details": {"how": ["Commit a baseline snapshot.",
+                                    "Run just check in CI."],
+                            "done_when": "CI fails on any new folder edge "
+                                         "or cycle."},
+                "verify": {"commands": [],
+                           "expect": {"done_when": "CI fails on any new "
+                                                   "folder edge or cycle."}},
+            },
+            {
                 "id": "move:B/F.swift", "kind": "move_file", "phase": 0,
                 "subject": "B/F.swift", "title": "Move F.swift → X/",
                 "shape": {"mode": "move_file", "rule": "reference affinity",
@@ -96,13 +118,18 @@ class MarkdownTest(unittest.TestCase):
 
     def test_title_and_header_counts(self):
         self.assertIn("# Migration Plan — ToyProj", self.md)
-        self.assertIn("Steps: **2** in **2** phase(s)", self.md)
+        self.assertIn("Steps: **3** in **3** phase(s)", self.md)
         self.assertIn("equilibrium **not met**", self.md)
 
-    def test_setup_section_rendered_as_checklist(self):
-        self.assertIn("## Setup (one-time, do these first)", self.md)
-        self.assertIn("- [ ] **Wire the architecture ratchet into CI**", self.md)
-        self.assertIn("Done when: CI fails", self.md)
+    def test_setup_renders_as_the_leading_phase(self):
+        # No separate Setup section: prerequisites are phase -1 of the feed.
+        self.assertNotIn("## Setup (one-time, do these first)", self.md)
+        p_setup = self.md.index("One-time prerequisites")
+        p0 = self.md.index("## Phase 0 —")
+        self.assertLess(p_setup, p0)
+        self.assertIn("Wire the architecture ratchet into CI", self.md)
+        self.assertIn("1. Commit a baseline snapshot.", self.md)
+        self.assertIn("done_when CI fails", self.md)
 
     def test_steps_grouped_by_phase_in_order(self):
         p0 = self.md.index("## Phase 0 —")
@@ -186,7 +213,7 @@ class WritersTest(unittest.TestCase):
             write_master_plan_json(_plan(), _meta(), out)
             data = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(data["meta"]["root_label"], "ToyProj")
-            self.assertEqual(len(data["master_plan"]["steps"]), 2)
+            self.assertEqual(len(data["master_plan"]["steps"]), 3)
             self.assertIn("equilibrium", data["master_plan"])
 
 

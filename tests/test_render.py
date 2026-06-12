@@ -143,13 +143,16 @@ class RenderHtmlOutputTest(unittest.TestCase):
                     "quick_wins", "file_moves", "module_splits", "master_plan"):
             self.assertIn(key, data)
 
-    def test_migration_mode_is_setup_plus_plan_only(self):
-        # Migration mode ships exactly two surfaces: the Setup tab (checklist +
-        # scope wizard) and the Plan tab (the master-plan feed). The old
-        # Advisor / Quick wins panels must not resurface.
-        self.assertIn("setupChecklist", self.html)
+    def test_migration_mode_is_the_plan_only(self):
+        # Migration mode ships exactly ONE surface: the Plan tab (the master
+        # plan feed, with one-time prerequisites as its leading phase). The
+        # old Setup tab, scope wizard, Advisor and Quick wins panels must not
+        # resurface — the tool answers, it doesn't ask.
         self.assertIn("function renderMasterFeed", self.html)
         self.assertIn("function masterStepPrompt", self.html)
+        self.assertNotIn("setupChecklist", self.html)
+        self.assertNotIn("panel-wizard", self.html)
+        self.assertNotIn("computeWizardPlan", self.html)
         self.assertNotIn("panel-quickwins", self.html)
         self.assertNotIn("panel-advisor", self.html)
 
