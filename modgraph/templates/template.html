@@ -769,9 +769,10 @@
         <div id="impTableWrap"></div>
       </div>
 
-      <!-- MIGRATION SETUP TAB: one-time prerequisites (detection-driven, from
-           payload.master_plan.setup) + the scope picker that parameterizes a
-           custom wizard plan. -->
+      <!-- MIGRATION SETUP TAB: one-time prerequisites only (detection-driven,
+           from payload.master_plan.setup). There is deliberately NO scope
+           picker: the engine evaluates everything and the Plan tab IS the
+           proposed architecture — the tool doesn't ask, it answers. -->
       <div class="panel" id="panel-wizard">
         <h3 style="margin-top: 4px;">Project setup</h3>
         <div class="small" style="margin-bottom: 6px;">
@@ -779,37 +780,6 @@
           Check items off as you land them — the Plan tab assumes they exist.
         </div>
         <div id="setupChecklist"></div>
-
-        <h3 style="margin-top: 14px;">Scope (optional)</h3>
-        <div class="small" style="margin-bottom: 10px;">
-          The <b>Plan</b> tab already orders everything worth doing. Use this
-          only to scope a custom plan: pick where code is moving <b>from</b>,
-          where it should land, and compute a step-by-step plan for exactly
-          that move.
-        </div>
-
-        <h2>1 · Source <span class="small" style="font-weight:500;">(extract folders out of)</span></h2>
-        <div id="wizSource"></div>
-
-        <h2 style="margin-top:14px;">2 · Targets <span class="small" style="font-weight:500;">(destinations)</span></h2>
-        <div class="small" style="margin-bottom:6px;">Tick one or more existing SPM packages, and/or add new ones.</div>
-        <div id="wizTargets"></div>
-        <div style="display:flex;gap:6px;margin:6px 0 10px;">
-          <input id="wizNewTarget" placeholder="New package name…" style="margin:0;flex:1;" />
-          <button id="wizAddTarget" class="ghost">+ Add</button>
-        </div>
-
-        <h2 style="margin-top:14px;">3 · Assignment <span class="small" style="font-weight:500;">(which folder → which target)</span></h2>
-        <div class="small" style="margin-bottom:6px;">
-          Defaults to the first target. Click a chip to cycle through chosen targets, or
-          tag a folder as <b>stay</b> to keep it in the source.
-        </div>
-        <div id="wizAssign" style="max-height: 280px; overflow:auto; padding: 4px;"></div>
-
-        <div style="display:flex;gap:6px;margin-top:14px;">
-          <button id="wizCompute">⚙ Compute plan →</button>
-          <button id="wizReset" class="ghost">Reset</button>
-        </div>
       </div>
 
       <!-- PLAN TAB -->
@@ -1972,7 +1942,7 @@ document.getElementById('applyAll').onclick = () => {
   // Plan tab is wizard-driven now — apply the wizard's plan when one exists,
   // otherwise fall back to the global plan (only reachable if the user opens
   // a target-driven plan and clicks Apply All from that view).
-  const src = (wizPlan && wizPlan.length) ? wizPlan : plan;
+  const src = plan;
   src.forEach(s => s.folders.forEach(f => migrated.add(f)));
   _invalidateBlockedCache();
   renderPlan();
@@ -2343,11 +2313,10 @@ function masterStepHtml(s) {
     + '</div></details>';
   const alt = s.details && s.details.alternative
     ? '<div class="small" style="color:var(--text-faint);">↔ ' + escapeHtml(s.details.alternative) + '</div>' : '';
+  // Exactly two actions: copy the execution prompt, mark it done. The engine
+  // already arbitrated every alternative (runner-ups ship as text in
+  // `alternative`); competing interactive tools would re-open decided questions.
   const B = [];
-  if (EXTRACT_KINDS.has(s.kind)) B.push('<button class="ghost" data-pa="preview">⚡ Preview</button>');
-  if (s.kind === 'cut_then_extract') B.push('<button class="ghost" data-pa="target">🎯 Plan path</button>');
-  if (s.kind === 'split_module' && DATA.divisions && DATA.divisions[s.subject]) B.push('<button class="ghost" data-pa="divide">✂️ Divide</button>');
-  if (s.kind === 'isolate_type') B.push('<button class="ghost" data-pa="isolate">🎯 Isolate</button>');
   B.push('<button class="ghost" data-pa="prompt">📝 Prompt</button>');
   B.push(done ? '<button class="ghost" data-pa="undo">↩ Undo</button>'
               : '<button data-pa="done">✓ Done</button>');
@@ -2369,11 +2338,7 @@ function masterStepEl(s) {
     b.onclick = (ev) => {
       ev.stopPropagation();
       const act = b.dataset.pa;
-      if (act === 'preview') openMigPreview([s.subject], '🎯');
-      else if (act === 'target') setTarget(s.subject);
-      else if (act === 'divide') openDivide(s.subject);
-      else if (act === 'isolate') openIsolate(s.subject);
-      else if (act === 'prompt') copyPrompt(b, masterStepPrompt(s, masterStepCtx(s)), '📝 Prompt');
+      if (act === 'prompt') copyPrompt(b, masterStepPrompt(s, masterStepCtx(s)), '📝 Prompt');
       else if (act === 'done' || act === 'undo') {
         if (act === 'done') planDone.add(s.id); else planDone.delete(s.id);
         savePlanDone();
@@ -4422,8 +4387,9 @@ const PACKAGES = DATA.packages || [];
 const FOLDER_PKG = DATA.folder_package || {};
 // Migration setup (source/targets/per-folder assignment/new packages) persists in
 // localStorage keyed by root, so it survives HTML regeneration until the user
-// changes it (or clicks Reset). Shape is normalized on load so a partial/old blob
-// can't crash the wizard. `wizPlan` is derived and recomputed at startup below.
+// changes it. Shape is normalized on load so a partial/old blob can't crash.
+// (Only the per-folder `assign` map is still consulted — by the preview modal's
+// retarget flow and the generated prompts; the scope-picker wizard is gone.)
 const WIZ_KEY = 'modgraph-wiz::' + (DATA.root_path || '');
 function loadWizLS() {
   try {
@@ -4440,24 +4406,6 @@ function loadWizLS() {
 function saveWizLS() {
   try { localStorage.setItem(WIZ_KEY, JSON.stringify(wiz)); } catch (e) {}
 }
-// The COMPUTED plan is persisted verbatim too, so it stays exactly as last
-// computed until the user computes a new one (or resets) — not re-derived on
-// every load. `null` = no plan yet; `[]` = computed but nothing to move.
-const WIZPLAN_KEY = 'modgraph-wizplan::' + (DATA.root_path || '');
-function loadWizPlanLS() {
-  try { const v = JSON.parse(localStorage.getItem(WIZPLAN_KEY) || 'null');
-        if (Array.isArray(v)) return v; } catch (e) {}
-  return null;
-}
-function saveWizPlanLS() {
-  try {
-    if (wizPlan === null) localStorage.removeItem(WIZPLAN_KEY);
-    else localStorage.setItem(WIZPLAN_KEY, JSON.stringify(wizPlan));
-  } catch (e) {}
-}
-const wiz = loadWizLS() || { sourceId: null, targetIds: [], assign: {}, newPkgs: [] };
-let wizPlan = null;
-
 // The other two "plan" views are node-driven and ephemeral: 🎯 Plan-to-move
 // (migrationTarget) and 🗺 runway (runwaySeed). Persist whichever is active so
 // the Plan tab survives regeneration — the path itself is recomputed from the
@@ -4526,94 +4474,9 @@ function labelForTarget(id) {
 }
 
 function renderWizard() {
+  // Setup tab = the detection-driven checklist only. No scope picker:
+  // the engine evaluates everything; the Plan tab is the answer.
   renderSetupChecklist();
-  // 1. Source
-  const srcEl = document.getElementById('wizSource');
-  if (!srcEl) return;
-  // Every wiz mutation re-renders the wizard — persist here so source/target/
-  // assignment/new-package edits all survive regeneration without per-handler saves.
-  saveWizLS();
-  srcEl.innerHTML = '';
-  if (!PACKAGES.length) {
-    srcEl.innerHTML = '<div class="small">No packages detected.</div>';
-  }
-  PACKAGES.forEach(p => {
-    const row = document.createElement('label');
-    row.className = 'wiz-row';
-    const sub = p.kind === 'app' ? 'xcodeproj remainder' : 'SPM package';
-    row.innerHTML = '<input type="radio" name="wizSrc">' +
-      '<span><b>' + escapeHtml(p.label) + '</b> ' +
-      '<span class="small">· ' + sub + ' · ' + p.folders.length + ' folder' +
-      (p.folders.length === 1 ? '' : 's') + '</span></span>';
-    const radio = row.querySelector('input');
-    radio.checked = wiz.sourceId === p.id;
-    radio.onchange = () => {
-      wiz.sourceId = p.id;
-      wiz.assign = {};
-      // Drop the source from chosen targets if previously selected.
-      wiz.targetIds = wiz.targetIds.filter(t => t !== p.id);
-      renderWizard();
-    };
-    srcEl.appendChild(row);
-  });
-
-  // 2. Targets — existing SPMs (excluding the chosen source) + user-added new.
-  const tgtEl = document.getElementById('wizTargets');
-  tgtEl.innerHTML = '';
-  const candidates = [
-    ...PACKAGES.filter(p => p.kind === 'spm' && p.id !== wiz.sourceId),
-    ...wiz.newPkgs.map(n => ({ id: 'new:' + n, label: n + ' (new SPM)', kind: 'new', folders: [] })),
-  ];
-  if (!candidates.length) {
-    tgtEl.innerHTML = '<div class="small">No candidate targets yet — add one below.</div>';
-  }
-  candidates.forEach(p => {
-    const row = document.createElement('label');
-    row.className = 'wiz-row';
-    const checked = wiz.targetIds.includes(p.id);
-    row.innerHTML = '<input type="checkbox"> <span>' + escapeHtml(p.label) + '</span>';
-    const cb = row.querySelector('input');
-    cb.checked = checked;
-    cb.onchange = () => {
-      if (cb.checked) { if (!wiz.targetIds.includes(p.id)) wiz.targetIds.push(p.id); }
-      else { wiz.targetIds = wiz.targetIds.filter(x => x !== p.id);
-        // Reassign folders pointed at this target back to first remaining or stay.
-        Object.keys(wiz.assign).forEach(f => {
-          if (wiz.assign[f] === p.id) wiz.assign[f] = wiz.targetIds[0] || 'stay';
-        });
-      }
-      renderWizard();
-    };
-    tgtEl.appendChild(row);
-  });
-
-  // 3. Assignment
-  const asEl = document.getElementById('wizAssign');
-  asEl.innerHTML = '';
-  if (!wiz.sourceId) { asEl.innerHTML = '<div class="small">Pick a source first.</div>'; return; }
-  if (!wiz.targetIds.length) { asEl.innerHTML = '<div class="small">Pick at least one target.</div>'; return; }
-  const choices = [...wiz.targetIds, 'stay'];
-  const okTargets = new Set(choices);
-  const srcFolders = wizSourceFolders().sort();
-  srcFolders.forEach(f => {
-    // Keep a value if it (or its package) is still a chosen target — this
-    // preserves module-level picks made in the preview modal. The chip cycles
-    // only the coarse package-level choices; refine to a module in the modal.
-    const cur = wiz.assign[f];
-    if (cur === undefined || !(okTargets.has(cur) || okTargets.has(targetPkgOf(cur)))) {
-      wiz.assign[f] = wiz.targetIds[0];
-    }
-    const row = document.createElement('div');
-    row.className = 'wiz-asgn';
-    row.innerHTML = '<span class="wiz-folder" title="' + escapeHtml(f) + '">' + escapeHtml(f) + '</span>' +
-      '<button class="wiz-chip">' + escapeHtml(labelForTarget(wiz.assign[f])) + '</button>';
-    row.querySelector('button').onclick = () => {
-      const i = choices.indexOf(wiz.assign[f]);
-      wiz.assign[f] = choices[(i + 1) % choices.length];
-      renderWizard();
-    };
-    asEl.appendChild(row);
-  });
 }
 
 // Tarjan SCC over a chosen folder subset, iterative to dodge deep stacks.
@@ -4636,155 +4499,8 @@ function wizComputeSccs(set) {
   return { deps, sccs };
 }
 
-function computeWizardPlan(folderSet) {
-  // Mirror Python's compute_migration_plan: SCC condensation + impact-based
-  // ranking, so the wizard plan respects the dependency DAG. Drops out-of-scope
-  // folders up front:
-  //   - excluded — user said won't-modularize, ignore entirely.
-  //   - migrated — already SPM, edges into them are satisfied deps, not work.
-  //   - blocked  — transitively depend on excluded; SPM can't link non-SPM
-  //                code so they can't be moved either. Surface elsewhere.
-  const blockedSet = blockedByExcludedSet();
-  const sourceSet = folderSet.filter(f =>
-    !excluded.has(f) && !migrated.has(f) && !blockedSet.has(f)
-  );
-  // SCC condensation + impact-ranked ordering lives in graph_logic.js
-  // (migrationPlanOrder, unit-tested + cross-checked vs Python). wizComputeSccs
-  // still builds `deps` from app state (excluded/migrated edge filtering); the
-  // "most-used" tiebreaker reads inbound reference weight from the edges. Here we
-  // only decorate each step with the per-folder target assignment (pure UI).
-  const { deps } = wizComputeSccs(sourceSet);
-  const wedges = edges.map(e => ({ src: e.src, dst: e.dst, w: (e.refs || e.value || 1) }));
-  // ROI ranking (quick wins lead) when the payload ships per-folder scores —
-  // keeps the wizard's order aligned with the CLI's ROI-ranked plan.
-  const qwItems = (DATA.quick_wins && DATA.quick_wins.items) || [];
-  let scores = null;
-  if (qwItems.length) {
-    scores = {};
-    qwItems.forEach(i => { scores[i.folder] = { payoff: i.payoff, effort: i.effort }; });
-  }
-  return migrationPlanOrder(sourceSet, deps, wedges, scores).map(s => ({
-    ...s,
-    targets: s.folders.map(f => wiz.assign[f] || 'stay'),
-  }));
-}
 
-function renderWizardPlan() {
-  // Assignment edits from the preview/retarget modal land here — persist setup
-  // and the freshly-computed plan so both survive regeneration.
-  saveWizLS();
-  saveWizPlanLS();
-  document.getElementById('targetBanner').style.display = 'none';
-  document.getElementById('planFilter').style.display = 'none';
-  document.getElementById('stuckDetails').style.display = 'none';
-  const rec = document.getElementById('recCard');
-  const srcLabel = (PACKAGES.find(p => p.id === wiz.sourceId) || {}).label || '?';
-  const tgtLabels = wiz.targetIds.map(labelForTarget).join(', ') || '(none)';
-  if (!wizPlan || !wizPlan.length) {
-    rec.innerHTML = '<h3>No steps</h3><div class="info">Nothing to migrate — every source folder is set to <b>stay</b>.</div>';
-    document.getElementById('planList').innerHTML = '';
-    return;
-  }
-  rec.innerHTML = '<h3>🧭 Wizard plan</h3>' +
-    '<div class="info"><b>From:</b> ' + escapeHtml(srcLabel) + '<br><b>To:</b> ' + escapeHtml(tgtLabels) + '<br>' +
-    '<b>' + wizPlan.length + '</b> step(s), ordered so each step\'s deps are already migrated.</div>';
-  const wrap = document.getElementById('planList');
-  wrap.innerHTML = '';
-  const wizStepIsDone = s => s.folders.every(f => migrated.has(f));
-  // Reorder the plan around what you've actually migrated so the NEXT card is the
-  // thing you just unlocked — not a fixed list position. Buckets, then original
-  // rank within each: (0) done, (1) eligible AND unlocked by an already-migrated
-  // step = "just unlocked", (2) eligible from the start, (3) still blocked.
-  // Status is eligibility-driven: a step is actionable once every folder it
-  // depends on is migrated, so marking a step flips what it unlocks to "ready".
-  const stepKey = s => s.folders.join('');
-  const unlockedByDone = new Set();
-  wizPlan.forEach(s => { if (wizStepIsDone(s)) (s.unlocks || []).forEach(u => unlockedByDone.add(u.folders.join(''))); });
-  const stepBucket = s => {
-    if (wizStepIsDone(s)) return 0;
-    if (!isStepEligible(s)) return 3;
-    return unlockedByDone.has(stepKey(s)) ? 1 : 2;
-  };
-  const ordered = wizPlan
-    .map((s, i) => ({ s, i }))
-    .sort((a, b) => stepBucket(a.s) - stepBucket(b.s) || a.i - b.i);
-  const firstEligibleDisplay = ordered.findIndex(o => !wizStepIsDone(o.s) && isStepEligible(o.s));
-  ordered.forEach((o, displayIdx) => {
-    const s = o.s;
-    const div = document.createElement('div');
-    const isDone = wizStepIsDone(s);
-    const isEligible = !isDone && isStepEligible(s);
-    const isNext = isEligible && displayIdx === firstEligibleDisplay;
-    const isReady = isEligible && !isNext;
-    const isLocked = !isDone && !isEligible;
-    div.className = 'step' + (isDone ? ' done' : '') + (isNext || isReady ? ' next' : '');
-    const lines = s.folders.map((f, i) =>
-      '<div style="margin: 2px 0;" class="wiz-folder" data-folder="' + escapeHtml(f) + '">' +
-      '<code style="cursor:pointer;text-decoration:underline;">' + escapeHtml(f) + '</code>' +
-      ' <span class="small">→ ' + escapeHtml(labelForTarget(s.targets[i])) + '</span></div>'
-    ).join('');
-    const unlocks = s.unlocks || [];
-    const unlocksHtml = unlocks.length === 0
-      ? '<div class="info" style="margin-top:8px;font-size:11px;color:var(--text-faint);">📭 Unlocks nothing new (sink in DAG).</div>'
-      : '<div class="unlock-header">🔓 Unlocks <span class="unlock-count-badge">' + unlocks.length + '</span> bundle' + (unlocks.length === 1 ? '' : 's') + '</div>' +
-        '<div class="unlock-list">' +
-          unlocks.slice(0, 12).map(u => {
-            const label = u.size === 1 ? u.folders[0] : '⚠ cycle×' + u.size;
-            const cls = u.size === 1 ? 'unlock-chip' : 'unlock-chip cycle';
-            const title = u.size === 1 ? u.folders[0] : 'Cycle of ' + u.size + ': ' + u.folders.join(', ');
-            return '<span class="' + cls + '" data-folder="' + escapeHtml(u.folders[0]) + '" title="' + escapeHtml(title) + '">' +
-              '<span class="arrow">↗</span>' + escapeHtml(label) + '</span>';
-          }).join('') +
-          (unlocks.length > 12 ? '<span class="unlock-chip" style="background:var(--surface-2);color:var(--text-faint);border-color:var(--border);cursor:default;">+' + (unlocks.length - 12) + ' more</span>' : '') +
-        '</div>';
-    const usageHtml = (s.inbound_weight && s.inbound_weight > 0)
-      ? '<div class="wiz-usage">📈 ' + s.inbound_weight + ' incoming ref' + (s.inbound_weight === 1 ? '' : 's') + ' • most-used picked earlier</div>'
-      : '';
-    const statusBadge = isDone
-      ? '<span class="step-status done">✓ migrated</span>'
-      : isNext
-        ? '<span class="step-status next">▶ next</span>'
-        : isReady
-          ? '<span class="step-status next">▶ ready</span>'
-          : '<span class="step-status locked">🔒 blocked</span>';
-    const headerHtml = '<div class="wiz-step-header">' +
-      '<span class="stepNum">' + (displayIdx + 1) + '.</span>' +
-      '<span class="grow"><b>' + (s.is_cycle ? '⚠ Bundle of ' + s.size + ' (cyclically coupled)' : 'Move folder') + '</b></span>' +
-      stepScoreBadges(s) +
-      statusBadge +
-      '</div>';
-    const actionHtml = '<div class="step-actions">' +
-      '<button class="ghost" data-act="preview">🔍 Preview &amp; retarget</button>' +
-      (isDone
-        ? '<button class="ghost" data-act="unmark">↩ Unmark migrated</button>'
-        : '<button data-act="mark">✓ Mark migrated</button>') +
-      '</div>';
-    div.innerHTML = headerHtml + lines + usageHtml + unlocksHtml + actionHtml;
-    wrap.appendChild(div);
-    div.querySelectorAll('.wiz-folder code, .unlock-chip[data-folder]').forEach(el => {
-      el.onclick = (ev) => {
-        ev.stopPropagation();
-        const f = (el.closest('[data-folder]') || el).dataset.folder;
-        if (f) focusToFolder(f);
-      };
-    });
-    div.querySelectorAll('.step-actions button').forEach(b => {
-      b.onclick = (ev) => {
-        ev.stopPropagation();
-        if (b.dataset.act === 'preview') { openMigPreview(s.folders, s.step); return; }
-        if (b.dataset.act === 'mark') {
-          s.folders.forEach(f => migrated.add(f));
-        } else {
-          s.folders.forEach(f => { if (!INITIAL_MIGRATED.has(f)) migrated.delete(f); });
-        }
-        _invalidateBlockedCache();
-        renderWizardPlan();
         render();
-      };
-    });
-  });
-}
-
 // ── migration preview & retarget modal ──────────────────────────────────────
 // Opened from a wizard plan step. Shows exactly which folders + .swift files
 // move, whether each destination is a NEW SPM module (created) or an EXISTING
@@ -4841,10 +4557,10 @@ function mpModuleOptions(pid, curSeg) {
   return html;
 }
 function mpApplyAndRefresh() {
-  // Recompute the wizard plan from current assignments, keeping the modal open.
-  const moving = Object.keys(wiz.assign).filter(f => wiz.assign[f] !== 'stay');
-  wizPlan = moving.length ? computeWizardPlan(moving) : [];
-  _invalidateBlockedCache();
+  // Assignment edits persist in wiz.assign (used by the prompts); the active
+  // node-driven plan re-renders. There is no wizard plan anymore.
+  saveWizLS();
+  _invalidateBlockedCache();_invalidateBlockedCache();
   // Re-render whichever plan is active (runway/target/wizard) so retargeting from
   // a runway step doesn't yank the panel over to the wizard plan.
   renderPlan();
@@ -5675,35 +5391,6 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && !document.getElementById('divideStepOverlay').classList.contains('hidden')) closeStepViz();
 });
 
-document.getElementById('wizAddTarget').onclick = () => {
-  const el = document.getElementById('wizNewTarget');
-  const name = el.value.trim();
-  if (!name) return;
-  if (!wiz.newPkgs.includes(name)) {
-    wiz.newPkgs.push(name);
-    if (!wiz.targetIds.includes('new:' + name)) wiz.targetIds.push('new:' + name);
-  }
-  el.value = '';
-  renderWizard();
-};
-document.getElementById('wizReset').onclick = () => {
-  wiz.sourceId = null; wiz.targetIds = []; wiz.assign = {}; wiz.newPkgs = [];
-  wizPlan = null;
-  saveWizPlanLS();
-  renderWizard();
-};
-document.getElementById('wizCompute').onclick = () => {
-  if (!wiz.sourceId) { alert('Pick a source.'); return; }
-  if (!wiz.targetIds.length) { alert('Pick at least one target.'); return; }
-  const moving = Object.keys(wiz.assign).filter(f => wiz.assign[f] !== 'stay');
-  if (!moving.length) { alert('Every folder is set to stay — nothing to move.'); return; }
-  wizPlan = computeWizardPlan(moving);
-  // A wizard compute is now the active plan view — drop any node-driven runway/
-  // target so it (not a stale seed) is what renders here and after reload.
-  runwaySeed = null; migrationTarget = null; savePlanViewLS();
-  switchTab('plan');
-  renderWizardPlan();
-};
 
 // ── Runway computation: pin a seed folder as "next migrated", then forward-cascade
 // until something locks (cycle bundle or eligible set empties). Reuses the same
@@ -6016,30 +5703,14 @@ function renderRunway() {
   }
 }
 
-// Patch renderPlan: node-driven views (runway / 🎯 target) and a computed
-// wizard plan take precedence; the default landing is the master-plan feed.
+// Patch renderPlan: node-driven inspection views (runway / 🎯 target) take
+// precedence; the default landing is always the master-plan feed.
 const _origRenderPlan = renderPlan;
 renderPlan = function() {
   if (runwaySeed) { renderRunway(); return; }
   if (migrationTarget) { _origRenderPlan(); return; }
-  const globalActions = document.querySelector('#panel-plan .rec-global-actions');
-  if (currentMode === 'migration' && wizPlan) {
-    if (globalActions) globalActions.style.display = '';
-    renderWizardPlan();
-    return;
-  }
   renderMasterFeed();
 };
-
-// Restore the plan exactly as last computed. Prefer the persisted plan verbatim
-// so it survives regeneration untouched until the user computes a new one; only
-// recompute as a fallback (e.g. an older blob that saved the setup but no plan).
-// Guarded: a stale setup referencing folders that no longer exist must not abort boot.
-wizPlan = loadWizPlanLS();
-if (wizPlan === null && wiz.sourceId && wiz.targetIds.length) {
-  const moving = Object.keys(wiz.assign).filter(f => wiz.assign[f] !== 'stay');
-  if (moving.length) { try { wizPlan = computeWizardPlan(moving); } catch (e) { wizPlan = null; } }
-}
 // Restore the active node-driven plan view (🎯 target / 🗺 runway). Drop ids that
 // no longer exist in the tree so a stale seed can't blank the Plan tab.
 {
