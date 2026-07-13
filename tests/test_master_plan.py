@@ -441,5 +441,76 @@ class EquilibriumUpgradeTest(unittest.TestCase):
         self.assertFalse(eff["met"])
 
 
+class Wave3ReorderTest(unittest.TestCase):
+    """Wave-3 surgery is re-sorted against the post-extraction graph, not the
+    advisor's stale baseline leverage."""
+
+    @staticmethod
+    def _inputs():
+        # Two existing SPM modules M1, M2, each with 2 direct consumers and no
+        # API counterpart -> both get an api_retrofit in wave 3. The advisor's
+        # baseline order ties (no recommendations -> leverage 0) and breaks by
+        # id, so baseline is [api:M1, api:M2]. But the *simulated* graph makes
+        # M2 the heavier module (app, M1 and the extracted Feat all depend on
+        # it; M1 only feeds the app), so the refreshed leverage flips it.
+        quick_wins = {"items": [_qw("Feat", 40.0, action="new_module")],
+                      "summary": {"churned": False}}
+        module_graph = {
+            "nodes": [
+                {"id": "app", "kind": "app", "label": "App", "types": 2,
+                 "warm": 0},
+                {"id": "M1", "kind": "spm", "label": "M1", "types": 1,
+                 "warm": 0},
+                {"id": "M2", "kind": "spm", "label": "M2", "types": 1,
+                 "warm": 0},
+                {"id": "C1", "kind": "spm", "label": "C1", "types": 1,
+                 "warm": 0},
+                {"id": "C2", "kind": "spm", "label": "C2", "types": 1,
+                 "warm": 0},
+            ],
+            "edges": [
+                {"from": "app", "to": "M1", "w": 1},
+                {"from": "C1", "to": "M1", "w": 1},
+                {"from": "app", "to": "M2", "w": 1},
+                {"from": "C2", "to": "M2", "w": 1},
+            ],
+            "summary": {"n_cycles": 0, "measured": False},
+        }
+        return (quick_wins, {"items": [], "summary": {}}, {}, {},
+                {"items": [], "summary": {}}, module_graph)
+
+    @staticmethod
+    def _kwargs():
+        return dict(
+            leaf_edges={("AppRoot", "M1/a"): 1, ("AppRoot", "M2/a"): 1,
+                        ("M1/a", "M2/a"): 1, ("Feat", "M2/a"): 1},
+            migrated_prefixes=["M1", "M2"],
+            decls={"AppRoot": {"A1", "A2"}, "M1/a": {"B1"}, "M2/a": {"C1x"},
+                   "Feat": {"F1", "F2"}},
+        )
+
+    def _wave3_ids(self, plan):
+        return [s["id"] for s in plan["steps"] if s["phase"] == 3]
+
+    def test_baseline_advisor_order_is_m1_then_m2(self):
+        from modgraph.advisor import compute_advice
+        adv = compute_advice(*self._inputs(),
+                             migrated_prefixes=["M1", "M2"])
+        w3 = [a["id"] for a in adv["actions"] if a["wave"] == 3]
+        self.assertEqual(w3, ["api:M1", "api:M2"])
+
+    def test_master_plan_reorders_by_simulated_leverage(self):
+        plan = compute_master_plan(*self._inputs(), **self._kwargs())
+        # M2 is the heavier module post-extraction -> it leads wave 3.
+        self.assertEqual(self._wave3_ids(plan), ["api:M2", "api:M1"])
+
+    def test_reorder_is_deterministic(self):
+        a = json.dumps(compute_master_plan(*self._inputs(), **self._kwargs()),
+                       sort_keys=True)
+        b = json.dumps(compute_master_plan(*self._inputs(), **self._kwargs()),
+                       sort_keys=True)
+        self.assertEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()

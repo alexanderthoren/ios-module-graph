@@ -8,11 +8,21 @@ deletes a folder cycle before any planning happens (study 2026-06-10,
 Proposal D).
 
 The evidence is ``file_edges`` (USR-resolved file-to-file couplings from the
-index path). Per file, reference mass is summed per counterpart folder, both
-directions. A move is suggested when one *foreign* folder's mass clears
+index path). Per file, only **outbound** reference mass is summed per
+counterpart folder — the folders the file itself *depends on*. A move is
+suggested when one *foreign* folder's outbound mass clears
 ``FILE_AFFINITY_MIN_REFS`` and dominates every alternative (the file's own
 folder included) by ``FILE_AFFINITY_DOMINANCE``×. Coordinator-style files
 that talk to many folders fail the dominance test and are left alone.
+
+**Direction matters.** A genuinely misplaced file *uses* its true home (its
+references point at it). A *contract* file — an interface/Action enum declared
+once and consumed heavily by one peer — is *used by* that peer: all its mass is
+**inbound**, none outbound. Counting inbound mass would read such a seam as
+"belongs in its consumer" and recommend burying the contract inside the code
+that depends on it (the PlanDetailAction → Reducers case: 1437 inbound refs,
+0 outbound). So placement follows what a file *depends on*, never what depends
+on it; a pure seam (no outbound mass) is never moved.
 
 Advisory by design — reference affinity is necessary, not sufficient, for a
 file to belong elsewhere; a human confirms. Deterministic (sorted iteration
@@ -38,17 +48,18 @@ def compute_file_moves(file_edges: list[dict],
     Each item: ``{file, from, to, refs, runner_up_refs, own_refs, symbols}``,
     sorted by refs desc (biggest fake coupling first).
     """
-    # Per file: counterpart folder -> mass, plus the symbols carried.
+    # Per file: counterpart folder -> OUTBOUND mass (folders the file depends
+    # on), plus the symbols it references there. Inbound mass (who depends on
+    # the file) is deliberately ignored — see the module docstring: it would
+    # mistake a heavily-consumed contract for a misplaced file.
     mass: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     symbols: dict[tuple[str, str], set[str]] = defaultdict(set)
     for fe in file_edges or []:
         src, dst, w = fe["src"], fe["dst"], fe.get("w", 1)
-        sf, df = _folder_of(src), _folder_of(dst)
+        df = _folder_of(dst)
         mass[src][df] += w
-        mass[dst][sf] += w
         for s in fe.get("symbols", ()):
             symbols[(src, df)].add(s)
-            symbols[(dst, sf)].add(s)
 
     items: list[dict] = []
     for path in sorted(mass):

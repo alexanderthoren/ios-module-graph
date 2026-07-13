@@ -16,7 +16,10 @@ and emits ONE plan:
 
 * **Waves** — actions sequenced by dependency, not by which engine found them:
 
-  0. *file moves* — the smallest PRs, dissolve fake coupling first;
+  0. *file moves* — the smallest PRs, dissolve fake coupling first, but only
+     when the move sits on a boundary the plan uses (crosses a compile unit,
+     feeds a planned cut, or touches an extraction candidate); a same-module
+     tidy is deferred ``no_boundary``;
   1. *ready extractions* — quick wins extractable today, ROI order;
   2. *unblocked extractions* — folders whose whole cut-set is move-file
      fixable, cross-linked ``after`` the wave-0 move ids that unblock them,
@@ -37,8 +40,9 @@ and emits ONE plan:
 * **A stop line** — actions whose payoff falls under ``ADVISOR_TAIL_PCT`` % of
   their kind's best are *deferred with a reason*, not ranked at position 41.
   The feed ends where effort stops paying; every ``deferred`` row says why
-  (``tail`` / ``blocked_cut`` / ``stabilize_api`` / ``unused``) so the stop is
-  auditable, mirroring the quick-win REJECT-is-first-class stance.
+  (``tail`` / ``blocked_cut`` / ``no_boundary`` / ``stabilize_api`` /
+  ``unused``) so the stop is auditable, mirroring the quick-win
+  REJECT-is-first-class stance.
 
 Pure interpretation over already-computed dicts; deterministic (sorted
 iteration only); every stream is optional (regex-scan path → quick wins only,
@@ -51,7 +55,7 @@ from collections import defaultdict
 from .config import (ADVISOR_CUT_MAX, ADVISOR_ISOLATE_SHARE,
                      ADVISOR_JOIN_MAX_TYPES, ADVISOR_TAIL_PCT,
                      API_MIN_CONSUMERS)
-from .module_graph import APP_ID
+from .module_graph import APP_ID, module_of
 
 WAVE_LABELS = {
     0: "Move misplaced files",
@@ -93,7 +97,8 @@ def _cut_mix(cut_edges: list[dict]) -> str:
 def compute_advice(quick_wins: dict, file_moves: dict,
                    isolations: dict[str, dict], module_splits: dict,
                    recommendations: dict, module_graph: dict,
-                   partitions: dict[str, dict] | None = None) -> dict:
+                   partitions: dict[str, dict] | None = None,
+                   migrated_prefixes: list[str] | None = None) -> dict:
     """Return ``{"actions": [...], "deferred": [...], "summary": {...}}``.
 
     ``actions`` is the ordered do-this-next feed (wave-major, see module doc);
@@ -114,9 +119,48 @@ def compute_advice(quick_wins: dict, file_moves: dict,
     actions: list[dict] = []
     deferred: list[dict] = []
 
-    # ---- wave 0: misplaced files (already gated + sorted upstream) ----------
+    # The tail floor is relative to the best quick win: below it, the payoff
+    # no longer justifies queue position — deferred, with the numbers shown.
+    # Computed here (ahead of wave 0) because the boundary gate needs it too.
+    max_payoff = max((i.get("payoff") or 0 for i in qw_items), default=0)
+    tail_floor = max_payoff * ADVISOR_TAIL_PCT / 100.0
+
+    # ---- wave 0: misplaced files, boundary-gated ----------------------------
+    # A move only earns a wave-0 slot when it dissolves coupling on a boundary
+    # the plan actually uses. The plan's boundaries are the modules that exist
+    # today (migrated prefixes) PLUS the folders it will extract (quick wins
+    # above the tail floor) — each acts as its own module via longest-prefix
+    # routing. A file shuffled between two folders that land in the SAME
+    # planned module, and that no planned cut needs, is an intra-module tidy
+    # with no build payoff: deferred ``no_boundary``, not ranked. This is the
+    # PlanDetail/State → PlanDetail/Reducers case — pointless while PlanDetail
+    # extracts whole, real once the plan splits them apart. Gate active only
+    # when the caller supplies the prefix set (the real pipeline); a bare
+    # advisor unit test passes None and every move is kept.
+    cut_evidence = {p for it in qw_items
+                    for e in it.get("cut", {}).get("edges", [])
+                    for p in e.get("evidence", ())}
+    planned_prefixes = (list(migrated_prefixes or [])
+                        + [it["folder"] for it in qw_items
+                           if (it.get("payoff") or 0) >= tail_floor])
     move_actions: dict[str, dict] = {}  # file path -> action (for after-links)
     for it in fm_items:
+        src, dst = it["from"], it["to"]
+        if migrated_prefixes is not None:
+            src_mod = module_of(src, planned_prefixes)
+            dst_mod = module_of(dst, planned_prefixes)
+            # in_cut keeps moves the wave-2 cross-linking depends on — those
+            # edges are exactly a planned extraction's blockers.
+            if src_mod == dst_mod and it["file"] not in cut_evidence:
+                deferred.append(_deferred(
+                    f"move:{it['file']}", "move_file", it["file"],
+                    f"Move {it['file'].rsplit('/', 1)[-1]} → {dst}/",
+                    "no_boundary",
+                    f"{src} and {dst} both land in {src_mod} under the plan "
+                    f"and no planned cut crosses this edge — an intra-module "
+                    f"tidy with no build payoff. Revisit if {src_mod} is split "
+                    f"or one side becomes a separate extraction."))
+                continue
         a = _action(
             f"move:{it['file']}", "move_file", 0, it["file"],
             f"Move {it['file'].rsplit('/', 1)[-1]} → {it['to']}/",
@@ -129,10 +173,6 @@ def compute_advice(quick_wins: dict, file_moves: dict,
         actions.append(a)
 
     # ---- waves 1-2: quick wins (input already ROI-sorted; order preserved) --
-    # The tail floor is relative to the best quick win: below it, the payoff
-    # no longer justifies queue position — deferred, with the numbers shown.
-    max_payoff = max((i.get("payoff") or 0 for i in qw_items), default=0)
-    tail_floor = max_payoff * ADVISOR_TAIL_PCT / 100.0
     wave2: list[tuple[int, int, dict]] = []  # (blocked?, input idx, action)
 
     for idx, it in enumerate(qw_items):
@@ -427,6 +467,12 @@ def compute_advice(quick_wins: dict, file_moves: dict,
         surgery_modules.add(mid)
 
     wave3.sort(key=lambda t: (-t[0], -t[1], t[2]))
+    # Record the leverage each wave-3 action was ranked by: the master plan
+    # re-sorts these against the *post-extraction* graph (the baseline is stale
+    # once waves 1-2 move folders) and falls back to this value for any subject
+    # absent from the simulated module set.
+    for lev, _n, _m, a in wave3:
+        a["details"]["leverage"] = round(float(lev), 1)
     actions.extend(a for _l, _n, _m, a in wave3)
 
     # ---- wave 4: joins — boundary without benefit ----------------------------

@@ -53,6 +53,7 @@ from collections import defaultdict
 
 from .advisor import WAVE_LABELS, compute_advice
 from .build_impact import compute_build_impact
+from .build_recommendations import compute_split_recommendations
 from .config import (ABSORB_CHURN_HOT, ABSORB_WARM_WIDE, API_MIN_CONSUMERS,
                      API_SURFACE_SAMPLE, EQ_APP_SHARE_PCT, EQ_PAR_EFF_PCT,
                      EQ_WARM_MAX_PCT)
@@ -193,7 +194,14 @@ class _PlanSim:
         m = module_of(folder, self._prefixes)
         return self._joined.get(m, m), None
 
-    def snapshot(self) -> dict:
+    def _derive(self) -> tuple:
+        """The current module set, edges, work, churn — shared by every view.
+
+        Returns ``(mods, medges, work, churn, app_types, total_types)`` from the
+        live folder→module routing. Both :meth:`snapshot` (cost pricing) and
+        :meth:`module_view` (build-mode-shaped graph) build on this so they can
+        never drift apart.
+        """
         route = {f: self._route(f) for f in self._folders}
         mods: set[str] = set()
         medges: dict[tuple[str, str], int] = defaultdict(int)
@@ -236,11 +244,41 @@ class _PlanSim:
         for cset in self._churn:
             for m in sorted({route[f][0] for f in cset if f in route}):
                 churn[m] += 1
+        return mods, dict(medges), dict(work), dict(churn), app_types, total_types
 
-        cost = compute_cost_model(mods, dict(medges), dict(work),
-                                  dict(churn) if self._churn else None)
+    def module_view(self) -> dict:
+        """The current state as a Build-mode-shaped module graph.
+
+        Lets the master plan re-score wave-3 surgery against the graph the
+        wave-1/2 extractions actually produced, using the *same* split-payoff
+        scorer the advisor's baseline leverage came from — no forked metric.
+        Type-unit work only (the sim never carries measured seconds).
+        """
+        mods, medges, work, churn, _at, _tt = self._derive()
         tree = build_tree(mods, {m: set() for m in mods}, root_label="sim")
-        bi = compute_build_impact(tree, dict(medges))
+        bi = compute_build_impact(tree, medges)
+        binodes = bi["nodes"]
+        nodes = [{
+            "id": m, "label": m,
+            "kind": "app" if m == APP_ID else "spm",
+            "types": int(work.get(m, 0)),
+            "churn": churn.get(m, 0),
+            "crit": bool(binodes.get(m, {}).get("crit")),
+            "warm": binodes.get(m, {}).get("warm", 0),
+            "measured": False,
+        } for m in sorted(mods)]
+        edges = [{"from": a, "to": b, "w": w}
+                 for (a, b), w in sorted(medges.items())]
+        return {"nodes": nodes, "edges": edges,
+                "summary": {"churned": bool(self._churn), "measured": False,
+                            "n_cycles": bi["summary"]["n_cycles"]}}
+
+    def snapshot(self) -> dict:
+        mods, medges, work, churn, app_types, total_types = self._derive()
+        cost = compute_cost_model(mods, medges, work,
+                                  churn if self._churn else None)
+        tree = build_tree(mods, {m: set() for m in mods}, root_label="sim")
+        bi = compute_build_impact(tree, medges)
         n_mods = len(mods)
         warm_max = max(cost["dependents"].values(), default=0)
         return {
@@ -534,6 +572,23 @@ def _equilibrium(module_graph: dict, actions: list[dict]) -> dict:
     return {"criteria": criteria, "met": all(c["met"] for c in criteria)}
 
 
+def _refresh_wave3_leverage(sim: "_PlanSim") -> dict:
+    """Re-score wave-3 module surgery against the *post-extraction* graph.
+
+    The advisor sorts wave 3 by baseline split leverage, but once waves 1-2
+    have moved folders out of the app target that ranking is stale (the app
+    shrinks, new modules slot into dependency chains). The plan replays those
+    extractions into ``sim``; this prices the resulting module graph with the
+    canonical :func:`modgraph.build_recommendations.compute_split_recommendations`
+    so the order reflects what surgery actually pays *now*. Returns
+    ``{module id -> hot|combined (0-100)}``; modules absent from the simulated
+    graph fall back to their baseline leverage at the call site.
+    """
+    reco = compute_split_recommendations(sim.module_view())
+    return {r["id"]: (r["hot"] if r.get("hot") is not None else r["combined"])
+            for r in reco["items"]}
+
+
 def compute_master_plan(quick_wins: dict, file_moves: dict,
                         isolations: dict[str, dict], module_splits: dict,
                         recommendations: dict, module_graph: dict, *,
@@ -555,11 +610,11 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
     decision, build-grounded why, cumulative simulated deltas, verify block.
     All keyword inputs are optional and degrade exactly like their producers.
     """
-    advice = compute_advice(quick_wins, file_moves, isolations,
-                            module_splits, recommendations, module_graph,
-                            partitions)
     leaf_edges = leaf_edges or {}
     prefixes = migrated_prefixes or []
+    advice = compute_advice(quick_wins, file_moves, isolations,
+                            module_splits, recommendations, module_graph,
+                            partitions, migrated_prefixes=prefixes)
     qw_by_folder = {i["folder"]: i for i in (quick_wins or {}).get("items", [])}
     churned = (quick_wins or {}).get("summary", {}).get("churned", False)
     nodes_by_id = {n["id"]: n for n in (module_graph or {}).get("nodes", [])}
@@ -595,7 +650,33 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
         })
         trajectory.append({"id": it["id"], "simulated": False,
                            **_public_snap(prev)})
-    for a in advice["actions"]:
+    # Wave 3 is re-sorted at its boundary: by then `sim` holds every wave-1/2
+    # extraction, so the split-payoff leverage is recomputed against the graph
+    # they produced (the advisor's baseline order is stale once folders move).
+    # Lazy in-place — the segment is reordered the first time a wave-3 action is
+    # reached, after which processing continues over the refreshed list.
+    acts = list(advice["actions"])
+    i = 0
+    _w3_done = False
+    while i < len(acts):
+        a = acts[i]
+        if not _w3_done and a.get("wave") == 3:
+            _w3_done = True
+            seg = acts[i:]
+            w3 = [x for x in seg if x.get("wave") == 3]
+            if len(w3) >= 2 and any(
+                    x["kind"] in ("absorb", "new_module", "cut_then_extract")
+                    for x in acts[:i]):
+                refreshed = _refresh_wave3_leverage(sim)
+                pos = {id(x): j for j, x in enumerate(w3)}
+                w3.sort(key=lambda x: (
+                    -refreshed.get(x["subject"],
+                                   float(x["details"].get("leverage", 0.0))),
+                    pos[id(x)]))
+                nxt = iter(w3)
+                acts[i:] = [next(nxt) if x.get("wave") == 3 else x
+                            for x in seg]
+            a = acts[i]
         kind, subject = a["kind"], a["subject"]
         step = {
             "id": a["id"], "kind": kind, "phase": a["wave"],
@@ -794,6 +875,7 @@ def compute_master_plan(quick_wins: dict, file_moves: dict,
         trajectory.append({"id": step["id"], "simulated": simulated,
                            **_public_snap(prev)})
         steps.append(step)
+        i += 1
 
     final = prev
     equilibrium = _equilibrium(module_graph, advice["actions"])

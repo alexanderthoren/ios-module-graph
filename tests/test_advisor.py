@@ -365,5 +365,101 @@ class ApiRetrofitTest(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class Wave0BoundaryGateTest(unittest.TestCase):
+    """A misplaced-file move only earns wave 0 when it sits on a boundary the
+    plan uses; an intra-module tidy is deferred ``no_boundary``."""
+
+    @staticmethod
+    def _move(file, frm, to):
+        return {"file": file, "from": frm, "to": to, "refs": 5,
+                "runner_up_refs": 1, "own_refs": 1, "symbols": ["T"]}
+
+    def _advice(self, *, moves, qw=None, prefixes=None):
+        return compute_advice(
+            {"items": qw or [], "summary": {}},
+            {"items": moves, "summary": {}},
+            {}, {}, {}, {"nodes": [], "edges": [], "summary": {}},
+            migrated_prefixes=prefixes)
+
+    def test_same_module_move_deferred_no_boundary(self):
+        # Both folders compile into the app target, no cut, neither extracted.
+        adv = self._advice(
+            moves=[self._move("PlanDetail/Resources/A.swift",
+                              "PlanDetail/Resources", "PlanDetail/Components")],
+            prefixes=[])
+        self.assertEqual(adv["actions"], [])
+        d = adv["deferred"][0]
+        self.assertEqual(d["reason"], "no_boundary")
+        self.assertIn("both land in app under the plan", d["why"])
+
+    def test_cross_module_move_kept(self):
+        # Resources is already its own SPM module -> the move crosses a unit.
+        adv = self._advice(
+            moves=[self._move("PlanDetail/Resources/A.swift",
+                              "PlanDetail/Resources", "PlanDetail/Components")],
+            prefixes=["PlanDetail/Resources"])
+        self.assertEqual([a["id"] for a in adv["actions"]],
+                         ["move:PlanDetail/Resources/A.swift"])
+        self.assertFalse(adv["deferred"])
+
+    def test_move_kept_when_endpoint_is_extraction_candidate(self):
+        # Components is itself a quick-win folder -> consolidating it matters.
+        adv = self._advice(
+            moves=[self._move("PlanDetail/Resources/A.swift",
+                              "PlanDetail/Resources", "PlanDetail/Components")],
+            qw=[_qw("PlanDetail/Components", 30.0, dest=None,
+                    action="new_module")],
+            prefixes=[])
+        self.assertIn("move:PlanDetail/Resources/A.swift",
+                      [a["id"] for a in adv["actions"]])
+
+    def test_move_kept_when_in_a_planned_cut(self):
+        # The file is a cut blocker for a planned extraction -> keep it so the
+        # wave-2 cross-linking still works.
+        adv = self._advice(
+            moves=[self._move("Foo/A.swift", "Foo", "Bar")],
+            qw=[_qw("Other", 30.0, extractable=False, cut_edges=[
+                {"dst": "Bar", "refs": 3, "types": ["T"], "fix": "move_file",
+                 "evidence": ["Foo/A.swift"]}])],
+            prefixes=[])
+        self.assertIn("move:Foo/A.swift", [a["id"] for a in adv["actions"]])
+
+    def test_gate_off_without_prefixes(self):
+        # No migrated-prefix set (bare advisor call) -> gate inactive, kept.
+        adv = self._advice(
+            moves=[self._move("Foo/A.swift", "Foo", "Bar")])
+        self.assertIn("move:Foo/A.swift", [a["id"] for a in adv["actions"]])
+        self.assertFalse(adv["deferred"])
+
+    def test_move_inside_a_whole_extracted_folder_is_deferred(self):
+        # The headline case: PlanDetail extracts whole (it is the planned
+        # boundary, its children are not), so shuffling a file between two of
+        # its subfolders lands in the same planned module -> no payoff.
+        adv = self._advice(
+            moves=[self._move("PlanDetail/State/S.swift",
+                              "PlanDetail/State", "PlanDetail/Reducers")],
+            qw=[_qw("PlanDetail", 40.0, dest=None, action="new_module")],
+            prefixes=[])
+        self.assertNotIn("move:PlanDetail/State/S.swift",
+                         [a["id"] for a in adv["actions"]])
+        d = next(d for d in adv["deferred"]
+                 if d["id"] == "move:PlanDetail/State/S.swift")
+        self.assertEqual(d["reason"], "no_boundary")
+        self.assertIn("both land in PlanDetail", d["why"])
+
+    def test_move_kept_when_both_children_are_separate_boundaries(self):
+        # Same move, but now State and Reducers are each their own planned
+        # extraction -> the plan splits them apart, so consolidate first.
+        adv = self._advice(
+            moves=[self._move("PlanDetail/State/S.swift",
+                              "PlanDetail/State", "PlanDetail/Reducers")],
+            qw=[_qw("PlanDetail/State", 40.0, dest=None, action="new_module"),
+                _qw("PlanDetail/Reducers", 38.0, dest=None,
+                    action="new_module")],
+            prefixes=[])
+        self.assertIn("move:PlanDetail/State/S.swift",
+                      [a["id"] for a in adv["actions"]])
+
+
 if __name__ == "__main__":
     unittest.main()

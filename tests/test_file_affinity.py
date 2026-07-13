@@ -19,8 +19,11 @@ class MoveSuggestionTest(unittest.TestCase):
     def test_dominant_foreign_folder_suggests_move(self):
         edges = [edge("A/Stray.swift", "B/Home.swift", 5, ["HomeType"])]
         out = compute_file_moves(edges)
-        self.assertEqual(len(out["items"]), 2)   # both endpoints scanned
-        move = next(i for i in out["items"] if i["file"] == "A/Stray.swift")
+        # Only the depending endpoint (A/Stray) is scanned: it has outbound
+        # mass. B/Home is pure-inbound here, so it is not a move candidate.
+        self.assertEqual(len(out["items"]), 1)
+        move = out["items"][0]
+        self.assertEqual(move["file"], "A/Stray.swift")
         self.assertEqual(move["from"], "A")
         self.assertEqual(move["to"], "B")
         self.assertEqual(move["refs"], 5)
@@ -44,12 +47,25 @@ class MoveSuggestionTest(unittest.TestCase):
         out = compute_file_moves(edges)
         self.assertNotIn("A/X.swift", [i["file"] for i in out["items"]])
 
-    def test_incoming_references_also_pull(self):
-        # B/Y references A/Stray heavily — affinity is bidirectional.
+    def test_incoming_references_do_not_pull(self):
+        # B/Y references A/Stray heavily, but A/Stray depends on nothing in B:
+        # it is a contract consumed by B (the PlanDetailAction case). Placement
+        # follows outbound dependency, so A/Stray stays; B/Y (which *does*
+        # depend on A) is the file that would move.
         edges = [edge("B/Y.swift", "A/Stray.swift", 6, ["StrayType"])]
         out = compute_file_moves(edges, source_folders={"A", "B"})
-        move = next(i for i in out["items"] if i["file"] == "A/Stray.swift")
-        self.assertEqual(move["to"], "B")
+        files = [i["file"] for i in out["items"]]
+        self.assertNotIn("A/Stray.swift", files)
+        move = next(i for i in out["items"] if i["file"] == "B/Y.swift")
+        self.assertEqual(move["to"], "A")
+
+    def test_pure_inbound_seam_never_moves(self):
+        # A contract declared once, consumed only by B (no outbound at all)
+        # must never be pulled into its consumer.
+        edges = [edge("B/Reducer.swift", "A/Action.swift", 1437),
+                 edge("B/Other.swift", "A/Action.swift", 50)]
+        out = compute_file_moves(edges, source_folders={"A", "B"})
+        self.assertNotIn("A/Action.swift", [i["file"] for i in out["items"]])
 
     def test_scope_filter_drops_migrated_homes_and_destinations(self):
         edges = [edge("Pkg/Sources/Lib/X.swift", "A/Y.swift", 9),
